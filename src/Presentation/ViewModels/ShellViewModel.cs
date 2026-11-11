@@ -64,6 +64,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     // F6: Background refresh of new customers
     System.Threading.Timer? _refreshTimer;
     int _newCount;
+    DateTime _lastListRefresh = DateTime.MinValue;
     public string NewCountBadge => _newCount > 0 ? $"+{_newCount} new" : "";
 
     public ShellViewModel(
@@ -231,20 +232,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
             if (store != null)
             {
-                var stored = store.GetAll();
-                loaded = stored.Select(r => new ApplicationDocument(
-                    Identity: r.ConsumerNumber,
-                    Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
-                    Fields: new DisplayField[]
-                    {
-                        new("Consumer", r.ConsumerNumber),
-                        new("Name", r.ConsumerName ?? ""),
-                        new("Vendor", r.VendorCode ?? ""),
-                        new("Status", r.Status.ToString())
-                    },
-                    OriginalJson: r.OriginalJson ?? ""
-                )).ToList();
-                if (stored.Count == 0)
+                LoadFromStore();
+                if (loaded.Count == 0)
                     Status = "The store is empty. The harvester fills it from index.tsv — check Diagnostics.";
             }
             else
@@ -256,6 +245,28 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) Status = "Loading cancelled."; }
         finally { if (version == generation) IsBusy = false; }
     }
+    /// <summary>
+    /// Reads the store into the list model. The store is the only source of
+    /// rows, so this must be re-run whenever the store grows.
+    /// </summary>
+    void LoadFromStore()
+    {
+        if (store == null) { loaded = []; return; }
+        var stored = store.GetAll();
+        loaded = stored.Select(r => new ApplicationDocument(
+            Identity: r.ConsumerNumber,
+            Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
+            Fields: new DisplayField[]
+            {
+                new("Consumer", r.ConsumerNumber),
+                new("Name", r.ConsumerName ?? ""),
+                new("Vendor", r.VendorCode ?? ""),
+                new("Status", r.Status.ToString())
+            },
+            OriginalJson: r.OriginalJson ?? ""
+        )).ToList();
+    }
+
     void ApplySearch()
     {
         Applications.Clear();
@@ -433,17 +444,41 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         harvester = new InspectionHarvester(store, IndexPath, inspectionHostOverride ?? "https://mobileappnj.mahadiscom.in", harvesterCursor);
         harvester.OnRecordsAdded += added =>
         {
-            // A4: the badge counts what the harvester actually added.
-            _newCount += added;
-            Changed(nameof(NewCountBadge));
-            RefreshRecordCounts();
+            // The harvester calls this from its timer thread. Everything that
+            // touches the UI — including the ObservableCollection behind the
+            // list — must be marshalled onto the UI thread, or WPF throws
+            // "CollectionView does not support changes from a thread different
+            // from the Dispatcher thread".
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher == null) { _newCount += added; return; }
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                // A4: the badge counts what the harvester actually added.
+                _newCount += added;
+                Changed(nameof(NewCountBadge));
+                RefreshRecordCounts();
+                // The list shows the store, so it must follow the store.
+                // Rebuilding it on every batch is too heavy with thousands of
+                // rows, so the refresh is throttled.
+                if (page == "Applications" && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 10)
+                {
+                    _lastListRefresh = DateTime.UtcNow;
+                    try { LoadFromStore(); ApplySearch(); }
+                    catch { /* a list refresh must never disturb the walk */ }
+                }
+            }));
         };
         harvester.OnStatusChanged += text =>
         {
             // The harvester reports every cpf it walks; that must not overwrite the
             // status line, which carries the operator's actions.
-            harvesterStatus = text;
-            Changed(nameof(HarvesterStatus));
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher == null) { harvesterStatus = text; return; }
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                harvesterStatus = text;
+                Changed(nameof(HarvesterStatus));
+            }));
         };
         harvester.Start();
     }
