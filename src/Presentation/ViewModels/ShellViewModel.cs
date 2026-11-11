@@ -51,6 +51,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
     }
     public bool IsVendorConfigured => !string.IsNullOrWhiteSpace(manualVendorCode);
+    public RelayCommand ClearVendorCode { get; }
 
     // R3: Background harvester + SQLite store
     readonly InspectionStore? store;
@@ -125,6 +126,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         EditOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "inspection");
         EditJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "jsr");
         CopyDiagnostics = new RelayCommand(_ => desktop.CopyDiagnostics(workflow.Diagnostics));
+        ClearVendorCode = new RelayCommand(_ => { VendorCode = ""; });
         OpenInspection = new AsyncCommand((_, ct) => OpenInspectionAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && index != null && builder != null && location != null);
     }
 
@@ -332,7 +334,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         else if (destination == "Diagnostics")
         {
             Fields.Add(new("Build", "0.5 · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
-            Fields.Add(new("Manual login id", manualLoginId)); Fields.Add(new("Vendor code", VendorCode));
+            Fields.Add(new("Manual login id", manualLoginId));
+            // Vendor code is an editable TextBox, not a read-only field
         }
     }
     void ShowDetails()
@@ -361,7 +364,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void RefreshCommands()
     {
-        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh();
+        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); ClearVendorCode?.Refresh();
     }
 
     async Task OpenInspectionAsync(CancellationToken ct)

@@ -654,6 +654,11 @@ public sealed class InspectionWindow : Window
                 var isOK = yes.IsChecked == true ? "Y" : (no.IsChecked == true ? "N" : null);
                 if (value == null || isOK == null)
                     throw new InvalidDataException($"Check unset: {pair.Key} (no Correct/Incorrect selected).");
+                // K3: When Incorrect, remark must be non-empty. Read the remark back
+                // and name the check if it's missing — a remark typed into the
+                // wrong box currently submits silently.
+                if (isOK == "N" && string.IsNullOrWhiteSpace(remark.Text.Trim()))
+                    throw new InvalidDataException($"Remark required for '{pair.Key}' when marked Incorrect.");
             }
 
             var checkErrors = SurveyRules.ValidateInspection(answers);
