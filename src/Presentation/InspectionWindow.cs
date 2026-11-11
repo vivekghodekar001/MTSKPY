@@ -422,8 +422,10 @@ public sealed class InspectionWindow : Window
                     ResolveCoordinate("latitude", manualLat.Text),
                     ResolveCoordinate("longitude", manualLong.Text),
                     DateTime.UtcNow);
-                // S2: photo-duplicate refusal at attach time
-                var photoHash = ComputeSha256(stamped);
+                // H1: hash the SOURCE (not the stamped copy) for the photo
+                // uniqueness gate — the stamped hash changes every attach, but
+                // the source hash is a stable fingerprint.
+                var photoHash = ComputeSha256(path);
                 foreach (var otherKvp in photoHashes)
                 {
                     if (otherKvp.Key != suffix && otherKvp.Value == photoHash)
@@ -606,9 +608,10 @@ public sealed class InspectionWindow : Window
                     extraData[slot.Suffix + "DateTime"] =
                         photoAt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
                 }
-                // Q1: refuse if this photo's bytes match a photo already submitted
-                // in this run.
-                var photoHash = ComputeSha256(stampedPath);
+                // Q1: refuse if this photo's source bytes match a photo already
+                // submitted in this run — compare source hashes (stable across
+                // re-stamping), not stamped bytes.
+                var photoHash = photoHashes.TryGetValue(slot.Suffix, out var h) ? h : ComputeSha256(stampedPath);
                 if (!seenPhotoHashes.Add(photoHash))
                     throw new InvalidDataException($"Duplicate photo: '{slot.Label}' uses the same image as a previous photo in this submission. Use three different originals.");
                 photoPaths.Add(stampedPath);
