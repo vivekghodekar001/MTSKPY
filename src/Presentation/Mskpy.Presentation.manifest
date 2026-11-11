@@ -1,9 +1,22 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" name="Mskpy.Presentation"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAwareness xmlns="http://schemas.microsoft.com/schemas/windows/2016/desktop">PerMonitorV2</dpiAwareness>
       <dpiAwarenessOverride xmlns="http://schemas.microsoft.com/schemas/windows/2016/desktop">permonitorv2</dpiAwarenessOverride>
     </windowsSettings>
   </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS id="{e2011457-1546-43c5-a5fe-008ddfee3964}"/>
+    </application>
+  </compatibility>
 </assembly>

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Exif")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7cfd6b98a8fa93120b565f51e21fcbe3c714a998")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d3bd5dc78e8ee3bf9af782cfff37024784a8a5fd")]
 [assembly: System.Reflection.AssemblyProductAttribute("Exif")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Exif")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
