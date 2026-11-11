@@ -291,7 +291,7 @@ public sealed class InspectionWindow : Window
         locationCard.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
         var locationActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(10, 4, 10, 4) };
-        resolveBtn.Click += (_, _) => ResolveLocation();
+        resolveBtn.Click += async (_, _) => await ResolveLocation();
         locationActions.Children.Add(resolveBtn);
         locationActions.Children.Add(distRestricted);
         locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", VerticalAlignment = VerticalAlignment.Center });
