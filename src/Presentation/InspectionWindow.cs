@@ -76,6 +76,7 @@ public sealed class InspectionWindow : Window
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
 
     bool submitBusy;
+    readonly System.Threading.Timer signatureDebounceTimer;
 
     static readonly (string Suffix, string Label)[] PhotoSlots =
     [
@@ -114,6 +115,7 @@ public sealed class InspectionWindow : Window
         this.store = store; // W1
         this.onSubmitComplete = onSubmitComplete;
         this.onVerifyComplete = onVerifyComplete;
+        signatureDebounceTimer = new System.Threading.Timer(_ => CheckSignatureDuplicates(), null, Timeout.Infinite, Timeout.Infinite);
 
         Title = $"Pump Inspection — {consumerNumber}";
         Width = 1000; MinWidth = 760; MinHeight = 700;
@@ -464,26 +466,12 @@ public sealed class InspectionWindow : Window
         canvas.DefaultDrawingAttributes.Width = canvas.DefaultDrawingAttributes.Height = 2.5;
         canvas.Strokes.StrokesChanged += (_, _) =>
         {
-            // S3: blank-canvas refusal at attach time — zero strokes, not byte count
-            if (canvas.Strokes.Count == 0)
-            {
-                status.Text = $"Blank signature: '{title}' has no strokes. Draw a signature.";
-                return;
-            }
-            // S2: signature-duplicate refusal at attach time — only when this canvas
-            // just got content and the other canvas already has content.
-            if (canvas.Strokes.Count == 1)
-            {
-                var otherCanvas = canvas == beneficiary ? representative : beneficiary;
-                var otherTitle = canvas == beneficiary ? "Vendor representative signature" : "Beneficiary signature";
-                if (otherCanvas.Strokes.Count > 0)
-                {
-                    var pathA = SignToPng(canvas);
-                    var pathB = SignToPng(otherCanvas);
-                    if (pathA != null && pathB != null && ComputeSha256(pathA) == ComputeSha256(pathB))
-                        status.Text = $"Duplicate signature: '{title}' matches '{otherTitle}'. Draw two different signatures.";
-                }
-            }
+            // T2: at attach time, only report signed/not signed — no refusal here.
+            status.Text = canvas.Strokes.Count == 0
+                ? $"Blank signature: '{title}' has no strokes. Draw a signature."
+                : $"Signed: '{title}'.";
+            // T3: debounced duplicate check at attach time.
+            signatureDebounceTimer.Change(400, Timeout.Infinite);
         };
         target.Children.Add(canvas);
         var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 10) };
@@ -561,6 +549,12 @@ public sealed class InspectionWindow : Window
             if (!System.Text.RegularExpressions.Regex.IsMatch(vpMobile, @"^[1-9]\d{9,}$"))
                 throw new InvalidDataException(
                     "Vendor Person Mobile No must be 10+ digits starting with a non-zero digit.");
+
+            // T2: blank-signature refusal at Submit — zero strokes, naming the blank role.
+            if (beneficiary.Strokes.Count == 0)
+                throw new InvalidDataException("Blank signature: 'Beneficiary signature' has no strokes. Draw a signature.");
+            if (representative.Strokes.Count == 0)
+                throw new InvalidDataException("Blank signature: 'Vendor representative signature' has no strokes. Draw a signature.");
 
             // P4: the manual override must be numeric; otherwise the blob would
             // claim a coordinate the photos cannot be stamped with.
@@ -774,6 +768,19 @@ public sealed class InspectionWindow : Window
         if (outcome.Count > 1)
             MessageBox.Show(this, $"WARN: count={outcome.Count} > 1 for consumer_number {consumerNumber}", "Verify warning", MessageBoxButton.OK, MessageBoxImage.Warning);
         onVerifyComplete?.Invoke(record, outcome);
+    }
+
+    /// <summary>T3: debounced signature-duplicate check at attach time.</summary>
+    void CheckSignatureDuplicates()
+    {
+        var pathA = SignToPng(beneficiary);
+        var pathB = SignToPng(representative);
+        var duplicate = pathA != null && pathB != null && ComputeSha256(pathA) == ComputeSha256(pathB);
+        this.Dispatcher.Invoke(() =>
+        {
+            if (duplicate)
+                status.Text = "Duplicate signature: beneficiary and vendor representative signatures are byte-identical. Draw two different signatures.";
+        });
     }
 
     /// <summary>W1: SHA-256 of a file for the photo uniqueness gate.</summary>
