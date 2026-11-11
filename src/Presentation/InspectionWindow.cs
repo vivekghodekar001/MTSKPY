@@ -370,8 +370,9 @@ public sealed class InspectionWindow : Window
 
     static string DescribeLocation(LocationResult loc, double? distance) =>
         $"Source: {loc.Source}  ·  Lat={loc.Lat}  ·  Long={loc.Long}  ·  " +
-        // T2: show the same accuracy the blob carries (12 when blank, never 0).
-        $"Accuracy={(string.IsNullOrEmpty(loc.Accuracy) ? "12" : loc.Accuracy)}  ·  Mocked={loc.Mocked}  ·  " +
+        // V1: accuracy is 0 when the position is installation coords (mocked),
+        // otherwise show the geolocator's own accuracy.
+        $"Accuracy={(loc.Mocked || string.IsNullOrEmpty(loc.Accuracy) ? "0" : loc.Accuracy)}  ·  Mocked={loc.Mocked}  ·  " +
         $"Distance from installation={(distance.HasValue ? distance.Value.ToString("0.##", CultureInfo.InvariantCulture) : "n/a")} m  ·  " +
         (loc.Error != null ? "Error: " + loc.Error : "OK");
 
