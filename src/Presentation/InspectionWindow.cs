@@ -419,13 +419,25 @@ public sealed class InspectionWindow : Window
                     ResolveCoordinate("latitude", manualLat.Text),
                     ResolveCoordinate("longitude", manualLong.Text),
                     DateTime.UtcNow);
+                // S2: photo-duplicate refusal at attach time
+                var photoHash = ComputeSha256(stamped);
+                foreach (var otherKvp in photoHashes)
+                {
+                    if (otherKvp.Key != suffix && otherKvp.Value == photoHash)
+                        throw new InvalidDataException($"Duplicate photo: '{label}' uses the same image as '{otherKvp.Key}'. Use three different originals.");
+                }
                 photos[suffix] = stamped;
                 photoSources[suffix] = path;
-                // W1: compute SHA-256 of the stamped file for the uniqueness gate.
-                photoHashes[suffix] = ComputeSha256(stamped);
-                image.Source = Thumbnail(stamped);
-                photoSources[suffix] = path;
-                image.Source = Thumbnail(stamped);
+                photoHashes[suffix] = photoHash;
+                // S4: copy stamped photo to LocalAppData for retry
+                var consumerDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "RenewableEnergyDesktop", "inspection-data", consumerNumber);
+                Directory.CreateDirectory(consumerDir);
+                var consumerPhotoPath = Path.Combine(consumerDir, Path.GetFileName(stamped));
+                File.Copy(stamped, consumerPhotoPath, overwrite: true);
+                photos[suffix] = consumerPhotoPath;
+                image.Source = Thumbnail(consumerPhotoPath);
                 fname.Text = Path.GetFileName(stamped) + " (EXIF stamped)";
             }
             catch (Exception ex) when (ex is IOException or NotSupportedException or FileFormatException or ArgumentException or InvalidDataException)
@@ -450,7 +462,29 @@ public sealed class InspectionWindow : Window
         target.Children.Add(Label(title, 15));
         canvas.DefaultDrawingAttributes.Color = Colors.Black;
         canvas.DefaultDrawingAttributes.Width = canvas.DefaultDrawingAttributes.Height = 2.5;
-        canvas.Strokes.StrokesChanged += (_, _) => { };
+        canvas.Strokes.StrokesChanged += (_, _) =>
+        {
+            // S3: blank-canvas refusal at attach time — zero strokes, not byte count
+            if (canvas.Strokes.Count == 0)
+            {
+                status.Text = $"Blank signature: '{title}' has no strokes. Draw a signature.";
+                return;
+            }
+            // S2: signature-duplicate refusal at attach time — only when this canvas
+            // just got content and the other canvas already has content.
+            if (canvas.Strokes.Count == 1)
+            {
+                var otherCanvas = canvas == beneficiary ? representative : beneficiary;
+                var otherTitle = canvas == beneficiary ? "Vendor representative signature" : "Beneficiary signature";
+                if (otherCanvas.Strokes.Count > 0)
+                {
+                    var pathA = SignToPng(canvas);
+                    var pathB = SignToPng(otherCanvas);
+                    if (pathA != null && pathB != null && ComputeSha256(pathA) == ComputeSha256(pathB))
+                        status.Text = $"Duplicate signature: '{title}' matches '{otherTitle}'. Draw two different signatures.";
+                }
+            }
+        };
         target.Children.Add(canvas);
         var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 10) };
         var clear = new Button { Content = "Clear signature", Margin = new Thickness(0, 0, 0, 0) };
@@ -512,12 +546,11 @@ public sealed class InspectionWindow : Window
         status.Text = "Submitting…";
         try
         {
-            // W2: vendor mismatch gate — refuse before the wire if session vendor
-            // differs from record vendor.
+            // S8: vendor mismatch is a warning, not a refusal — submit proceeds.
             if (!string.IsNullOrWhiteSpace(vendorCode) &&
                 !string.IsNullOrWhiteSpace(record.VendorCode) &&
                 !string.Equals(vendorCode, record.VendorCode, StringComparison.Ordinal))
-                throw new InvalidDataException($"Session vendor {vendorCode} ≠ record vendor {record.VendorCode}. Set the Diagnostics vendor code to the record's before submitting.");
+                status.Text = $"Warning: session vendor {vendorCode} ≠ record vendor {record.VendorCode}. Submitting anyway.";
 
             // T4: installer field validation (bytecode Yup: non-empty name,
             // mobile ^[1-9]\d{9,} 10+ digits).
@@ -647,7 +680,12 @@ public sealed class InspectionWindow : Window
             }
 
             // W4: persist the record before submit so a failed attempt can be retried.
-            var photoPathsJson = System.Text.Json.JsonSerializer.Serialize(photoPaths);
+            // S4: store LocalAppData photo paths (not %TEMP% paths) for retry.
+            var retryPhotoPaths = PhotoSlots
+                .Select(s => photos.TryGetValue(s.Suffix, out var p) ? p : null)
+                .Where(p => p != null)
+                .ToList();
+            var photoPathsJson = System.Text.Json.JsonSerializer.Serialize(retryPhotoPaths);
             var signPathsJson = System.Text.Json.JsonSerializer.Serialize(signPaths);
             store?.Upsert(new StoredInspectionRecord(
                 ConsumerNumber: consumerNumber,

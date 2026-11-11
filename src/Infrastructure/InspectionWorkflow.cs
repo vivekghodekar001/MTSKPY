@@ -214,11 +214,9 @@ public sealed class InspectionWorkflow
             .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
         dataDict["surveyEndTime"] = submitAt.UtcDateTime
             .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
-        var wholeMinutes = Math.Round(
-            (submitAt - openedAt).TotalMinutes,
-            MidpointRounding.AwayFromZero);
-        // W3: duration floor — never "0".
-        if (wholeMinutes == 0) wholeMinutes = 1;
+        // S6: surveyDuration = real elapsed minutes; floor to 1 only under a minute.
+        var wholeMinutes = (int)Math.Floor((submitAt - openedAt).TotalMinutes);
+        if (wholeMinutes < 1) wholeMinutes = 1;
         dataDict["surveyDuration"] = wholeMinutes
             .ToString("0", System.Globalization.CultureInfo.InvariantCulture);
         // P4 (raw types, not strings): distanceFromInst is the haversine distance

@@ -452,7 +452,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }
             var record = outcome.Record!;
             Status = $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
-            new InspectionWindow(record, consumer, cpf, profile.LoginId, manualVendorCode, wf, winLoc,
+            // S8: prefill vendor code from record if session vendor not set.
+            var effVendorCode = !string.IsNullOrWhiteSpace(manualVendorCode)
+                ? manualVendorCode
+                : record.VendorCode;
+            new InspectionWindow(record, consumer, cpf, profile.LoginId, effVendorCode, wf, winLoc,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,
                 onSubmitComplete: PersistSubmitOutcome,

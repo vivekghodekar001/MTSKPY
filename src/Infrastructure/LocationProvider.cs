@@ -70,6 +70,7 @@ public sealed class LocationProvider
         CancellationToken ct = default)
     {
         // 1. Per-record manual override — highest priority.
+        // S5: manual override is officer-supplied, not mocked.
         if (!string.IsNullOrWhiteSpace(manualLat) && !string.IsNullOrWhiteSpace(manualLong))
         {
             return new LocationResult
@@ -78,7 +79,7 @@ public sealed class LocationProvider
                 Lat = manualLat.Trim(),
                 Long = manualLong.Trim(),
                 Accuracy = string.IsNullOrWhiteSpace(manualAccuracy) ? null : manualAccuracy.Trim(),
-                Mocked = true,
+                Mocked = false,
                 Error = null
             };
         }

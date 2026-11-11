@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Jsr")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+cc34d99d851b6bdd20e711f47f446d149b257904")]
 [assembly: System.Reflection.AssemblyProductAttribute("Jsr")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Jsr")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
