@@ -1,0 +1,15 @@
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\bin\Release\net10.0\Mskpy.Application.deps.json
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\bin\Release\net10.0\Mskpy.Application.dll
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\bin\Release\net10.0\Mskpy.Application.pdb
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\bin\Release\net10.0\Mskpy.Domain.dll
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\bin\Release\net10.0\Mskpy.Domain.pdb
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.csproj.AssemblyReference.cache
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.AssemblyInfoInputs.cache
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.AssemblyInfo.cs
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.csproj.CoreCompileInputs.cache
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Ap.F7202D58.Up2Date
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.dll
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\refint\Mskpy.Application.dll
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\Mskpy.Application.pdb
+C:\Users\vivek\Documents\Codex\2026-11-07\https-github-com-fishforks-apk-reverse2\work\windows-next\src\Application\obj\Release\net10.0\ref\Mskpy.Application.dll
