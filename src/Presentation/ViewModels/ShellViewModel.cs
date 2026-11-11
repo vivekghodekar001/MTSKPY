@@ -86,6 +86,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         this.indexPath = indexTsvPath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RenewableEnergyDesktop", "index.tsv");
+        // H5: the index age must be right from the first render, not only once
+        // the harvester has started.
+        RefreshIndexAge();
 
         // R3: Initialize SQLite store
         try
@@ -115,6 +118,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         EditOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "inspection");
         EditJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "jsr");
         CopyDiagnostics = new RelayCommand(_ => desktop.CopyDiagnostics(workflow.Diagnostics));
+        OpenLiveInspectionCommand = new RelayCommand(_ => OpenLiveInspection(), _ => !IsBusy && IsSignedIn && SelectedApplication != null);
         ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
         OpenInspection = new AsyncCommand((_, ct) => OpenInspectionAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && index != null && builder != null && location != null);
     }
@@ -145,7 +149,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (consumer.Length < 15 ||
                 !consumer.StartsWith("MT", StringComparison.OrdinalIgnoreCase) ||
                 !consumer.All(char.IsLetterOrDigit)) return;
-            if (openDetailConsumers.Contains(consumer)) return;
+            if (openDetailConsumers.Contains(consumer))
+            {
+                // H2: say why nothing happened. This used to return silently.
+                Status = $"An inspection for {consumer} is already open.";
+                return;
+            }
             _ = OpenDetailForSearched(consumer, null);
         }
     }
@@ -186,10 +195,30 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             ApplySearch();
         }
     }
-    /// <summary>D1: the officer's own pending queue — their cpf, not yet accepted.</summary>
-    public int MyPendingCount => loaded.Count(InScope);
+    /// <summary>
+    /// D1/H3: the officer's own pending queue — the records seen under their
+    /// cpf that have not been accepted. Counted through record_cpfs with the
+    /// same predicate the list scope uses, so the chip and the rows on screen
+    /// can never disagree.
+    /// </summary>
+    public int MyPendingCount =>
+        store != null && profile != null
+            ? store.CountSeenUnder(profile.LoginId, RecordStatus.Accepted)
+            : loaded.Count(InScope);
     public string MyPendingChip => $"My pending ({MyPendingCount})";
-    public string AllChip => $"All Maharashtra ({loaded.Count})";
+    public string AllChip => $"All Maharashtra ({AllRecordCount})";
+
+    /// <summary>H3: every record the store holds, for the statewide chip.</summary>
+    public int AllRecordCount => store?.Count() ?? loaded.Count;
+
+    /// <summary>H5: the stale-index warning shown in the list header.</summary>
+    public string StaleIndexWarning =>
+        $"Index is stale ({IndexAge}) - new consumers may be missing";
+
+    /// <summary>H5: the nav highlight for the Inspection section.</summary>
+    public bool IsInspectionSection => page == "Applications" || IsInspectionDetails;
+    public bool IsProfilePage => page == "Profile";
+    public bool IsSettingsPage => page == "Settings";
     public ApplicationDocument? SelectedApplication { get => selectedApplication; set { if (Set(ref selectedApplication, value)) RefreshCommands(); } }
     public AsyncCommand Login { get; }
     public AsyncCommand OpenModule { get; }
@@ -207,6 +236,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public RelayCommand ShowNeedsRedo { get; }
     public AsyncCommand RetryRecord { get; }
     public RelayCommand CopyDiagnostics { get; }
+    /// <summary>H1: opens the live inspection form for the selected record.</summary>
+    public RelayCommand OpenLiveInspectionCommand { get; }
 
     async Task LoginAsync(object? _, CancellationToken ct)
     {
@@ -416,7 +447,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void SetPage(string name)
     {
-        page = name; foreach (var property in new[] { nameof(PageTitle), nameof(IsHome), nameof(IsList), nameof(IsReturned), nameof(IsNeedsRedo), nameof(IsFieldPage), nameof(IsDiagnostics), nameof(IsDetails), nameof(IsJsrDetails), nameof(IsInspectionDetails) }) Changed(property); RefreshCommands();
+        page = name; foreach (var property in new[] { nameof(PageTitle), nameof(IsHome), nameof(IsList), nameof(IsReturned), nameof(IsNeedsRedo), nameof(IsFieldPage), nameof(IsDiagnostics), nameof(IsDetails), nameof(IsJsrDetails), nameof(IsInspectionDetails), nameof(IsInspectionSection), nameof(IsProfilePage), nameof(IsSettingsPage) }) Changed(property); RefreshCommands();
     }
     void ShowError(Exception ex)
     {
@@ -438,7 +469,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void RefreshCommands()
     {
-        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh();
+        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); OpenLiveInspectionCommand?.Refresh();
     }
 
     async Task OpenInspectionAsync(CancellationToken ct)
@@ -604,6 +635,19 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // H2: one consumer, one window. The claim is taken here and released in
+        // the finally below whatever happens — a throw between the take and
+        // ShowDialog used to strand the consumer, and every later attempt then
+        // returned silently with no message.
+        lock (openDetailConsumers)
+        {
+            if (!openDetailConsumers.Add(consumer))
+            {
+                Status = $"An inspection for {consumer} is already open.";
+                return;
+            }
+        }
+
         var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride, vendorOverride: VendorOverride);
         var gateway = new InspectionGateway(transport, index);
         var wf = new InspectionWorkflow(gateway, builder, location, vendorOverride: VendorOverride);
@@ -622,21 +666,50 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
             Status = $"Opening detail for {consumer} (cpf={cpf})…";
             var outcome = await gateway.DetailAsync(consumer, cpf, ct);
-            if (!outcome.Ok)
+            InspectionRecord? record = outcome.Ok ? outcome.Record : null;
+            var fromLocalStore = false;
+
+            // H4: the server answered but did not contain this consumer. If the
+            // harvest has it, open it from the store and say so — a record that
+            // is not pending under its owner today must still be openable.
+            if (record == null && outcome.NoMatch)
+            {
+                var stored = store?.GetByConsumerNumber(consumer);
+                if (!string.IsNullOrWhiteSpace(stored?.OriginalJson))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(stored!.OriginalJson!);
+                        record = InspectionRecord.FromJson(doc.RootElement);
+                        fromLocalStore = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Status = $"Local record for {consumer} could not be read: {ex.Message}";
+                    }
+                }
+            }
+
+            if (record == null)
             {
                 Error = outcome.Error ?? $"HTTP {(int)outcome.StatusCode}";
                 Status = "Detail refused.";
                 return;
             }
-            var record = outcome.Record!;
-            Status = $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
-            openDetailConsumers.Add(consumer);
+
+            Status = fromLocalStore
+                ? $"Opened {consumer} from the local store (the server did not return it)."
+                : $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
             var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf, winLoc,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,
                 onSubmitComplete: PersistSubmitOutcome,
                 onVerifyComplete: PersistVerifyOutcome);
-            win.Closed += (_, _) => openDetailConsumers.Remove(consumer);
+            // H4: the banner is the only signal that tells the officer which case
+            // they are in. It lives in the window's fixed footer so it cannot
+            // scroll away.
+            if (fromLocalStore) win.ShowLocalStoreBanner();
+            win.Closed += (_, _) => { lock (openDetailConsumers) openDetailConsumers.Remove(consumer); };
             win.ShowDialog();
         }
         catch (Exception ex)
@@ -644,7 +717,20 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Error = ex.Message;
             Status = "Detail failed.";
         }
-        finally { IsBusy = false; }
+        finally
+        {
+            // H2: release the claim no matter how this ended.
+            lock (openDetailConsumers) openDetailConsumers.Remove(consumer);
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>H1: open the live inspection form for the selected record.</summary>
+    void OpenLiveInspection()
+    {
+        var app = SelectedApplication;
+        if (app == null) { Status = "Select an application first."; return; }
+        _ = OpenDetailForSearched(app.Identity, null);
     }
 
     /// <summary>
@@ -784,6 +870,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }
 
             // Resolve location from record coordinates.
+            if (location == null) { Error = "The location service is not available."; return; }
             var resolved = await location.ResolveAsync(null, null, null, inspRecord.Latitude, inspRecord.Longitude, CancellationToken.None);
             var blobLat = resolved.Lat ?? inspRecord.Latitude ?? "";
             var blobLong = resolved.Long ?? inspRecord.Longitude ?? "";

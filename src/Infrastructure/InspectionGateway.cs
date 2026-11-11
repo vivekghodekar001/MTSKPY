@@ -58,7 +58,7 @@ public sealed class InspectionGateway : IDisposable
         {
             var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
             if (rows.Count == 0)
-                return new DetailOutcome(false, status, body, null, $"No record matches consumer_number {consumerNumber}. Body: {body}");
+                return new DetailOutcome(false, status, body, null, $"No record matches consumer_number {consumerNumber}. Body: {body}", NoMatch: true);
             if (rows.Count > 1)
                 return new DetailOutcome(false, status, body, null, $">1 record ({rows.Count}) matches consumer_number {consumerNumber}. Body: {body}");
             var matched = rows[0];
@@ -89,5 +89,9 @@ public sealed record DetailOutcome(
     HttpStatusCode StatusCode,
     string Body,
     InspectionRecord? Record,
-    string? Error
+    string? Error,
+    // H4: true when the server answered but did not contain this consumer. Only
+    // then may the caller fall back to the local store; a transport failure is
+    // not the same thing.
+    bool NoMatch = false
 );

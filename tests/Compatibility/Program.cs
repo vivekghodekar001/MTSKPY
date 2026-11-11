@@ -174,6 +174,25 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
         Check(after.CpfNo == "02781310", "a re-walk leaves the row's cpf_no unchanged");
         Check(after.SeenCpfs != null && after.SeenCpfs.Contains("02284251"),
             "a re-walk does not drop a cpf the row was seen under");
+
+        // H3: the queue counts go through record_cpfs with the same predicate
+        // the list scope uses, so the chip and the rows can never disagree.
+        Check(ownStore.CountSeenUnder("02284251") == 1,
+            "a consumer seen under two cpfs counts in the first officer's queue");
+        Check(ownStore.CountSeenUnder("02781310") == 1,
+            "a consumer seen under two cpfs counts in the second officer's queue too");
+
+        // A consumer seen under exactly one cpf counts in that queue only.
+        using var solo = JsonDocument.Parse("""
+        {"consumer_number":"MT4420200999999","cpf_no":"02781310","consumer_name":"Seen once","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01"}
+        """);
+        ownStore.UpsertRows(new[] { solo.RootElement }, "02781310");
+        Check(ownStore.CountSeenUnder("02284251") == 1,
+            "a consumer seen under one cpf does not count in the other officer's queue");
+        Check(ownStore.CountSeenUnder("02781310") == 2,
+            "a consumer seen under one cpf counts in that officer's queue");
+        Check(ownStore.CountSeenUnder("09999999") == 0,
+            "an officer who has seen nothing counts nothing");
     }
     finally { try { Directory.Delete(ownDir, true); } catch { } }
 }

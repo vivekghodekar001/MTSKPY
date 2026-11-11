@@ -470,6 +470,32 @@ public sealed class InspectionStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// H3: the number of records seen under a cpf's list. This is the SAME
+    /// predicate the list scope uses — EXISTS over record_cpfs — so the chip
+    /// count and the rows on screen can never disagree.
+    /// </summary>
+    public int CountSeenUnder(string cpf, RecordStatus? excludeStatus = null)
+    {
+        if (string.IsNullOrWhiteSpace(cpf)) return 0;
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT COUNT(*) FROM inspection_records r WHERE EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
+            if (excludeStatus.HasValue) sb.Append(" AND r.status<>@st");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            cmd.Parameters.AddWithValue("@cpf", cpf.Trim());
+            if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+        finally
+        {
+            dbLock.Release();
+        }
+    }
+
     public int Count(bool? firstTimeOnly = null, RecordStatus? status = null)
     {
         dbLock.Wait();

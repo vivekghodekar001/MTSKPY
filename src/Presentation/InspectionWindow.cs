@@ -64,6 +64,16 @@ public sealed class InspectionWindow : Window
     readonly InkCanvas representative = new() { Background = Brushes.White, Height = 110, HorizontalAlignment = HorizontalAlignment.Stretch };
 
     readonly TextBlock status = new() { Margin = new Thickness(0, 2, 0, 2) };
+    // H4: the banner tells the officer which case they are in — server-returned
+    // or opened from the local store. It lives in the fixed footer so it can
+    // never scroll away with the tab content.
+    readonly TextBlock banner = new()
+    {
+        Margin = new Thickness(0, 0, 0, 8),
+        TextWrapping = TextWrapping.Wrap,
+        Visibility = Visibility.Collapsed,
+        Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
+    };
     readonly TextBlock bodyBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
     readonly TextBlock manifestBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
     readonly TextBlock locationBox = new() { Margin = new Thickness(0, 6, 0, 0) };
@@ -406,6 +416,8 @@ public sealed class InspectionWindow : Window
 
         // Y2: Footer row — manifest box, buttons row, body box
         var footer = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        // H4: the banner is part of the fixed footer, above the status line.
+        footer.Children.Add(banner);
         // Z5: One status line — collapses when empty, accent brush when populated.
         SetStatus("");
         footer.Children.Add(status);
@@ -471,6 +483,16 @@ public sealed class InspectionWindow : Window
     /// Safe to call from any thread: the debounce timer and the harvester both
     /// report from background threads.
     /// </summary>
+    /// <summary>
+    /// H4: shown when the record was opened from the local store because the
+    /// server did not return it. A submit on such a record may be rejected.
+    /// </summary>
+    public void ShowLocalStoreBanner()
+    {
+        banner.Text = "Opened from the local store. The server did not return this record; submit may be rejected.";
+        banner.Visibility = Visibility.Visible;
+    }
+
     void SetStatus(string? text)
     {
         void Apply()
