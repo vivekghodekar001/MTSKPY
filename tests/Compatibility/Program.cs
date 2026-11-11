@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Mskpy.Windows;
 
 var passed = 0;
@@ -46,6 +47,81 @@ Check(SurveyRules.ValidateMilestone("Reviewed", 0) != null && SurveyRules.Valida
 Check(Mskpy.Infrastructure.GeoDistance.Meters(19, 74, 19, 74) == 0, "distance from a position to itself is zero");
 var oneThousandthDegree = Mskpy.Infrastructure.GeoDistance.Meters(19, 74, 19.001, 74);
 Check(oneThousandthDegree > 110 && oneThousandthDegree < 112, "distance to installation uses a spherical-earth metre scale");
+
+// A3: the store must actually persist a record. The INSERT used to name fewer
+// columns than it supplied values, so every write threw and the harvester
+// swallowed it — the walk looked healthy while it stored nothing.
+var storePath = Path.Combine(Path.GetTempPath(), $"mskpy-store-check-{Guid.NewGuid():N}.db");
+try
+{
+    using var store = new Mskpy.Infrastructure.InspectionStore(storePath);
+    store.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+        ConsumerNumber: "MT4420200801626", CpfNo: "02284251", VendorCode: "100038029",
+        ConsumerName: "Store round trip", Latitude: "19.525251", Longitude: "74.119873",
+        InstallDate: "2026-08-01", ReasonToRevert: null, SurveyDurationMinutes: null,
+        IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.New,
+        LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{\"a\":1}",
+        SubmittedDataPath: "C:\\data.json", PhotoPaths: "[\"p.jpg\"]", SignPaths: "[\"s.png\"]"));
+    var read = store.GetByConsumerNumber("MT4420200801626");
+    Check(read != null, "store persists a harvested record");
+    Check(read!.CpfNo == "02284251" && read.VendorCode == "100038029" && read.ConsumerName == "Store round trip",
+        "store round trip keeps cpf, vendor and name");
+    Check(read.SubmittedDataPath == "C:\\data.json" && read.PhotoPaths == "[\"p.jpg\"]" && read.SignPaths == "[\"s.png\"]",
+        "store round trip keeps the submitted-data, photo and sign paths");
+    Check(read.OriginalJson == "{\"a\":1}", "store round trip keeps the original JSON");
+    Check(store.GetAll().Count == 1, "store lists the persisted record");
+    store.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+        ConsumerNumber: "MT4420200801626", CpfNo: "02284251", VendorCode: "100038029",
+        ConsumerName: "Store round trip twice", Latitude: null, Longitude: null,
+        InstallDate: null, ReasonToRevert: null, SurveyDurationMinutes: null,
+        IsFirstTime: false, Status: Mskpy.Infrastructure.RecordStatus.Accepted,
+        LastServerMessage: "ok", LastServerMessageAt: null, OriginalJson: null,
+        SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+    Check(store.GetAll().Count == 1 && store.GetByConsumerNumber("MT4420200801626")!.ConsumerName == "Store round trip twice",
+        "store upserts a record it already holds instead of duplicating it");
+}
+finally { try { File.Delete(storePath); } catch { } }
+
+// A1: the vendor is the record's own vendor_code, in the header AND the body.
+// There is no session vendor any more, so the two can never disagree.
+var vendorDir = Path.Combine(Path.GetTempPath(), $"mskpy-vendor-check-{Guid.NewGuid():N}");
+Directory.CreateDirectory(vendorDir);
+try
+{
+    var photos = new List<string>();
+    for (int i = 0; i < 3; i++)
+    {
+        var p = Path.Combine(vendorDir, $"photo{i}.jpg");
+        File.WriteAllBytes(p, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9, (byte)(i + 1) });
+        photos.Add(p);
+    }
+    var signs = new List<string>();
+    for (int i = 0; i < 2; i++)
+    {
+        var p = Path.Combine(vendorDir, $"sign{i}.png");
+        File.WriteAllBytes(p, new byte[] { 0x89, 0x50, 0x4E, 0x47, (byte)(i + 1) });
+        signs.Add(p);
+    }
+
+    var recordJson = JsonDocument.Parse("""
+    {"consumer_number":"MT4420200801626","cpf_no":"02284251","vendor_code":"100038029","consumer_name":"Vendor check","latitude":"19.525251","longitude":"74.119873","inst_date":"2026-08-01","pump_load":"5 HP"}
+    """);
+    var record = Mskpy.Domain.InspectionRecord.FromJson(recordJson.RootElement);
+    var capture = new CapturingHandler();
+    var transport = new Mskpy.Infrastructure.MskpyInspectionTransport("02284251", vendorDir, capture, "https://vendor-check.invalid");
+    using var gateway = new Mskpy.Infrastructure.InspectionGateway(transport, new Mskpy.Infrastructure.InspectionIndex());
+    var workflow = new Mskpy.Infrastructure.InspectionWorkflow(gateway, new Mskpy.Infrastructure.InspectionMultipartBuilder(), new Mskpy.Infrastructure.LocationProvider(), vendorDir);
+
+    var outcome = await workflow.SubmitAsync(record, photos, signs, null, null, null, null, false, null,
+        CancellationToken.None, sessionLoginId: "02284251");
+
+    Check(capture.VendorHeader == "100038029", "submit sends the record's vendor_code in the client-vendorCode header");
+    Check(capture.BodyVendor == "100038029", "submit sends the record's vendor_code in the body");
+    Check(capture.VendorHeader == capture.BodyVendor, "header vendor equals body vendor on the submit path");
+    Check(outcome.Error == null, "submit passes the gates with the record's vendor");
+}
+finally { try { Directory.Delete(vendorDir, true); } catch { } }
+
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 
 sealed class FakeHandler : HttpMessageHandler
@@ -56,5 +132,31 @@ sealed class FakeHandler : HttpMessageHandler
     {
         Url = request.RequestUri!.ToString(); SentBody = request.Content == null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
         return new HttpResponseMessage(Status) { Content = new StringContent(Body, Encoding.UTF8, "application/json") };
+    }
+}
+
+/// <summary>Captures the client-vendorCode header and the body's vendorCode.</summary>
+sealed class CapturingHandler : HttpMessageHandler
+{
+    public string? VendorHeader;
+    public string? BodyVendor;
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.Headers.TryGetValues("client-vendorCode", out var v)) VendorHeader = string.Join(",", v);
+        if (request.Content != null)
+        {
+            var text = await request.Content.ReadAsStringAsync(cancellationToken);
+            var at = text.IndexOf("\"vendorCode\":\"", StringComparison.Ordinal);
+            if (at >= 0)
+            {
+                var from = at + "\"vendorCode\":\"".Length;
+                var to = text.IndexOf('"', from);
+                if (to > from) BodyVendor = text.Substring(from, to - from);
+            }
+        }
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"hasErrors\":false,\"status\":200,\"message\":\"success\"}", Encoding.UTF8, "application/json")
+        };
     }
 }

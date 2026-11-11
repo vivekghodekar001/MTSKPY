@@ -4,9 +4,16 @@ P9 Mock server for linestaff-inspection (127.0.0.1:15100).
 
 Serves the REAL recs/*.json from G2, ignores &applicationNo like production.
 Endpoints:
-  GET  /mtskpy/linestaff-inspection/applications?userName=<session>              -> list (all records)
-  GET  /mtskpy/linestaff-inspection/applications?applicationNo=<c>&userName=<cpf> -> detail (ignore applicationNo)
+  GET  /mtskpy/linestaff-inspection/applications?userName=<session>              -> list
+  GET  /mtskpy/linestaff-inspection/applications?applicationNo=<c>&userName=<cpf> -> detail
   POST /mtskpy/linestaff-inspection/upload-survey                                -> accept or 500 based on revert state
+
+A2 — harvester proof mode:
+  * The list endpoint answers ANY userName with a ROTATING 10-record slice of
+    recs/. Consecutive requests overlap, so the harvester's dedupe is exercised.
+    (Set SLICE_SIZE=0 to restore the exact "records for this cpf only" behaviour.)
+  * ?fail=429 turns on a sticky 429 mode for the whole server; ?fail=0 turns it
+    off again. This is how the harvester's rate-limit backoff is proved.
 
 Revert behavior (Q1): accept on the SAME POST when reason_to_revert is present
 and the record has inst_date.
@@ -31,17 +38,30 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 15100
 
 # Load all real records at startup.
 RECORDS = {}
+RECORD_LIST = []
 for fn in os.listdir(RECS_DIR):
     if fn.endswith(".json"):
         with open(os.path.join(RECS_DIR, fn), "r", encoding="utf-8-sig") as f:
             rec = json.load(f)
         cn = rec.get("consumer_number", "")
         RECORDS[cn] = rec
+        RECORD_LIST.append(rec)
 
 LAST_POST_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last-post.bin")
 
+# --- A2: harvester-proof behaviour -------------------------------------------
+# The harvester walks thousands of cpfs, so the mock must answer ANY userName.
+# Each request returns a rotating 10-record slice of the real recs/, so
+# consecutive requests overlap and the harvester's dedupe is exercised.
+SLICE_SIZE = int(os.environ.get("MOCK_SLICE_SIZE", "10"))
+_rot = 0
+_fail_mode = None          # None | "429"
+_request_count = 0
+
 
 class MockHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, format, *args):
         sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), format % args))
 
@@ -89,19 +109,50 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
         return None
 
     def do_GET(self):
+        global _rot, _fail_mode, _request_count
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         path = parsed.path
 
         if path == "/mtskpy/linestaff-inspection/applications":
+            _request_count += 1
             user_name = params.get("userName", [""])[0]
             application_no = params.get("applicationNo", [None])[0]
+
+            # A2: ?fail=429 switches the whole server into rate-limit mode,
+            # ?fail=0 switches it back off.
+            fail = params.get("fail", [None])[0]
+            if fail == "429":
+                _fail_mode = "429"
+            elif fail == "0":
+                _fail_mode = None
+
+            if _fail_mode == "429":
+                body = json.dumps({"message": "Too many requests"}).encode("utf-8")
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if SLICE_SIZE > 0 and RECORD_LIST:
+                # Rotating slice: any userName gets records, consecutive calls overlap.
+                start = (_rot * SLICE_SIZE) % len(RECORD_LIST)
+                slice_records = []
+                for i in range(SLICE_SIZE):
+                    slice_records.append(RECORD_LIST[(start + i) % len(RECORD_LIST)])
+                _rot += 1
+                self._send_json(200, slice_records)
+                return
 
             # Production ignores &applicationNo and returns records for userName.
             # The client must select the element whose consumer_number matches.
             records = [r for r in RECORDS.values() if r.get("cpf_no", "") == user_name]
 
             self._send_json(200, records)
+        elif path == "/mock/stats":
+            self._send_json(200, {"requests": _request_count, "fail_mode": _fail_mode, "records": len(RECORD_LIST)})
         else:
             self._send_text(404, f"Not found: {path}")
 
@@ -150,9 +201,10 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = http.server.HTTPServer(("127.0.0.1", PORT), MockHandler)
     print(f"Mock server listening on http://127.0.0.1:{PORT}")
-    print(f"Serving {len(RECORDS)} records from {RECS_DIR}")
+    print(f"Serving {len(RECORD_LIST)} records from {RECS_DIR}")
+    print(f"List mode: rotating {SLICE_SIZE}-record slice for any userName")
     print(f"POST bodies saved to {LAST_POST_BIN}")
-    print(f"Revert endpoint: POST /mtskpy/linestaff-inspection/revert {{'consumer_number': '...'}}")
+    print(f"Rate-limit mode: GET .../applications?userName=x&fail=429  (sticky; fail=0 to clear)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

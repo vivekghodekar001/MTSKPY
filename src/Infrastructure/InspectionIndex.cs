@@ -5,18 +5,52 @@ namespace Mskpy.Infrastructure;
 /// <summary>
 /// Loads index.tsv (consumer_number -> cpf_no) at startup (P2).
 /// Falls back gracefully when the file is absent (app still works from the list).
+/// The file can be reloaded at runtime (A5) so a fresher index takes effect
+/// without restarting the app.
 /// </summary>
 public sealed class InspectionIndex
 {
-    public IReadOnlyDictionary<string, string> Entries { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
-    public bool Loaded { get; }
+    readonly object gate = new();
+    IReadOnlyDictionary<string, string> entries = new Dictionary<string, string>(StringComparer.Ordinal);
+    bool loaded;
+    string? tsvPath;
+
+    public IReadOnlyDictionary<string, string> Entries
+    {
+        get { lock (gate) return entries; }
+    }
+
+    public bool Loaded
+    {
+        get { lock (gate) return loaded; }
+    }
+
+    /// <summary>The file this index was loaded from (null = no path given).</summary>
+    public string? Path => tsvPath;
 
     public InspectionIndex(string? tsvPath = null)
     {
-        var dict = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (tsvPath != null && File.Exists(tsvPath))
+        this.tsvPath = tsvPath;
+        Reload();
+    }
+
+    /// <summary>
+    /// A5: re-read the tsv from disk. Safe to call at any time; the previous
+    /// contents are replaced atomically so a reader never sees a half-loaded file.
+    /// Passing a path points the index at a different file.
+    /// </summary>
+    public void Reload(string? path = null)
+    {
+        lock (gate)
         {
-            foreach (var line in File.ReadAllLines(tsvPath))
+            if (path != null) tsvPath = path;
+        }
+        var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+        var current = tsvPath;
+        var exists = current != null && File.Exists(current);
+        if (current != null && exists)
+        {
+            foreach (var line in File.ReadAllLines(current))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split('\t');
@@ -24,8 +58,11 @@ public sealed class InspectionIndex
                     dict[parts[0].Trim()] = parts[1].Trim();
             }
         }
-        Entries = dict;
-        Loaded = tsvPath != null && File.Exists(tsvPath);
+        lock (gate)
+        {
+            entries = dict;
+            loaded = exists;
+        }
     }
 
     /// <summary>Resolve a consumer number to its cpf_no. Returns null if unknown.</summary>

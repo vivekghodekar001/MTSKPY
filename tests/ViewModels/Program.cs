@@ -1,3 +1,4 @@
+using System.IO;
 using Mskpy.Application;
 using Mskpy.Domain;
 using Mskpy.Presentation.Services;
@@ -7,14 +8,28 @@ var passes = 0;
 void Check(bool ok, string label) { if (!ok) throw new Exception(label); passes++; Console.WriteLine("PASS " + label); }
 var gateway = new FakeGateway(); var secrets = new FakeSecrets(); var desktop = new FakeDesktop();
 var workflow = new ClientWorkflow(gateway);
-using var shell = new ShellViewModel(workflow, secrets, desktop);
+// A3: the list is served from the store, so the test gets its own seeded store
+// instead of whatever the live app happens to hold.
+var storePath = Path.Combine(Path.GetTempPath(), $"vm-store-{Guid.NewGuid():N}.db");
+using (var seed = new Mskpy.Infrastructure.InspectionStore(storePath))
+{
+    foreach (var name in new[] { "Record 119", "Record 5", "Record 7" })
+        seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+            ConsumerNumber: "MT" + name.GetHashCode().ToString("X8"), CpfNo: "02284251",
+            VendorCode: "100038029", ConsumerName: name, Latitude: "19.525251", Longitude: "74.119873",
+            InstallDate: "2026-08-01", ReasonToRevert: null, SurveyDurationMinutes: null,
+            IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.New,
+            LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+            SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+}
+using var shell = new ShellViewModel(workflow, secrets, desktop, storePath: storePath);
 await shell.Login.ExecuteAsync();
 Check(shell.HasError && gateway.LoginCalls == 0, "empty username fails before contacting backend");
 shell.Username = "sample"; await shell.Login.ExecuteAsync();
 Check(shell.IsSignedIn && secrets.Reads == 2, "successful login clears view input at action time");
 Check(!shell.GetType().GetProperties().Any(x => x.Name.Contains("Password")), "password is not a bindable view-model property");
 await shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
-Check(shell.IsList && shell.Applications.Count == 100, "list applies display cap without extra backend calls");
+Check(shell.IsList && shell.Applications.Count == 3 && gateway.LoadCalls == 1, "list comes from the store with no display cap and no live fallback");
 var reads = gateway.LoadCalls; shell.Search = "Record 119";
 Check(shell.Applications.Count == 1 && gateway.LoadCalls == reads, "search filters locally without transmitting query keystrokes");
 shell.SelectedApplication = shell.Applications[0]; shell.ViewDetails.Execute(null);

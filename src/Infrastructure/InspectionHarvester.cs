@@ -118,18 +118,16 @@ public sealed class InspectionHarvester : IDisposable
             var url = $"{inspectionHost}/mtskpy/linestaff-inspection/applications?userName={Uri.EscapeDataString(cpf)}";
             var response = await http.GetAsync(url);
 
-            // X3: 429/503 handling
+            // X3: 429/503 handling. A rate-limited server must not stop the walk:
+            // the cadence drops to one request every two seconds and the harvester
+            // keeps going indefinitely. The old 60s stall on the second
+            // consecutive 429 froze the walk for a minute; the steady 2s cadence
+            // is both what the server asked for and what A2 requires.
             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests ||
                 response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
             {
                 consecutiveErrors++;
-                if (consecutiveErrors >= 2)
-                {
-                    OnStatusChanged?.Invoke($"Harvester rate-limited ({response.StatusCode}), pausing 60s…");
-                    requestInterval = TimeSpan.FromSeconds(2);
-                    timer?.Change(TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
-                    return;
-                }
+                RateLimitHits++;
                 if (!backoffMode)
                 {
                     OnStatusChanged?.Invoke($"Harvester rate-limited ({response.StatusCode}), slowing to 1 req/2s…");
@@ -148,14 +146,15 @@ public sealed class InspectionHarvester : IDisposable
                 timer?.Change(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
             }
 
-            if (!response.IsSuccessStatusCode) return;
+            if (!response.IsSuccessStatusCode) { RequestErrors++; return; }
 
             var body = await response.Content.ReadAsStringAsync();
             JsonDocument? doc = null;
-            try { doc = JsonDocument.Parse(body); } catch { return; }
+            try { doc = JsonDocument.Parse(body); } catch { RequestErrors++; return; }
 
             var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
             int added = 0;
+            int duplicates = 0;
             foreach (var row in rows)
             {
                 var record = InspectionRecord.FromJson(row);
@@ -180,20 +179,39 @@ public sealed class InspectionHarvester : IDisposable
                 );
                 var isNew = store.GetByConsumerNumber(record.ConsumerNumber) == null;
                 store.Upsert(stored);
-                if (isNew) added++;
+                if (isNew) added++; else duplicates++;
             }
 
+            RecordsSeen += rows.Count;
+            RecordsAdded += added;
+            DuplicateRecords += duplicates;
             if (added > 0) OnRecordsAdded?.Invoke(added);
         }
         catch (OperationCanceledException) { throw; }
-        catch
+        catch (Exception ex)
         {
-            // Swallow individual failures; harvester continues.
+            // A store or transport failure must not stop the walk, but it must
+            // not be silent either: a swallowed write once made the harvester
+            // look healthy while it persisted nothing at all.
+            StoreErrors++;
+            LastError = ex.Message;
+            OnStatusChanged?.Invoke($"Harvester error on cpf {cpf}: {ex.Message}");
         }
     }
 
     public int TotalCpfIds => cpfIds.Count;
     public int ProcessedCpfIds => currentCpfIndex;
+
+    // A2: harvest counters, so the walk can be proven without guessing.
+    public int RecordsSeen { get; private set; }        // rows the server returned
+    public int RecordsAdded { get; private set; }       // rows that were new to the store
+    public int DuplicateRecords { get; private set; }   // rows the store already had
+    public int RateLimitHits { get; private set; }      // 429/503 responses
+    public int RequestErrors { get; private set; }       // other non-2xx responses
+    public int StoreErrors { get; private set; }         // exceptions while storing
+    public string? LastError { get; private set; }
+    public bool IsPaused { get { lock (pauseLock) return paused; } }
+    public TimeSpan RequestInterval => requestInterval;
 
     private static string? TryGetString(JsonElement el, string key) =>
         el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

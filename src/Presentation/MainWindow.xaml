@@ -73,6 +73,10 @@
      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Visibility="{Binding IsFieldPage,Converter={StaticResource BoolVisibility}}"><StackPanel>
       <ItemsControl ItemsSource="{Binding Fields}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Margin="0,0,0,20"><TextBlock Text="{Binding Label}" FontSize="13" Foreground="{StaticResource Muted}"/><TextBlock Text="{Binding Value}" FontSize="17" Margin="0,6,0,0"/></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
       <Button Content="Copy login structure" Command="{Binding CopyDiagnostics}" HorizontalAlignment="Left" Visibility="{Binding IsDiagnostics,Converter={StaticResource BoolVisibility}}"/>
+      <StackPanel Orientation="Horizontal" Visibility="{Binding IsDiagnostics,Converter={StaticResource BoolVisibility}}" Margin="0,12,0,0">
+       <TextBox Text="{Binding IndexPath,UpdateSourceTrigger=PropertyChanged}" Width="520" AutomationProperties.Name="Index file path" ToolTip="Path to index.tsv — the file the harvester walks"/>
+       <Button Content="Reload index" Command="{Binding ReloadIndexCommand}" Margin="12,0,0,0" Padding="14,6" ToolTip="Re-read index.tsv and restart the harvester without restarting the app"/>
+      </StackPanel>
       <Button Content="Open offline inspection draft" Command="{Binding EditOffline}" HorizontalAlignment="Left" Visibility="{Binding IsInspectionDetails,Converter={StaticResource BoolVisibility}}"/>
       <Button Content="Open Joint Survey Report" Command="{Binding EditJsr}" HorizontalAlignment="Left" Visibility="{Binding IsJsrDetails,Converter={StaticResource BoolVisibility}}"/>
       </StackPanel></ScrollViewer>

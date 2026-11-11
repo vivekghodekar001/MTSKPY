@@ -142,7 +142,7 @@ internal static class Program
             new Mskpy.Infrastructure.LocationProvider { GeolocatorTimeout = TimeSpan.FromSeconds(1) });
         var owner = new Window();
         var inspection = new InspectionWindow(
-            record, record.ConsumerNumber, record.CpfNo, "synthetic-login", "100038029", workflow,
+            record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow,
             new Mskpy.Presentation.Services.WindowsLocationProvider(TimeSpan.FromSeconds(1)), owner);
 
         var root = (FrameworkElement)inspection.Content;

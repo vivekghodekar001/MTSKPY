@@ -106,7 +106,8 @@ public sealed class InspectionStore : IDisposable
                 INSERT INTO inspection_records
                 (consumer_number, cpf_no, vendor_code, consumer_name, latitude, longitude,
                  inst_date, reason_to_revert, survey_duration_minutes, is_first_time,
-                 status, last_server_message, last_server_message_at, original_json, updated_at)
+                 status, last_server_message, last_server_message_at, original_json, updated_at,
+                 submitted_data_path, photo_paths, sign_paths)
                 VALUES (@cn, @cpf, @vc, @cnm, @lat, @lon, @inst, @rtv, @sdm, @ift, @st, @lsm, @lsma, @oj, @ua,
                         @sdp, @pp, @sp)
                 ON CONFLICT(consumer_number) DO UPDATE SET

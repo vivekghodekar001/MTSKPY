@@ -38,15 +38,13 @@ public sealed class MskpyInspectionTransport : IDisposable
     private readonly HttpClient http;
     private readonly string logPath;
     private readonly string loginId;
-    private readonly string? vendorCode;
     private readonly string deviceId;
     private readonly string inspectionHost;
 
-    public MskpyInspectionTransport(string loginId, string? vendorCode = null, string? logDirectory = null, HttpMessageHandler? handler = null, string? inspectionHost = null)
+    public MskpyInspectionTransport(string loginId, string? logDirectory = null, HttpMessageHandler? handler = null, string? inspectionHost = null)
     {
         if (string.IsNullOrWhiteSpace(loginId)) throw new ArgumentException("Login id is required for /mtskpy/* calls.", nameof(loginId));
         this.loginId = loginId;
-        this.vendorCode = vendorCode;
         this.deviceId = Guid.NewGuid().ToString("N");
         this.inspectionHost = inspectionHost ?? DefaultInspectionHost;
 
@@ -83,8 +81,8 @@ public sealed class MskpyInspectionTransport : IDisposable
         request.Headers.TryAddWithoutValidation("client-device", ClientDevice);
         request.Headers.TryAddWithoutValidation("user-agent", UserAgent);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
-        if (!string.IsNullOrWhiteSpace(vendorCode))
-            request.Headers.TryAddWithoutValidation("client-vendorCode", vendorCode);
+        // A1: no session vendor. The client-vendorCode header is set on the
+        // submit request from the record's own vendor_code.
         // R1: NO Authorization header for /mtskpy/*.
         return request;
     }

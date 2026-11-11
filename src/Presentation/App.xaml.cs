@@ -37,13 +37,12 @@ public partial class App : System.Windows.Application
         // V5: Headless CLI submit mode. If --submit=<consumer> is passed,
         // run the submit flow headlessly and exit.
         var cliArgs = Environment.GetCommandLineArgs();
-        string? cliSubmit = null, cliLogin = null, cliVendor = null, cliPhotosDir = null, cliIndexPath = null;
+        string? cliSubmit = null, cliLogin = null, cliPhotosDir = null, cliIndexPath = null;
         bool cliHostOverride = false;
         foreach (var a in cliArgs)
         {
             if (a.StartsWith("--submit=")) cliSubmit = a.Substring("--submit=".Length);
             else if (a.StartsWith("--login=")) cliLogin = a.Substring("--login=".Length);
-            else if (a.StartsWith("--vendor=")) cliVendor = a.Substring("--vendor=".Length);
             else if (a.StartsWith("--photos=")) cliPhotosDir = a.Substring("--photos=".Length);
             else if (a.StartsWith("--index=")) cliIndexPath = a.Substring("--index=".Length);
             else if (a.StartsWith("--host=")) cliHostOverride = true;
@@ -69,7 +68,6 @@ public partial class App : System.Windows.Application
 
             shell.CliSubmitConsumer = cliSubmit;
             shell.CliSubmitLogin = cliLogin ?? "";
-            shell.CliSubmitVendor = cliVendor ?? "";
             shell.CliSubmitPhotosDir = cliPhotosDir ?? "";
 
             var exitCode = await shell.RunCliSubmitAsync();

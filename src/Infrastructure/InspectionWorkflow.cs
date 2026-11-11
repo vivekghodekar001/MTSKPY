@@ -40,15 +40,13 @@ public sealed class InspectionWorkflow
     private readonly InspectionGateway gateway;
     private readonly InspectionMultipartBuilder builder;
     public readonly LocationProvider location;
-    public readonly string? HeaderVendorCode; // S4: session vendor code for client-vendorCode header
     private readonly string dataDirectory;
 
-    public InspectionWorkflow(InspectionGateway gateway, InspectionMultipartBuilder builder, LocationProvider location, string? headerVendorCode = null, string? dataDirectory = null)
+    public InspectionWorkflow(InspectionGateway gateway, InspectionMultipartBuilder builder, LocationProvider location, string? dataDirectory = null)
     {
         this.gateway = gateway;
         this.builder = builder;
         this.location = location;
-        this.HeaderVendorCode = headerVendorCode;
         this.dataDirectory = dataDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RenewableEnergyDesktop", "inspection-data");
@@ -81,7 +79,6 @@ public sealed class InspectionWorkflow
         string? allowedDistanceMeter,
         bool distanceRestricted,
         IReadOnlyDictionary<string, object?>? extraData = null,
-        string? sessionVendorCode = null,
         CancellationToken ct = default,
         DateTimeOffset? formOpenTime = null,
         IReadOnlyDictionary<string, CheckAnswer>? checkAnswers = null,
@@ -251,11 +248,10 @@ public sealed class InspectionWorkflow
             $"accuracy={locationAccuracy}, mocked={loc.Mocked}, " +
             $"distanceFromInst={distanceFromInst.ToString("0.##", CultureInfo.InvariantCulture)}m" +
             (loc.Error != null ? $", error={loc.Error}" : "");
-        // H-A: the body vendor is the SESSION vendor (userInfo.vendorCode); the
-        // record vendor is only a fallback when the session has none.
-        dataDict["vendorCode"] = !string.IsNullOrWhiteSpace(sessionVendorCode)
-            ? sessionVendorCode
-            : (record.VendorCode ?? "");
+        // A1: the vendor is the record's own vendor_code. The same value goes in
+        // the body and in the client-vendorCode header — there is no session vendor.
+        var vendorCode = record.VendorCode ?? "";
+        dataDict["vendorCode"] = vendorCode;
         // R1: username = session loginId (bytecode 532909-532915); cpf = the
         // record's own cpf_no (bytecode 532714-532725).
         dataDict["username"] = sessionLogin;
@@ -305,8 +301,8 @@ public sealed class InspectionWorkflow
         request.Headers.TryAddWithoutValidation("client-device-id", Guid.NewGuid().ToString("N"));
         request.Headers.TryAddWithoutValidation("client-device", "Windows-Desktop");
         request.Headers.TryAddWithoutValidation("user-agent", "okhttp/4.12.0");
-        if (!string.IsNullOrWhiteSpace(HeaderVendorCode))
-            request.Headers.TryAddWithoutValidation("client-vendorCode", HeaderVendorCode);
+        if (!string.IsNullOrWhiteSpace(vendorCode))
+            request.Headers.TryAddWithoutValidation("client-vendorCode", vendorCode);
         request.Content = built.Content;
 
         var manifestText = string.Join("\n  ", built.Manifest.Select(m =>
@@ -324,7 +320,8 @@ public sealed class InspectionWorkflow
                 : " (DIFFER: username is the session loginId, cpf is the record's cpf_no)") + "\n" +
             $"Source: distance={dataDict["distanceFromInst"]}, locationMocked={dataDict["locationMocked"]}, " +
             $"locationSource={loc.Source}, mocked={loc.Mocked}, accuracy={locationAccuracy}, " +
-            $"vendorHeader={HeaderVendorCode ?? "(none)"}, vendorBody={dataDict["vendorCode"]}", ct);
+            // A1: one vendor value, logged once pre-send. Header and body are the same.
+            $"vendor={vendorCode}", ct);
 
         // R7: No retry on 2xx. Never infer success from a status code.
         return new SubmitOutcome(status == HttpStatusCode.OK, status, body, null, built.DataFilePath, built.Manifest, locationSummary);

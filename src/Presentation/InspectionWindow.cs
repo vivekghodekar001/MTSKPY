@@ -45,7 +45,8 @@ public sealed class InspectionWindow : Window
     readonly string consumerNumber;
     readonly string cpfNo;
     readonly string loginId;
-    readonly string? vendorCode;
+    // A1: there is no session vendor code. The vendor always comes from the
+    // record's own vendor_code, and the header and body carry the same value.
     // P3: the harvester is paused while an upload is in flight.
     readonly InspectionHarvester? harvester;
     readonly InspectionStore? store; // W1
@@ -96,7 +97,6 @@ public sealed class InspectionWindow : Window
         string consumerNumber,
         string cpfNo,
         string loginId,
-        string? vendorCode,
         InspectionWorkflow workflow,
         WindowsLocationProvider winLoc,
         Window owner,
@@ -109,7 +109,6 @@ public sealed class InspectionWindow : Window
         this.consumerNumber = consumerNumber;
         this.cpfNo = cpfNo;
         this.loginId = loginId;
-        this.vendorCode = vendorCode;
         this.workflow = workflow;
         this.winLoc = winLoc;
         this.harvester = harvester;
@@ -736,11 +735,8 @@ public sealed class InspectionWindow : Window
         SetStatus("Submitting…");
         try
         {
-            // S8: vendor mismatch is a warning, not a refusal — submit proceeds.
-            if (!string.IsNullOrWhiteSpace(vendorCode) &&
-                !string.IsNullOrWhiteSpace(record.VendorCode) &&
-                !string.Equals(vendorCode, record.VendorCode, StringComparison.Ordinal))
-                SetStatus($"Warning: session vendor {vendorCode} ≠ record vendor {record.VendorCode}. Submitting anyway.");
+            // A1: no vendor gate. The vendor is the record's own vendor_code and
+            // goes into both the header and the body.
 
             // T4: installer field validation (bytecode Yup: non-empty name,
             // mobile ^[1-9]\d{9,} 10+ digits).
@@ -919,7 +915,6 @@ public sealed class InspectionWindow : Window
                 allowedDistText,
                 distRestrictedChecked,
                 extraData,
-                vendorCode,
                 CancellationToken.None,
                 formOpenTime: formOpenTime,
                 checkAnswers: answers,

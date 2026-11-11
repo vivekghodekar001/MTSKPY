@@ -26,6 +26,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     readonly WindowsLocationProvider? winLoc;
     readonly string? inspectionHostOverride;
     readonly string? indexTsvPath;
+    // A5: the index path is runtime-editable so the tsv can be reloaded in place.
+    string indexPath = "";
+    public string IndexPath { get => indexPath; set => Set(ref indexPath, value?.Trim() ?? ""); }
+    public RelayCommand ReloadIndexCommand { get; }
     IReadOnlyList<ApplicationDocument> loaded = [];
     int generation;
     string username = "", role = "Employee", search = "", status = "Sign in to test the existing account service.", error = "", page = "Home";
@@ -37,28 +41,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     // X4: track consumers with open detail windows to prevent double-open.
     readonly HashSet<string> openDetailConsumers = new();
     // Manual session fields (P0/P1: manual session without full sign-in).
-    string manualLoginId = "", manualVendorCode = "";
-    // X1: session vendor code, persisted per login id under LocalAppData.
-    readonly VendorCodeStore? vendorCodeStore;
-    public string VendorCode
-    {
-        get => manualVendorCode;
-        set
-        {
-            if (Set(ref manualVendorCode, value?.Trim() ?? ""))
-            {
-                vendorCodeStore?.Set(Username, manualVendorCode);
-                Changed(nameof(IsVendorConfigured));
-            }
-        }
-    }
-    public bool IsVendorConfigured => !string.IsNullOrWhiteSpace(manualVendorCode);
-    public RelayCommand ClearVendorCode { get; }
+    string manualLoginId = "";
+    // A1: there is no session vendor code. The vendor always comes from the
+    // record's own vendor_code.
 
     // R3: Background harvester + SQLite store
     readonly InspectionStore? store;
     InspectionHarvester? harvester;
-    bool harvesterStarted;
 
     // R4/R5: Record classification + status counts
     int _firstTimeCount, _reInspectionCount, _returnedCount, _failedCount;
@@ -81,35 +70,27 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         LocationProvider? location = null,
         WindowsLocationProvider? winLoc = null,
         string? inspectionHostOverride = null,
-        string? indexTsvPath = null)
+        string? indexTsvPath = null,
+        string? storePath = null)
     {
         this.workflow = workflow; this.secret = secret; this.desktop = desktop;
         this.index = index; this.builder = builder; this.location = location; this.winLoc = winLoc;
         this.inspectionHostOverride = inspectionHostOverride;
         this.indexTsvPath = indexTsvPath;
+        this.indexPath = indexTsvPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RenewableEnergyDesktop", "index.tsv");
 
         // R3: Initialize SQLite store
         try
         {
             var dbDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenewableEnergyDesktop");
             Directory.CreateDirectory(dbDir);
-            store = new InspectionStore(Path.Combine(dbDir, "inspection-store.db"));
+            store = new InspectionStore(storePath ?? Path.Combine(dbDir, "inspection-store.db"));
         }
         catch
         {
             store = null; // Store optional; app still works without persistence
-        }
-
-        // X1: Initialize vendor code store (persisted per login id)
-        try
-        {
-            var vendorDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenewableEnergyDesktop");
-            Directory.CreateDirectory(vendorDir);
-            vendorCodeStore = new VendorCodeStore(vendorDir);
-        }
-        catch
-        {
-            vendorCodeStore = null;
         }
 
         selectedScheme = Schemes[0];
@@ -128,7 +109,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         EditOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "inspection");
         EditJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "jsr");
         CopyDiagnostics = new RelayCommand(_ => desktop.CopyDiagnostics(workflow.Diagnostics));
-        ClearVendorCode = new RelayCommand(_ => { VendorCode = ""; });
+        ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
         OpenInspection = new AsyncCommand((_, ct) => OpenInspectionAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && index != null && builder != null && location != null);
     }
 
@@ -163,6 +144,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
     }
     public string Status { get => status; private set => Set(ref status, value); }
+    // A4: the harvester's own progress line, kept apart from the operator status.
+    string harvesterStatus = "";
+    public string HarvesterStatus => harvesterStatus;
     public string Error { get => error; private set { if (Set(ref error, value)) Changed(nameof(HasError)); } }
     public bool HasError => Error.Length > 0;
     public bool IsBusy { get => busy; private set { if (Set(ref busy, value)) { Changed(nameof(IsIdle)); RefreshCommands(); } } }
@@ -181,7 +165,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool IndexLoaded => index?.Loaded ?? false;
     public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page;
     public string ModuleDescription => currentModule?.Description ?? "";
-    public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded. Refine search for more than 100 matches.";
+    public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
     public ApplicationDocument? SelectedApplication { get => selectedApplication; set { if (Set(ref selectedApplication, value)) RefreshCommands(); } }
     public AsyncCommand Login { get; }
     public AsyncCommand OpenModule { get; }
@@ -210,8 +194,6 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             ct.ThrowIfCancellationRequested();
             if (version != generation) return;
             profile = account; Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut));
-            // X1: load the stored vendor code for this login id.
-            VendorCode = vendorCodeStore?.Get(profile.LoginId) ?? "";
             NavigateTo("Home"); Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; } }
@@ -229,39 +211,37 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         var version = ++generation; IsBusy = true; Error = ""; loaded = []; Applications.Clear(); SelectedApplication = null; Changed(nameof(RecordCount)); Status = "Loading account applications…";
         try
         {
-            // X4: Read from SQLite store; live list stays one input via the harvester.
-            // Fall back to live API when the store is empty (e.g., first run).
+            // A3: the list rows come from the STORE only — the live list is never
+            // a fallback for an empty store. The live call below is kept purely
+            // as the session-liveness probe: it is what detects an expired
+            // session and what makes opening the module cancellable. Its payload
+            // is never used as list data.
+            await workflow.LoadAsync(currentModule.Key, ct);
+            ct.ThrowIfCancellationRequested();
+            if (version != generation) return;
+
             if (store != null)
             {
                 var stored = store.GetAll();
-                if (stored.Count > 0)
-                {
-                    loaded = stored.Select(r => new ApplicationDocument(
-                        Identity: r.ConsumerNumber,
-                        Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
-                        Fields: new DisplayField[]
-                        {
-                            new("Consumer", r.ConsumerNumber),
-                            new("Name", r.ConsumerName ?? ""),
-                            new("Vendor", r.VendorCode ?? ""),
-                            new("Status", r.Status.ToString())
-                        },
-                        OriginalJson: r.OriginalJson ?? ""
-                    )).ToList();
-                }
-                else
-                {
-                    var result = await workflow.LoadAsync(currentModule.Key, ct);
-                    loaded = result;
-                }
+                loaded = stored.Select(r => new ApplicationDocument(
+                    Identity: r.ConsumerNumber,
+                    Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
+                    Fields: new DisplayField[]
+                    {
+                        new("Consumer", r.ConsumerNumber),
+                        new("Name", r.ConsumerName ?? ""),
+                        new("Vendor", r.VendorCode ?? ""),
+                        new("Status", r.Status.ToString())
+                    },
+                    OriginalJson: r.OriginalJson ?? ""
+                )).ToList();
+                if (stored.Count == 0)
+                    Status = "The store is empty. The harvester fills it from index.tsv — check Diagnostics.";
             }
             else
             {
-                var result = await workflow.LoadAsync(currentModule.Key, ct);
-                loaded = result;
+                loaded = [];
             }
-            ct.ThrowIfCancellationRequested();
-            if (version != generation) return;
             ApplySearch(); Status = $"Loaded {loaded.Count} applications.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) Status = "Loading cancelled."; }
@@ -270,7 +250,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     void ApplySearch()
     {
         Applications.Clear();
-        foreach (var row in loaded.Where(x => string.IsNullOrWhiteSpace(Search) || x.Fields.Any(f => f.Value.Contains(Search, StringComparison.OrdinalIgnoreCase))).Take(100)) Applications.Add(row);
+        // A3: the whole store is listed. Row virtualisation (recycling) keeps the
+        // scroll smooth with thousands of rows, so the old 100-row cap is gone.
+        foreach (var row in loaded.Where(x => string.IsNullOrWhiteSpace(Search) || x.Fields.Any(f => f.Value.Contains(Search, StringComparison.OrdinalIgnoreCase))))
+            Applications.Add(row);
         if (SelectedApplication != null && !Applications.Contains(SelectedApplication)) SelectedApplication = null;
         Changed(nameof(RecordCount));
         RefreshRecordCounts();
@@ -336,7 +319,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
         else if (destination == "Diagnostics")
         {
-            Fields.Add(new("Build", "0.5 · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
+            Fields.Add(new("Build", "0.5 · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Index path", IndexPath)); Fields.Add(new("Harvester", HarvesterStatus)); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
             Fields.Add(new("Manual login id", manualLoginId));
             // Vendor code is an editable TextBox, not a read-only field
         }
@@ -360,14 +343,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         _refreshTimer?.Dispose(); _refreshTimer = null;
         CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Home"); IsBusy = false;
-        harvester?.Dispose(); harvester = null; harvesterStarted = false;
+        harvester?.Dispose(); harvester = null;
         store?.Dispose();
-        vendorCodeStore?.Dispose();
         Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut)); Status = "Signed out.";
     }
     void RefreshCommands()
     {
-        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); ClearVendorCode?.Refresh();
+        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh();
     }
 
     async Task OpenInspectionAsync(CancellationToken ct)
@@ -381,47 +363,57 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         await LoadAsync(ct);
 
         // R3: Start background harvester (iterate cpf ids from index.tsv, one request/sec, SQLite store)
-        if (store != null && index != null && !harvesterStarted)
-        {
-            var harvesterIndex = indexTsvPath ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "RenewableEnergyDesktop", "index.tsv");
-            var harvesterCursor = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "RenewableEnergyDesktop", "harvester-cursor.txt");
-            harvester = new InspectionHarvester(store, harvesterIndex, inspectionHostOverride ?? "https://mobileappnj.mahadiscom.in", harvesterCursor);
-            harvester.OnRecordsAdded += added =>
-            {
-                _newCount += added;
-                Changed(nameof(NewCountBadge));
-                RefreshRecordCounts();
-            };
-            harvester.Start();
-            harvesterStarted = true;
-        }
+        StartHarvester();
+    }
 
-        // F6: Start background refresh of new customers (every 60s)
-        _refreshTimer?.Dispose();
-        _refreshTimer = new System.Threading.Timer(async _ =>
+    /// <summary>
+    /// A5: the index file can change while the app is running. Reloading re-reads
+    /// the tsv, restarts the harvester against it and keeps the session alive.
+    /// </summary>
+    void StartHarvester()
+    {
+        if (store == null) return;
+        harvester?.Dispose();
+        harvester = null;
+        if (!File.Exists(IndexPath))
         {
-            if (IsBusy || currentModule?.Key != "inspection") return;
-            try
-            {
-                var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride);
-                var gw = new InspectionGateway(transport, index!);
-                var (listStatus, _, listRecords) = await gw.ListAsync(CancellationToken.None);
-                if ((int)listStatus >= 400) return;
-                var incoming = listRecords.Select(r => r.ConsumerNumber).ToHashSet();
-                var existing = loaded.Select(r => r.Identity).ToHashSet();
-                var trulyNew = incoming.Where(c => !existing.Contains(c)).ToList();
-                if (trulyNew.Count > 0)
-                {
-                    _newCount += trulyNew.Count;
-                    Changed(nameof(NewCountBadge));
-                }
-            }
-            catch { /* swallow - background refresh must not disturb */ }
-        }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+            Status = $"Index not found: {IndexPath}. Set the path and reload.";
+            return;
+        }
+        var harvesterCursor = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RenewableEnergyDesktop", "harvester-cursor.txt");
+        harvester = new InspectionHarvester(store, IndexPath, inspectionHostOverride ?? "https://mobileappnj.mahadiscom.in", harvesterCursor);
+        harvester.OnRecordsAdded += added =>
+        {
+            // A4: the badge counts what the harvester actually added.
+            _newCount += added;
+            Changed(nameof(NewCountBadge));
+            RefreshRecordCounts();
+        };
+        harvester.OnStatusChanged += text =>
+        {
+            // The harvester reports every cpf it walks; that must not overwrite the
+            // status line, which carries the operator's actions.
+            harvesterStatus = text;
+            Changed(nameof(HarvesterStatus));
+        };
+        harvester.Start();
+    }
+
+    /// <summary>A5: point the app at an index file and reload it without a restart.</summary>
+    void ReloadIndex()
+    {
+        var path = IndexPath?.Trim() ?? "";
+        if (path.Length == 0) { Error = "Enter the path to index.tsv."; return; }
+        if (!File.Exists(path)) { Error = $"Index file not found: {path}"; return; }
+        IndexPath = path;
+        index?.Reload(path);
+        Changed(nameof(IndexLoaded));
+        StartHarvester();
+        Status = $"Index reloaded: {path} ({index?.Entries.Count ?? 0} consumers)";
+        // Refresh the Diagnostics fields so the new index is shown at once.
+        if (page == "Diagnostics") NavigateTo("Diagnostics");
     }
 
     async Task OpenDetailForSearched(string consumer, string? cpf, CancellationToken ct = default)
@@ -434,7 +426,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
         var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride);
         var gateway = new InspectionGateway(transport, index);
-        var wf = new InspectionWorkflow(gateway, builder, location, headerVendorCode: manualVendorCode);
+        var wf = new InspectionWorkflow(gateway, builder, location);
 
         Error = ""; IsBusy = true;
         try
@@ -458,12 +450,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }
             var record = outcome.Record!;
             Status = $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
-            // S8: prefill vendor code from record if session vendor not set.
-            var effVendorCode = !string.IsNullOrWhiteSpace(manualVendorCode)
-                ? manualVendorCode
-                : record.VendorCode;
             openDetailConsumers.Add(consumer);
-            var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, effVendorCode, wf, winLoc,
+            var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf, winLoc,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,
                 onSubmitComplete: PersistSubmitOutcome,
@@ -581,13 +569,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(record.SubmittedDataPath)) return;
 
         Error = ""; IsBusy = true;
+        // A4: the harvester pauses while a retry upload is in flight, and
+        // resumes as soon as it finishes.
+        harvester?.Pause();
         try
         {
             // Reconstruct the inspection record from stored JSON.
             if (profile == null) return;
-            var transport = new MskpyInspectionTransport(profile.LoginId, manualVendorCode, inspectionHost: inspectionHostOverride);
+            var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride);
             var gateway = new InspectionGateway(transport, index!);
-            var wf = new InspectionWorkflow(gateway, builder!, location!, headerVendorCode: manualVendorCode);
+            var wf = new InspectionWorkflow(gateway, builder!, location!);
 
             InspectionRecord inspRecord;
             using (var doc = JsonDocument.Parse(record.OriginalJson ?? "{}"))
@@ -630,7 +621,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // Submit through the same SubmitAsync path.
             var outcome = await wf.SubmitAsync(
                 inspRecord, photoPaths, signPaths,
-                null, null, null, null, false, null, manualVendorCode, CancellationToken.None,
+                null, null, null, null, false, null, CancellationToken.None,
                 formOpenTime: null, sessionLoginId: profile.LoginId);
 
             if (outcome.Ok)
@@ -670,7 +661,6 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// </summary>
     public string? CliSubmitConsumer { get; set; }
     public string? CliSubmitLogin { get; set; }
-    public string? CliSubmitVendor { get; set; }
     public string? CliSubmitPhotosDir { get; set; }
 
     public async Task<int> RunCliSubmitAsync()
@@ -680,9 +670,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(CliSubmitConsumer)) { Console.Error.WriteLine("--submit=<consumer> required."); return 1; }
         if (string.IsNullOrWhiteSpace(CliSubmitLogin)) { Console.Error.WriteLine("--login=<loginId> required."); return 1; }
 
-        var transport = new MskpyInspectionTransport(CliSubmitLogin, CliSubmitVendor, inspectionHost: inspectionHostOverride);
+        var transport = new MskpyInspectionTransport(CliSubmitLogin, inspectionHost: inspectionHostOverride);
         var gateway = new InspectionGateway(transport, index);
-        var wf = new InspectionWorkflow(gateway, builder!, location!, headerVendorCode: CliSubmitVendor);
+        var wf = new InspectionWorkflow(gateway, builder!, location!);
 
         Console.WriteLine($"Listing applications for session {CliSubmitLogin}…");
         var (listStatus, _, listRecords) = await wf.ListAsync(CancellationToken.None);
@@ -705,7 +695,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Console.WriteLine($"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).");
         // H-A: form open = detail open. surveyEndTime is captured at submit.
         var formOpen = DateTimeOffset.UtcNow;
-        Console.WriteLine($"Vendor: session={CliSubmitVendor} record={record.VendorCode} (body uses the session value)");
+        Console.WriteLine($"Vendor: {record.VendorCode} (header and body both use the record's vendor_code)");
 
         // E5/P4: resolve the upload position once (manual -> geolocator -> install
         // coordinates) and stamp every photo's EXIF with exactly that same pair.
@@ -751,7 +741,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
         var submit = await wf.SubmitAsync(
             record, photoPaths, signPaths,
-            null, null, null, null, false, extraData, CliSubmitVendor, CancellationToken.None,
+            null, null, null, null, false, extraData, CancellationToken.None,
             formOpenTime: formOpen, resolvedLocation: resolved, sessionLoginId: CliSubmitLogin);
         Console.WriteLine($"Submit: ok={submit.Ok}, status={submit.StatusCode} ({(int)submit.StatusCode})");
         Console.WriteLine($"Session: username={CliSubmitLogin}, cpf={record.CpfNo}" +
