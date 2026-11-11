@@ -119,6 +119,17 @@ try
     Check(capture.BodyVendor == "100038029", "submit sends the record's vendor_code in the body");
     Check(capture.VendorHeader == capture.BodyVendor, "header vendor equals body vendor on the submit path");
     Check(outcome.Error == null, "submit passes the gates with the record's vendor");
+
+    // The escape hatch: an explicit override replaces BOTH, so they still agree.
+    var capture2 = new CapturingHandler();
+    var transport2 = new Mskpy.Infrastructure.MskpyInspectionTransport("02284251", vendorDir, capture2, "https://vendor-check.invalid");
+    using var gateway2 = new Mskpy.Infrastructure.InspectionGateway(transport2, new Mskpy.Infrastructure.InspectionIndex());
+    var wf2 = new Mskpy.Infrastructure.InspectionWorkflow(gateway2, new Mskpy.Infrastructure.InspectionMultipartBuilder(), new Mskpy.Infrastructure.LocationProvider(), vendorDir, "OVERRIDE-1");
+    await wf2.SubmitAsync(record, photos, signs, null, null, null, null, false, null,
+        CancellationToken.None, sessionLoginId: "02284251");
+    Check(capture2.VendorHeader == "OVERRIDE-1" && capture2.BodyVendor == "OVERRIDE-1",
+        "a vendor override replaces the header and the body together");
+    Check(capture2.VendorHeader == capture2.BodyVendor, "header vendor equals body vendor with an override in force");
 }
 finally { try { Directory.Delete(vendorDir, true); } catch { } }
 

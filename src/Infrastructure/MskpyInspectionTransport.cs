@@ -38,13 +38,15 @@ public sealed class MskpyInspectionTransport : IDisposable
     private readonly HttpClient http;
     private readonly string logPath;
     private readonly string loginId;
+    private readonly string? vendorOverride;
     private readonly string deviceId;
     private readonly string inspectionHost;
 
-    public MskpyInspectionTransport(string loginId, string? logDirectory = null, HttpMessageHandler? handler = null, string? inspectionHost = null)
+    public MskpyInspectionTransport(string loginId, string? logDirectory = null, HttpMessageHandler? handler = null, string? inspectionHost = null, string? vendorOverride = null)
     {
         if (string.IsNullOrWhiteSpace(loginId)) throw new ArgumentException("Login id is required for /mtskpy/* calls.", nameof(loginId));
         this.loginId = loginId;
+        this.vendorOverride = string.IsNullOrWhiteSpace(vendorOverride) ? null : vendorOverride.Trim();
         this.deviceId = Guid.NewGuid().ToString("N");
         this.inspectionHost = inspectionHost ?? DefaultInspectionHost;
 
@@ -81,8 +83,11 @@ public sealed class MskpyInspectionTransport : IDisposable
         request.Headers.TryAddWithoutValidation("client-device", ClientDevice);
         request.Headers.TryAddWithoutValidation("user-agent", UserAgent);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
-        // A1: no session vendor. The client-vendorCode header is set on the
-        // submit request from the record's own vendor_code.
+        // A1: no session vendor. The client-vendorCode header is only sent when
+        // an explicit override is in force; otherwise the submit request carries
+        // the record's own vendor_code.
+        if (!string.IsNullOrWhiteSpace(vendorOverride))
+            request.Headers.TryAddWithoutValidation("client-vendorCode", vendorOverride);
         // R1: NO Authorization header for /mtskpy/*.
         return request;
     }

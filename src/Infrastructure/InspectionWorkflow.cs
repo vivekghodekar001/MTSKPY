@@ -42,15 +42,23 @@ public sealed class InspectionWorkflow
     public readonly LocationProvider location;
     private readonly string dataDirectory;
 
-    public InspectionWorkflow(InspectionGateway gateway, InspectionMultipartBuilder builder, LocationProvider location, string? dataDirectory = null)
+    public InspectionWorkflow(InspectionGateway gateway, InspectionMultipartBuilder builder, LocationProvider location, string? dataDirectory = null, string? vendorOverride = null)
     {
         this.gateway = gateway;
         this.builder = builder;
         this.location = location;
+        this.VendorOverride = vendorOverride;
         this.dataDirectory = dataDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RenewableEnergyDesktop", "inspection-data");
     }
+
+    /// <summary>
+    /// Escape hatch for the vendor. When set it replaces the record's vendor for
+    /// the header AND the body, so the two can never disagree — A1's guarantee
+    /// holds either way. Empty (the default) means the record's own vendor_code.
+    /// </summary>
+    public string? VendorOverride { get; set; }
 
     /// <summary>List pending inspection applications for the session.</summary>
     public async Task<(HttpStatusCode StatusCode, string Body, IReadOnlyList<InspectionRecord> Records)> ListAsync(CancellationToken ct = default)
@@ -250,7 +258,11 @@ public sealed class InspectionWorkflow
             (loc.Error != null ? $", error={loc.Error}" : "");
         // A1: the vendor is the record's own vendor_code. The same value goes in
         // the body and in the client-vendorCode header — there is no session vendor.
-        var vendorCode = record.VendorCode ?? "";
+        // An explicit override replaces BOTH, so header and body still agree.
+        var vendorCode = !string.IsNullOrWhiteSpace(VendorOverride)
+            ? VendorOverride!.Trim()
+            : (record.VendorCode ?? "");
+        var vendorSource = !string.IsNullOrWhiteSpace(VendorOverride) ? "override" : "record";
         dataDict["vendorCode"] = vendorCode;
         // R1: username = session loginId (bytecode 532909-532915); cpf = the
         // record's own cpf_no (bytecode 532714-532725).
@@ -321,7 +333,7 @@ public sealed class InspectionWorkflow
             $"Source: distance={dataDict["distanceFromInst"]}, locationMocked={dataDict["locationMocked"]}, " +
             $"locationSource={loc.Source}, mocked={loc.Mocked}, accuracy={locationAccuracy}, " +
             // A1: one vendor value, logged once pre-send. Header and body are the same.
-            $"vendor={vendorCode}", ct);
+            $"vendor={vendorCode}, vendorSource={vendorSource}", ct);
 
         // R7: No retry on 2xx. Never infer success from a status code.
         return new SubmitOutcome(status == HttpStatusCode.OK, status, body, null, built.DataFilePath, built.Manifest, locationSummary);

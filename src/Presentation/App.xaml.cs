@@ -37,12 +37,16 @@ public partial class App : System.Windows.Application
         // V5: Headless CLI submit mode. If --submit=<consumer> is passed,
         // run the submit flow headlessly and exit.
         var cliArgs = Environment.GetCommandLineArgs();
-        string? cliSubmit = null, cliLogin = null, cliPhotosDir = null, cliIndexPath = null;
+        string? cliSubmit = null, cliLogin = null, cliVendor = null, cliPhotosDir = null, cliIndexPath = null;
         bool cliHostOverride = false;
         foreach (var a in cliArgs)
         {
             if (a.StartsWith("--submit=")) cliSubmit = a.Substring("--submit=".Length);
             else if (a.StartsWith("--login=")) cliLogin = a.Substring("--login=".Length);
+            // Edge 4: --vendor= is accepted again so existing scripts do not break.
+            // It is an override applied to BOTH the header and the body, so the
+            // two can never disagree; without it the record's own vendor_code is used.
+            else if (a.StartsWith("--vendor=")) cliVendor = a.Substring("--vendor=".Length);
             else if (a.StartsWith("--photos=")) cliPhotosDir = a.Substring("--photos=".Length);
             else if (a.StartsWith("--index=")) cliIndexPath = a.Substring("--index=".Length);
             else if (a.StartsWith("--host=")) cliHostOverride = true;
@@ -69,6 +73,7 @@ public partial class App : System.Windows.Application
             shell.CliSubmitConsumer = cliSubmit;
             shell.CliSubmitLogin = cliLogin ?? "";
             shell.CliSubmitPhotosDir = cliPhotosDir ?? "";
+            shell.VendorOverride = cliVendor ?? "";
 
             var exitCode = await shell.RunCliSubmitAsync();
             Shutdown(exitCode);
@@ -94,6 +99,8 @@ public partial class App : System.Windows.Application
         var window = new MainWindow();
         shell = new ShellViewModel(new ClientWorkflow(gateway), window.SecretInput,
             new WpfDesktopActions(window), inspectionIndex, inspectionBuilder, inspectionLocation, winLoc, inspectionHostOverride, tsvPath);
+        // Edge 4: --vendor= is honoured in GUI mode too (override for header and body).
+        shell.VendorOverride = cliVendor ?? "";
         window.DataContext = shell;
         MainWindow = window;
         window.Show();

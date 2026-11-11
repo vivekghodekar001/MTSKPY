@@ -54,7 +54,9 @@ internal static class Program
         var invalidWindow = new InspectionDraftWindow(invalidDraft.RootElement);
         Assert(Descendants((FrameworkElement)invalidWindow.Content).OfType<TextBlock>().Any(x => x.Text.Contains("0 local photo references restored")), "renamed non-image files are rejected");
         var desktop = new RenderDesktop(); var gateway = new RenderGateway();
-        using var shell = new ShellViewModel(new ClientWorkflow(gateway), new RenderSecret(), desktop) { Username = "sample" };
+        // An isolated store: the sign-in seed must never touch the live app's data.
+        var uiStorePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"ui-store-{Guid.NewGuid():N}.db");
+        using var shell = new ShellViewModel(new ClientWorkflow(gateway), new RenderSecret(), desktop, storePath: uiStorePath) { Username = "sample" };
         var main = new MainWindow { DataContext = shell };
         var shellRoot = (FrameworkElement)main.Content;
         foreach (var width in new[] { 740, 1100, 1500 })

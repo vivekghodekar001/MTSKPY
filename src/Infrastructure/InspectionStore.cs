@@ -155,6 +155,46 @@ public sealed class InspectionStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Upserts raw application rows into the store. Returns how many were new and
+    /// how many the store already held. Shared by the harvester and the
+    /// sign-in seed so both take exactly the same path into the store.
+    /// </summary>
+    public (int Added, int Duplicates) UpsertRows(IReadOnlyList<JsonElement> rows)
+    {
+        int added = 0, duplicates = 0;
+        foreach (var row in rows)
+        {
+            var record = InspectionRecord.FromJson(row);
+            var stored = new StoredInspectionRecord(
+                ConsumerNumber: record.ConsumerNumber,
+                CpfNo: record.CpfNo,
+                VendorCode: record.VendorCode,
+                ConsumerName: record.ConsumerName,
+                Latitude: record.Latitude,
+                Longitude: record.Longitude,
+                InstallDate: record.InstallDate,
+                ReasonToRevert: TryGetString(row, "reason_to_revert"),
+                SurveyDurationMinutes: record.SurveyDurationMinutes?.ToString(),
+                IsFirstTime: string.IsNullOrWhiteSpace(TryGetString(row, "beneficiary_sign_file_name")),
+                Status: RecordStatus.New,
+                LastServerMessage: null,
+                LastServerMessageAt: null,
+                OriginalJson: row.GetRawText(),
+                SubmittedDataPath: null,
+                PhotoPaths: null,
+                SignPaths: null
+            );
+            var isNew = GetByConsumerNumber(record.ConsumerNumber) == null;
+            Upsert(stored);
+            if (isNew) added++; else duplicates++;
+        }
+        return (added, duplicates);
+    }
+
+    static string? TryGetString(JsonElement el, string key) =>
+        el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
     public void SetStatus(string consumerNumber, RecordStatus status, string? lastServerMessage = null)
     {
         dbLock.Wait();

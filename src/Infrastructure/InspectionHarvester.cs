@@ -153,34 +153,7 @@ public sealed class InspectionHarvester : IDisposable
             try { doc = JsonDocument.Parse(body); } catch { RequestErrors++; return; }
 
             var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
-            int added = 0;
-            int duplicates = 0;
-            foreach (var row in rows)
-            {
-                var record = InspectionRecord.FromJson(row);
-                var stored = new StoredInspectionRecord(
-                    ConsumerNumber: record.ConsumerNumber,
-                    CpfNo: record.CpfNo,
-                    VendorCode: record.VendorCode,
-                    ConsumerName: record.ConsumerName,
-                    Latitude: record.Latitude,
-                    Longitude: record.Longitude,
-                    InstallDate: record.InstallDate,
-                    ReasonToRevert: TryGetString(row, "reason_to_revert"),
-                    SurveyDurationMinutes: record.SurveyDurationMinutes?.ToString(),
-                    IsFirstTime: string.IsNullOrWhiteSpace(TryGetString(row, "beneficiary_sign_file_name")),
-                    Status: RecordStatus.New,
-                    LastServerMessage: null,
-                    LastServerMessageAt: null,
-                    OriginalJson: row.GetRawText(),
-                    SubmittedDataPath: null,
-                    PhotoPaths: null,
-                    SignPaths: null
-                );
-                var isNew = store.GetByConsumerNumber(record.ConsumerNumber) == null;
-                store.Upsert(stored);
-                if (isNew) added++; else duplicates++;
-            }
+            var (added, duplicates) = store.UpsertRows(rows);
 
             RecordsSeen += rows.Count;
             RecordsAdded += added;

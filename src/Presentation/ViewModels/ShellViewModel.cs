@@ -30,6 +30,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     string indexPath = "";
     public string IndexPath { get => indexPath; set => Set(ref indexPath, value?.Trim() ?? ""); }
     public RelayCommand ReloadIndexCommand { get; }
+    // Edge 3: an explicit vendor escape hatch. Empty (the default) means the
+    // record's own vendor_code. When set it replaces BOTH the header and the
+    // body, so the two can never disagree.
+    string vendorOverride = "";
+    public string VendorOverride { get => vendorOverride; set => Set(ref vendorOverride, value?.Trim() ?? ""); }
     IReadOnlyList<ApplicationDocument> loaded = [];
     int generation;
     string username = "", role = "Employee", search = "", status = "Sign in to test the existing account service.", error = "", page = "Home";
@@ -195,6 +200,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (version != generation) return;
             profile = account; Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut));
             NavigateTo("Home"); Status = "Signed in.";
+            // B1: one GET for the session's own pending list, written into the
+            // store, so the officer sees their rows within seconds instead of
+            // waiting for the harvester. Failure is non-fatal.
+            await SeedSessionListAsync(account.LoginId);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; } }
         finally { if (version == generation) IsBusy = false; }
@@ -367,6 +376,44 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// B1: one GET for the session's own pending list, upserted into the store.
+    /// This is the immediate source of rows; the harvester covers the long tail.
+    /// Failure is non-fatal — the harvester still fills the store.
+    /// </summary>
+    async Task SeedSessionListAsync(string loginId)
+    {
+        // The seed needs the inspection services. When they are not configured
+        // (tests, headless runs) it must not reach the network.
+        if (store == null || index == null) return;
+        try
+        {
+            var transport = new MskpyInspectionTransport(loginId, inspectionHost: inspectionHostOverride, vendorOverride: VendorOverride);
+            using var gateway = new InspectionGateway(transport, index);
+            var (status, body, doc) = await transport.ListAsync(CancellationToken.None);
+            if (doc == null)
+            {
+                Status = $"Session list unavailable (HTTP {(int)status}). The harvester will fill the store.";
+                return;
+            }
+            var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
+            var (added, duplicates) = store.UpsertRows(rows);
+            Status = $"Session list: {rows.Count} rows ({added} new, {duplicates} already held).";
+            RefreshRecordCounts();
+        }
+        catch (SessionExpiredException)
+        {
+            // The session is not valid for the inspection service either.
+            EndSession();
+            Error = "Your session expired. Sign in again.";
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal: the harvester covers this.
+            Status = "Session list could not be fetched (" + ex.Message + "). The harvester will fill the store.";
+        }
+    }
+
+    /// <summary>
     /// A5: the index file can change while the app is running. Reloading re-reads
     /// the tsv, restarts the harvester against it and keeps the session alive.
     /// </summary>
@@ -424,9 +471,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride);
+        var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride, vendorOverride: VendorOverride);
         var gateway = new InspectionGateway(transport, index);
-        var wf = new InspectionWorkflow(gateway, builder, location);
+        var wf = new InspectionWorkflow(gateway, builder, location, vendorOverride: VendorOverride);
 
         Error = ""; IsBusy = true;
         try
@@ -576,9 +623,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         {
             // Reconstruct the inspection record from stored JSON.
             if (profile == null) return;
-            var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride);
+            var transport = new MskpyInspectionTransport(profile.LoginId, inspectionHost: inspectionHostOverride, vendorOverride: VendorOverride);
             var gateway = new InspectionGateway(transport, index!);
-            var wf = new InspectionWorkflow(gateway, builder!, location!);
+            var wf = new InspectionWorkflow(gateway, builder!, location!, vendorOverride: VendorOverride);
 
             InspectionRecord inspRecord;
             using (var doc = JsonDocument.Parse(record.OriginalJson ?? "{}"))
@@ -670,9 +717,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(CliSubmitConsumer)) { Console.Error.WriteLine("--submit=<consumer> required."); return 1; }
         if (string.IsNullOrWhiteSpace(CliSubmitLogin)) { Console.Error.WriteLine("--login=<loginId> required."); return 1; }
 
-        var transport = new MskpyInspectionTransport(CliSubmitLogin, inspectionHost: inspectionHostOverride);
+        var transport = new MskpyInspectionTransport(CliSubmitLogin, inspectionHost: inspectionHostOverride, vendorOverride: VendorOverride);
         var gateway = new InspectionGateway(transport, index);
-        var wf = new InspectionWorkflow(gateway, builder!, location!);
+        var wf = new InspectionWorkflow(gateway, builder!, location!, vendorOverride: VendorOverride);
 
         Console.WriteLine($"Listing applications for session {CliSubmitLogin}…");
         var (listStatus, _, listRecords) = await wf.ListAsync(CancellationToken.None);
