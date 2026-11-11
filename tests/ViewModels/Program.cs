@@ -67,6 +67,10 @@ Check(shell.IsSignedOut && shell.Error.Contains("expired"), "expired session cle
 gateway.Expire = false; await shell.Login.ExecuteAsync(); var beforeInvalidModule = gateway.LoadCalls;
 var blocked = false; try { await workflow.LoadAsync("invented-module", CancellationToken.None); } catch (InvalidOperationException) { blocked = true; }
 Check(blocked && gateway.LoadCalls == beforeInvalidModule, "unregistered modules cannot create undocumented backend requests");
+// The store is the local cache of the statewide harvest, not session state: a
+// sign-out must not leave the next sign-in with a dead store.
+await shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
+Check(shell.Applications.Count == 3, "the harvested store survives a sign-out and is still listed after signing back in");
 const string jsrSource = """{"consumer_number":"SAMPLE-JSR","consumer_name":"Synthetic record","wf_action_id":122}""";
 var jsrDocument = new Mskpy.Infrastructure.JsrDocuments().FromRecord(jsrSource);
 var drafts = new FakeJsrDocuments(jsrDocument);

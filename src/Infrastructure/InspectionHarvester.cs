@@ -28,6 +28,13 @@ public sealed class InspectionHarvester : IDisposable
     // D2: re-walk state. A completed pass idles, then re-arms from the start.
     private bool cycleComplete;
     private int cycleNumber = 1;
+    private int consecutiveFailures;
+
+    /// <summary>E2: consecutive failed requests before the cadence drops.</summary>
+    public const int FailureBackoffThreshold = 10;
+
+    /// <summary>E2: the cadence once the host has stopped answering.</summary>
+    public static readonly TimeSpan FailureBackoffInterval = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// D2: how long to idle after a completed pass before re-walking the index.
@@ -98,7 +105,19 @@ public sealed class InspectionHarvester : IDisposable
 
     public void Start()
     {
-        timer = new System.Threading.Timer(async _ => await TickAsync(), null, TimeSpan.Zero, requestInterval);
+        // The callback must never let an exception escape: a System.Threading.Timer
+        // callback is void, so an async lambda's exception is raised on a thread-pool
+        // thread and terminates the process. A production timeout used to do exactly
+        // that. The walk swallows and logs everything instead.
+        timer = new System.Threading.Timer(async _ =>
+        {
+            try { await TickAsync(); }
+            catch (Exception ex)
+            {
+                RequestErrors++;
+                LogEvent($"tick failed: {ex.Message}");
+            }
+        }, null, TimeSpan.Zero, requestInterval);
     }
 
     /// <summary>
@@ -135,7 +154,16 @@ public sealed class InspectionHarvester : IDisposable
                 cycleComplete = true;
                 LogEvent($"cycle {cycleNumber} complete: walked {currentCpfIndex} cpfs, seen={RecordsSeen}, added={RecordsAdded}, duplicates={DuplicateRecords}, rateLimits={RateLimitHits}, storeErrors={StoreErrors}");
                 OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} complete - next cycle in {ReWalkIdle.TotalMinutes:F0} min.");
-                if (VacuumOnCycleComplete) { try { store.Vacuum(); LogEvent("store vacuumed"); } catch { } }
+                if (VacuumOnCycleComplete)
+                {
+                    // E2: the vacuum runs on a background thread, off the store
+                    // lock, so a 142 MB rewrite never stalls the UI's reads.
+                    _ = store.VacuumAsync().ContinueWith(t =>
+                    {
+                        if (t.Status == TaskStatus.RanToCompletion) LogEvent("store vacuumed");
+                        else LogEvent("store vacuum failed: " + t.Exception?.GetBaseException().Message);
+                    }, TaskScheduler.Default);
+                }
                 timer?.Change(ReWalkIdle, Timeout.InfiniteTimeSpan);
                 return;
             }
@@ -198,12 +226,24 @@ public sealed class InspectionHarvester : IDisposable
                 requestInterval = TimeSpan.FromSeconds(1);
                 timer?.Change(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
             }
+            // E2: a success clears the failure backoff too.
+            consecutiveFailures = 0;
+            if (requestInterval != TimeSpan.FromSeconds(1) && requestInterval != TimeSpan.FromSeconds(2))
+            {
+                requestInterval = TimeSpan.FromSeconds(1);
+                timer?.Change(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+            }
 
-            if (!response.IsSuccessStatusCode) { RequestErrors++; return; }
+            if (!response.IsSuccessStatusCode)
+            {
+                RequestErrors++;
+                NoteFailure(cpf, $"HTTP {(int)response.StatusCode}");
+                return;
+            }
 
             var body = await response.Content.ReadAsStringAsync();
             JsonDocument? doc = null;
-            try { doc = JsonDocument.Parse(body); } catch { RequestErrors++; return; }
+            try { doc = JsonDocument.Parse(body); } catch { RequestErrors++; NoteFailure(cpf, "unparseable body"); return; }
 
             var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
             var (added, duplicates) = store.UpsertRows(rows);
@@ -213,7 +253,15 @@ public sealed class InspectionHarvester : IDisposable
             DuplicateRecords += duplicates;
             if (added > 0) OnRecordsAdded?.Invoke(added);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException ex)
+        {
+            // A request timeout is a FAILED REQUEST, not a cancellation: the
+            // harvester has no token of its own, so this can only be the
+            // HttpClient timeout. Count it and keep walking — re-throwing it
+            // terminated the app when the host was slow.
+            RequestErrors++;
+            NoteFailure(cpf, "timeout: " + ex.Message);
+        }
         catch (Exception ex)
         {
             // A store or transport failure must not stop the walk, but it must
@@ -222,7 +270,25 @@ public sealed class InspectionHarvester : IDisposable
             StoreErrors++;
             LastError = ex.Message;
             LogEvent($"ERROR at cpf {cpf}: {ex.Message}");
+            NoteFailure(cpf, ex.Message);
             OnStatusChanged?.Invoke($"Harvester error on cpf {cpf}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// E2: when the host stops answering, the walk must stop hammering it.
+    /// After a run of consecutive failures the cadence drops to one request a
+    /// long while; a single success restores the normal rate.
+    /// </summary>
+    private void NoteFailure(string cpf, string reason)
+    {
+        consecutiveFailures++;
+        if (consecutiveFailures >= FailureBackoffThreshold && requestInterval < FailureBackoffInterval)
+        {
+            requestInterval = FailureBackoffInterval;
+            timer?.Change(requestInterval, requestInterval);
+            LogEvent($"{consecutiveFailures} consecutive failures ({reason}) - slowing to 1 req/{(int)FailureBackoffInterval.TotalSeconds}s");
+            OnStatusChanged?.Invoke($"Harvester: {consecutiveFailures} consecutive failures - slowing to 1 req/{(int)FailureBackoffInterval.TotalSeconds}s.");
         }
     }
 

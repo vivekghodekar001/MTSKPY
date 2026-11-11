@@ -5,6 +5,15 @@ using Mskpy.Windows;
 
 var passed = 0;
 void Check(bool ok, string name) { if (!ok) throw new Exception(name); Console.WriteLine("PASS " + name); passed++; }
+static string? RawUpdatedAt(string dbFile, string consumer)
+{
+    using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbFile}");
+    c.Open();
+    using var cmd = c.CreateCommand();
+    cmd.CommandText = "SELECT updated_at FROM inspection_records WHERE consumer_number=$cn;";
+    cmd.Parameters.AddWithValue("$cn", consumer);
+    return cmd.ExecuteScalar() as string;
+}
 var handler = new FakeHandler();
 using var client = new ApiClient(handler);
 handler.Body = "{\"hasErrors\":false,\"data\":{\"success\":true,\"user\":{\"loginId\":\"sample\",\"jwt\":\"test-token\"}}}";
@@ -186,6 +195,17 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
         Check(harvester.CycleNumber >= 2, "the harvester reports the cycle it is on");
         Check(log.Contains("store vacuumed"), "a completed pass vacuums the store");
         Check(walkStore.GetAll().Count == 1, "the re-walk re-reads the same consumer without duplicating it");
+
+        // E1: a record the officer has already submitted must survive the
+        // re-walk as Accepted and stay out of "My pending".
+        walkStore.SetStatus("MTWALK0000000001", Mskpy.Infrastructure.RecordStatus.Accepted);
+        var beforeStamp = RawUpdatedAt(dbFile, "MTWALK0000000001");
+        Thread.Sleep(1500);
+        var accepted = walkStore.GetByConsumerNumber("MTWALK0000000001")!;
+        Check(accepted.Status == Mskpy.Infrastructure.RecordStatus.Accepted, "a re-walk does not reset an accepted record to New");
+        Check(RawUpdatedAt(dbFile, "MTWALK0000000001") == beforeStamp, "updated_at does not move when nothing changed");
+        var pending = walkStore.GetAll().Count(r => r.Status != Mskpy.Infrastructure.RecordStatus.Accepted);
+        Check(pending == 0, "an accepted record stays out of the officer's pending queue");
     }
     finally
     {

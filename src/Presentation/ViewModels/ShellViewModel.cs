@@ -247,21 +247,32 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // as the session-liveness probe: it is what detects an expired
             // session and what makes opening the module cancellable. Its payload
             // is never used as list data.
-            await workflow.LoadAsync(currentModule.Key, ct);
+            //
+            // The store is read FIRST and rendered FIRST. The officer's queue
+            // must never wait on a host that is having a bad day: clearing the
+            // list and then blocking on a 120-second probe left the officer
+            // staring at an empty list with 27,000 records already harvested.
+            LoadFromStore();
+            ApplySearch();
+            Status = $"Loaded {loaded.Count} applications.";
+
+            // Then the liveness probe, bounded so a slow host cannot hold the
+            // page hostage. Its only job is to detect an expired session.
+            string? probeFailure = null;
+            try
+            {
+                await workflow.LoadAsync(currentModule.Key, ct).WaitAsync(TimeSpan.FromSeconds(15), ct);
+            }
+            catch (SessionExpiredException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { probeFailure = ex.Message; }
             ct.ThrowIfCancellationRequested();
             if (version != generation) return;
 
-            if (store != null)
-            {
-                LoadFromStore();
-                if (loaded.Count == 0)
-                    Status = "The store is empty. The harvester fills it from index.tsv — check Diagnostics.";
-            }
-            else
-            {
-                loaded = [];
-            }
-            ApplySearch(); Status = $"Loaded {loaded.Count} applications.";
+            if (probeFailure != null)
+                Status = $"Loaded {loaded.Count} applications from the store. The live service check failed ({probeFailure}).";
+            else if (loaded.Count == 0)
+                Status = "The store is empty. The harvester fills it from index.tsv — check Diagnostics.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) Status = "Loading cancelled."; }
         finally { if (version == generation) IsBusy = false; }
@@ -349,7 +360,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void NavigateTo(string destination)
     {
-        Error = ""; Fields.Clear();
+        Error = ""; Status = ""; Fields.Clear();
         if (destination == "Returned" && store != null)
         {
             ReturnedRecords.Clear();
@@ -406,7 +417,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         _refreshTimer?.Dispose(); _refreshTimer = null;
         CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Home"); IsBusy = false;
         harvester?.Dispose(); harvester = null;
-        store?.Dispose();
+        // The store is NOT session state: it is the local cache of the statewide
+        // harvest. Disposing it on sign-out left the app with a dead store after
+        // the next sign-in — the list came up empty and the harvest could not
+        // write. It is disposed with the view model instead.
         Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut)); Status = "Signed out.";
     }
     void RefreshCommands()
@@ -965,5 +979,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         return Convert.ToHexString(hash);
     }
 
-    public void Dispose() => EndSession();
+    public void Dispose()
+    {
+        EndSession();
+        store?.Dispose();
+    }
 }

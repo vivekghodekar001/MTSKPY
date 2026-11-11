@@ -47,6 +47,7 @@ public sealed record StoredInspectionRecord(
 public sealed class InspectionStore : IDisposable
 {
     private readonly Microsoft.Data.Sqlite.SqliteConnection connection;
+    private readonly string databasePath;
     private readonly SemaphoreSlim dbLock = new(1, 1);
     private bool disposed;
 
@@ -60,6 +61,15 @@ public sealed class InspectionStore : IDisposable
 
         connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}");
         connection.Open();
+        databasePath = path;
+        using (var pragma = connection.CreateCommand())        {
+            // WAL: a VACUUM on a background thread takes an exclusive write lock,
+            // but readers keep their snapshot, so the UI never stalls on it.
+            // busy_timeout: a writer that arrives during the vacuum waits a
+            // little rather than failing outright.
+            pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;";
+            pragma.ExecuteNonQuery();
+        }
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = @"
@@ -96,7 +106,7 @@ public sealed class InspectionStore : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    public int Upsert(StoredInspectionRecord record)
+    public int Upsert(StoredInspectionRecord record, bool preserveStatus = false)
     {
         dbLock.Wait();
         try
@@ -120,15 +130,30 @@ public sealed class InspectionStore : IDisposable
                     reason_to_revert=excluded.reason_to_revert,
                     survey_duration_minutes=excluded.survey_duration_minutes,
                     is_first_time=excluded.is_first_time,
-                    status=CASE WHEN excluded.status > status THEN excluded.status ELSE status END,
+                    status=CASE WHEN @preserve THEN inspection_records.status
+                                WHEN excluded.status > inspection_records.status THEN excluded.status
+                                ELSE inspection_records.status END,
                     last_server_message=COALESCE(excluded.last_server_message, inspection_records.last_server_message),
                     last_server_message_at=COALESCE(excluded.last_server_message_at, inspection_records.last_server_message_at),
                     original_json=excluded.original_json,
-                    updated_at=excluded.updated_at,
+                    updated_at=CASE
+                        WHEN inspection_records.cpf_no IS NOT excluded.cpf_no
+                          OR inspection_records.vendor_code IS NOT excluded.vendor_code
+                          OR inspection_records.consumer_name IS NOT excluded.consumer_name
+                          OR inspection_records.latitude IS NOT excluded.latitude
+                          OR inspection_records.longitude IS NOT excluded.longitude
+                          OR inspection_records.inst_date IS NOT excluded.inst_date
+                          OR inspection_records.reason_to_revert IS NOT excluded.reason_to_revert
+                          OR inspection_records.survey_duration_minutes IS NOT excluded.survey_duration_minutes
+                          OR inspection_records.is_first_time IS NOT excluded.is_first_time
+                          OR inspection_records.original_json IS NOT excluded.original_json
+                        THEN excluded.updated_at
+                        ELSE inspection_records.updated_at END,
                     submitted_data_path=excluded.submitted_data_path,
                     photo_paths=excluded.photo_paths,
                     sign_paths=excluded.sign_paths
                 ";
+            cmd.Parameters.AddWithValue("@preserve", preserveStatus ? 1 : 0);
             cmd.Parameters.AddWithValue("@cn", record.ConsumerNumber);
             cmd.Parameters.AddWithValue("@cpf", record.CpfNo ?? "");
             cmd.Parameters.AddWithValue("@vc", record.VendorCode ?? (object)DBNull.Value);
@@ -186,30 +211,43 @@ public sealed class InspectionStore : IDisposable
                 SignPaths: null
             );
             var isNew = GetByConsumerNumber(record.ConsumerNumber) == null;
-            Upsert(stored);
+            // E1: the harvest must never touch a record's status. A record the
+            // officer has already submitted stays Accepted and stays out of
+            // "My pending" — it must not be rewritten to New on every re-walk.
+            Upsert(stored, preserveStatus: true);
             if (isNew) added++; else duplicates++;
         }
         return (added, duplicates);
     }
 
     /// <summary>
-    /// D4: reclaim the space left by deleted rows. Best-effort: a vacuum that
-    /// cannot run must never disturb the harvest.
+    /// D4/E2: reclaim the space left by deleted rows, on a background thread and
+    /// OFF the store lock, so a 142 MB rewrite never blocks the UI's reads.
+    /// Uses its own connection: the shared one is held by every read.
     /// </summary>
-    public void Vacuum()
+    public Task VacuumAsync()
     {
-        dbLock.Wait();
-        try
+        var path = databasePath;
+        return Task.Run(() =>
         {
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = "VACUUM;";
-            cmd.ExecuteNonQuery();
-        }
-        catch
-        {
-            // Vacuum is best-effort.
-        }
-        finally { dbLock.Release(); }
+            try
+            {
+                using var vacuumConnection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}");
+                vacuumConnection.Open();
+                using (var pragma = vacuumConnection.CreateCommand())
+                {
+                    pragma.CommandText = "PRAGMA busy_timeout=5000;";
+                    pragma.ExecuteNonQuery();
+                }
+                using var cmd = vacuumConnection.CreateCommand();
+                cmd.CommandText = "VACUUM;";
+                cmd.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Vacuum is best-effort.
+            }
+        });
     }
 
     /// <summary>D4: removes rows by consumer number. Returns how many went.</summary>
