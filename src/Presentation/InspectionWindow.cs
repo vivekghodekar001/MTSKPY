@@ -126,21 +126,64 @@ public sealed class InspectionWindow : Window
         FontFamily = new FontFamily("Segoe UI");
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        var outer = new DockPanel { Margin = new Thickness(26), Background = Background };
-        var header = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
-        header.Children.Add(Label("Pump Inspection by Linestaff", 24));
-        header.Children.Add(Label($"Consumer: {consumerNumber}  ·  CPF: {cpfNo}  ·  Login: {loginId}", 13));
-        DockPanel.SetDock(header, Dock.Top);
-        outer.Children.Add(header);
+        // Y2: Grid layout — header row, scrollable tabs row, footer row
+        var grid = new Grid { Margin = new Thickness(26), Background = Background };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        var bottom = new StackPanel();
-        bottom.Children.Add(status);
-        DockPanel.SetDock(bottom, Dock.Bottom);
-        outer.Children.Add(bottom);
+        // Y1: Read-only header card (record info), Row 0 — two lines, compact
+        var headerCard = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var line1 = new StackPanel { Orientation = Orientation.Horizontal };
+        line1.Children.Add(new TextBlock
+        {
+            Text = $"Name: {FieldValue("consumer_name")}   |   Application No: {FieldValue("consumer_number")}   |   Address: {FieldValue("address")}",
+            FontSize = 13,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        headerCard.Children.Add(line1);
 
-        // Scrollable content area with tabbed parts
+        var line2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        var instDate = FieldValue("inst_date");
+        var instDateText = string.IsNullOrEmpty(instDate) ? "Not provided" : FormatInstDate(instDate);
+        line2.Children.Add(new TextBlock
+        {
+            Text = $"Inst Date: {instDateText}   |   Inst Latitude: {FieldValue("latitude")}   |   Inst Longitude: {FieldValue("longitude")}",
+            FontSize = 13,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var navBtn = new Button
+        {
+            Content = "Navigate to Inst Location",
+            Margin = new Thickness(12, 0, 0, 0),
+            Padding = new Thickness(10, 4, 10, 4),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        navBtn.Click += (_, _) =>
+        {
+            var lat = FieldValue("latitude");
+            var lon = FieldValue("longitude");
+            if (!string.IsNullOrEmpty(lat) && !string.IsNullOrEmpty(lon))
+            {
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = $"https://www.google.com/maps?q={lat},{lon}",
+                    UseShellExecute = true
+                }); } catch { }
+            }
+        };
+        line2.Children.Add(navBtn);
+        headerCard.Children.Add(line2);
+
+        Grid.SetRow(headerCard, 0);
+        grid.Children.Add(headerCard);
+
+        // Y2: TabControl in a ScrollViewer, Row 1
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        outer.Children.Add(scroll);
         var tabControl = new TabControl { Margin = new Thickness(0, 0, 0, 10) };
         scroll.Content = tabControl;
 
@@ -258,10 +301,28 @@ public sealed class InspectionWindow : Window
             tabControl.Items.Add(partBTab);
         }
 
-        // Photos & Signatures tab — installer details, location, photos, signatures
+        // Y4: Photos & Signatures tab — two columns
         var photosTab = new TabItem { Header = "Photos & Signatures", Margin = new Thickness(0) };
-        var photosPanel = new StackPanel { Margin = new Thickness(8) };
-        photosPanel.Children.Add(Label("Installer Details", 16));
+        var photosGrid = new Grid { Margin = new Thickness(8) };
+        photosGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        photosGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        // Left column: Site Photos + Signatures
+        var leftScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var leftPanel = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
+        leftPanel.Children.Add(Label("Site Photos (3 JPEG)", 19));
+        foreach (var slot in PhotoSlots) AddPhotoSlot(leftPanel, slot.Suffix, slot.Label);
+        leftPanel.Children.Add(Label("Signatures (2 PNG)", 19));
+        AddSignature(leftPanel, "Beneficiary signature", beneficiary);
+        AddSignature(leftPanel, "Vendor representative signature", representative);
+        leftScroll.Content = leftPanel;
+        Grid.SetColumn(leftScroll, 0);
+        photosGrid.Children.Add(leftScroll);
+
+        // Right column: Installer Details + Location
+        var rightScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0) };
+        rightPanel.Children.Add(Label("Installer Details", 16));
         var installerFields = new StackPanel();
         // P1: installer boxes start EMPTY — the officer types whoever actually
         // attended. The stored name is only whoever attended last time and must
@@ -274,7 +335,7 @@ public sealed class InspectionWindow : Window
         clearMobile.Click += (_, _) => vendorPersonMobileBox.Text = "";
         installerFields.Children.Add(CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName));
         installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
-        photosPanel.Children.Add(installerFields);
+        rightPanel.Children.Add(installerFields);
 
         // Location (P4): manual override -> live Windows position -> installation
         // coordinates. The source used for the upload is always reported.
@@ -300,30 +361,36 @@ public sealed class InspectionWindow : Window
         locationBox.TextWrapping = TextWrapping.Wrap;
         locationBox.Text = "Not resolved yet. Submit uses the live Windows position, then the installation coordinates.";
         locationCard.Children.Add(locationBox);
-        photosPanel.Children.Add(locationCard);
+        rightPanel.Children.Add(locationCard);
+        rightScroll.Content = rightPanel;
+        Grid.SetColumn(rightScroll, 1);
+        photosGrid.Children.Add(rightScroll);
 
-        photosPanel.Children.Add(Label("Site Photos (3 JPEG)", 19));
-        foreach (var slot in PhotoSlots) AddPhotoSlot(photosPanel, slot.Suffix, slot.Label);
-
-        photosPanel.Children.Add(Label("Signatures (2 PNG)", 19));
-        AddSignature(photosPanel, "Beneficiary signature", beneficiary);
-        AddSignature(photosPanel, "Vendor representative signature", representative);
-
-        photosTab.Content = photosPanel;
+        photosTab.Content = photosGrid;
         tabControl.Items.Add(photosTab);
 
-        // Fixed footer block — always visible, outside scroll
-        var footer = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
-        // Manifest (pre-send)
+        // Y2: Footer row — manifest box, buttons row, body box
+        var footer = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        // Y3: One status line
+        status.Text = "";
+        footer.Children.Add(status);
+        // Y3: manifest box empty initially (no "No submission yet.")
         manifestBox.FontFamily = new FontFamily("Consolas");
         manifestBox.FontSize = 11;
         manifestBox.Background = Brushes.White;
         manifestBox.Padding = new Thickness(8);
-        manifestBox.Text = "No submission yet.";
-        DockPanel.SetDock(manifestBox, Dock.Top);
-        footer.Children.Add(manifestBox);
+        manifestBox.Text = "";
+        manifestBox.TextWrapping = TextWrapping.Wrap;
+        // Y2: manifest box ~3 lines with its own scroll
+        var manifestScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 60
+        };
+        manifestScroll.Content = manifestBox;
+        footer.Children.Add(manifestScroll);
 
-        // Actions
+        // Actions — left-aligned buttons row
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
         var submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6) };
         submitBtn.Click += async (_, _) => await Submit();
@@ -336,15 +403,27 @@ public sealed class InspectionWindow : Window
         actions.Children.Add(closeBtn);
         footer.Children.Add(actions);
 
+        // Y2: body box fixed 120 px with its own scroll
         bodyBox.FontFamily = new FontFamily("Consolas");
         bodyBox.FontSize = 11;
         bodyBox.Background = Brushes.White;
         bodyBox.Padding = new Thickness(8);
-        bodyBox.Text = "Awaiting submission…";
-        footer.Children.Add(bodyBox);
+        bodyBox.Text = "Awaiting submission…";  // Y3: keep this
+        bodyBox.TextWrapping = TextWrapping.Wrap;
+        var bodyScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Height = 120
+        };
+        bodyScroll.Content = bodyBox;
+        footer.Children.Add(bodyScroll);
 
-        outer.Children.Add(footer);
-        Content = outer;
+        Grid.SetRow(scroll, 1);
+        grid.Children.Add(scroll);
+        Grid.SetRow(footer, 2);
+        grid.Children.Add(footer);
+
+        Content = grid;
         allowedDist.Text = "";
     }
 
