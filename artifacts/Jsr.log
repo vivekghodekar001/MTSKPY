@@ -1,0 +1,19 @@
+PASS original workflow action controls vendor-name visibility and all 19 initial fields exist
+PASS workflow flag preserves the original numeric comparison
+PASS pump-head option values match the recovered source
+PASS no network provider is required when mobile network is No
+PASS available network requires at least one original provider
+PASS selecting an original provider clears the conditional error
+PASS well guard selection is required for Well only
+PASS live agricultural connection requires consumer number
+PASS absent beneficiary requires the present person's identity and relation
+PASS completed conditional form validates without invented location evidence
+PASS three arbitrary attachments do not satisfy three named photo roles
+PASS vendor representative field follows workflow action, not guessed account role
+PASS application arrays are not silently reduced to their first record
+PASS draft round trip preserves source JSON verbatim and conditional answers
+PASS cancelled save preserves existing draft and cleans its temporary file
+PASS null answer values are rejected rather than normalized into claimed measurements
+PASS missing photo prevents replacement of a good saved draft
+17 JSR source-parity and draft integration checks passed. No network requests.
+RESULT=success

@@ -1,0 +1,48 @@
+<Window x:Class="Mskpy.Presentation.Views.JsrWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:views="clr-namespace:Mskpy.Presentation.Views"
+ Title="Joint Survey Report (JSR)" Width="1020" Height="880" MinWidth="740" MinHeight="640"
+ Background="{StaticResource Bg}" Foreground="{StaticResource Text}" FontFamily="Segoe UI" WindowStartupLocation="CenterOwner">
+ <Window.Resources>
+  <DataTemplate x:Key="JsrText">
+   <TextBox Text="{Binding Value,UpdateSourceTrigger=PropertyChanged}" MaxLength="{Binding MaxLength}" AutomationProperties.Name="{Binding Label}">
+    <TextBox.Style><Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}"><Style.Triggers><DataTrigger Binding="{Binding IsLongText}" Value="True"><Setter Property="AcceptsReturn" Value="True"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="MinHeight" Value="80"/><Setter Property="MaxHeight" Value="150"/><Setter Property="VerticalScrollBarVisibility" Value="Auto"/></DataTrigger></Style.Triggers></Style></TextBox.Style>
+   </TextBox>
+  </DataTemplate>
+  <DataTemplate x:Key="JsrSelection"><ComboBox ItemsSource="{Binding Options}" SelectedItem="{Binding Value,UpdateSourceTrigger=PropertyChanged}" FontSize="16" Padding="10" MinHeight="46" AutomationProperties.Name="{Binding Label}"/></DataTemplate>
+  <DataTemplate x:Key="JsrNetworks">
+   <ItemsControl ItemsSource="{Binding DataContext.Networks,RelativeSource={RelativeSource AncestorType=Window}}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" Foreground="{StaticResource Text}" FontSize="16" Margin="0,8,28,8"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+  </DataTemplate>
+  <DataTemplate x:Key="JsrPhotos">
+   <ItemsControl ItemsSource="{Binding DataContext.Photos,RelativeSource={RelativeSource AncestorType=Window}}"><ItemsControl.ItemTemplate><DataTemplate>
+    <Border Background="{StaticResource Surface}" CornerRadius="12" Padding="16" Margin="0,0,0,12"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition/></Grid.ColumnDefinitions>
+     <Border Background="#211E2A" CornerRadius="8" Height="100" Width="116" VerticalAlignment="Top"><Image Source="{Binding Preview}" Stretch="Uniform" AutomationProperties.Name="{Binding Label}"/></Border>
+     <StackPanel Grid.Column="1"><TextBlock Text="{Binding Label}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{Binding FileName}" Foreground="{StaticResource Muted}" Margin="0,7,0,12"/>
+      <WrapPanel><Button Content="Choose photo…" Command="{Binding DataContext.ChoosePhoto,RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Margin="0,0,10,6"/><Button Content="Remove" Command="{Binding DataContext.RemovePhoto,RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Background="Transparent" Foreground="{StaticResource Accent}" Margin="0,0,0,6"/></WrapPanel>
+     </StackPanel>
+    </Grid></Border>
+   </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+  </DataTemplate>
+  <views:JsrTemplateSelector x:Key="JsrSelector" TextTemplate="{StaticResource JsrText}" SelectionTemplate="{StaticResource JsrSelection}" NetworksTemplate="{StaticResource JsrNetworks}" PhotosTemplate="{StaticResource JsrPhotos}"/>
+ </Window.Resources>
+ <Window.InputBindings><KeyBinding Key="Escape" Command="{Binding Cancel}"/><KeyBinding Key="S" Modifiers="Control" Command="{Binding SaveDraft}"/></Window.InputBindings>
+ <DockPanel Background="{StaticResource Bg}">
+  <Border DockPanel.Dock="Top" Background="#1C1B1F" Padding="26,20"><StackPanel><TextBlock Text="Joint Survey Report (JSR)" FontSize="26" FontWeight="SemiBold"/><TextBlock Text="{Binding Context.Identity}" Foreground="{StaticResource Muted}" Margin="0,7,0,0"/></StackPanel></Border>
+  <Border DockPanel.Dock="Bottom" Background="#2B2832" Padding="24,14"><StackPanel>
+   <TextBlock Text="{Binding Error}" Foreground="#FFB4AB" Visibility="{Binding HasError,Converter={StaticResource BoolVisibility}}" Margin="0,0,0,8"/>
+   <TextBlock Text="{Binding Status}" Foreground="{StaticResource Muted}" Margin="0,0,0,10"/>
+   <WrapPanel><Button Content="Validate and Save" Command="{Binding ValidateAndSave}" Margin="0,0,10,6"/><Button Content="Save draft…" Command="{Binding SaveDraft}" Background="Transparent" Foreground="{StaticResource Accent}" Margin="0,0,10,6"/><Button Content="Validate" Command="{Binding Validate}" Background="Transparent" Foreground="{StaticResource Accent}" Margin="0,0,10,6"/><Button Content="Upload Survey" IsEnabled="False" ToolTip="Live submission integration is not yet verified." Margin="0,0,10,6"/><Button Content="Cancel operation" Command="{Binding Cancel}" Visibility="{Binding IsBusy,Converter={StaticResource BoolVisibility}}"/></WrapPanel>
+  </StackPanel></Border>
+  <ScrollViewer x:Name="SurveyScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel Margin="26,24" IsEnabled="{Binding IsIdle}">
+   <UniformGrid Columns="2" Margin="0,0,0,18">
+    <Border Background="{StaticResource Surface}" CornerRadius="14" Padding="20" Margin="0,0,8,0"><StackPanel><TextBlock Text="Beneficiary Details" FontSize="21" Margin="0,0,0,16"/><ItemsControl ItemsSource="{Binding Context.Beneficiary}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Margin="0,0,0,12"><TextBlock Text="{Binding Label}" FontSize="13" Foreground="{StaticResource Muted}"/><TextBlock Text="{Binding Value}" FontSize="16" Margin="0,4,0,0"/></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+    <Border Background="{StaticResource Surface}" CornerRadius="14" Padding="20" Margin="8,0,0,0"><StackPanel><TextBlock Text="Land Details" FontSize="21" Margin="0,0,0,16"/><ItemsControl ItemsSource="{Binding Context.Land}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Margin="0,0,0,12"><TextBlock Text="{Binding Label}" FontSize="13" Foreground="{StaticResource Muted}"/><TextBlock Text="{Binding Value}" FontSize="16" Margin="0,4,0,0"/></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+   </UniformGrid>
+   <Border Background="{StaticResource Surface}" CornerRadius="14" Padding="20" Margin="0,0,0,22"><StackPanel><TextBlock Text="Current Location" FontSize="21"/><TextBlock Text="Location has not been captured in this reconstruction. No coordinates, accuracy, or inspection times are generated for a submission." Foreground="{StaticResource Muted}" Margin="0,10,0,0"/></StackPanel></Border>
+   <ItemsControl ItemsSource="{Binding Fields}"><ItemsControl.ItemTemplate><DataTemplate>
+    <StackPanel Visibility="{Binding IsVisible,Converter={StaticResource BoolVisibility}}" Margin="0,0,0,18"><TextBlock Text="{Binding Label}" FontSize="16" Margin="0,0,0,8"/><ContentControl Content="{Binding}" ContentTemplateSelector="{StaticResource JsrSelector}"/><TextBlock Text="{Binding Error}" Foreground="#FFB4AB" Margin="0,7,0,0" Visibility="{Binding HasError,Converter={StaticResource BoolVisibility}}"/></StackPanel>
+   </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+   <Border Background="#392D34" CornerRadius="12" Padding="18" Visibility="{Binding HasValidationMessages,Converter={StaticResource BoolVisibility}}"><StackPanel><TextBlock Text="Review required fields" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10"/><ItemsControl ItemsSource="{Binding ValidationMessages}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Margin="0,0,0,7"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+  </StackPanel></ScrollViewer>
+ </DockPanel>
+</Window>

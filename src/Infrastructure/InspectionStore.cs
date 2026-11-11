@@ -1,0 +1,298 @@
+using System.Text.Json;
+using Mskpy.Domain;
+
+namespace Mskpy.Infrastructure;
+
+/// <summary>
+/// Status of a harvested inspection record.
+/// </summary>
+public enum RecordStatus
+{
+    New,       // First seen in harvester, never opened
+    Opened,    // User opened the detail view
+    Submitted, // Submit attempted (regardless of outcome)
+    Accepted,  // Verify confirmed count=1, no hasErrors
+    Returned,  // Server returned 500 or hasErrors=true
+    Failed     // Non-2xx submit; awaits retry in Needs redo view
+}
+
+/// <summary>
+/// A harvested record persisted in the local SQLite store, keyed on consumer_number.
+/// </summary>
+public sealed record StoredInspectionRecord(
+    string ConsumerNumber,
+    string CpfNo,
+    string? VendorCode,
+    string? ConsumerName,
+    string? Latitude,
+    string? Longitude,
+    string? InstallDate,
+    string? ReasonToRevert,
+    string? SurveyDurationMinutes,
+    bool IsFirstTime,        // true when inst_date is null/empty (R4)
+    RecordStatus Status,     // R5 state machine
+    string? LastServerMessage, // R5 verbatim server message
+    DateTime? LastServerMessageAt, // R5 timestamp
+    string? OriginalJson,      // Full raw record JSON
+    string? SubmittedDataPath,   // Path to data.json from last submit attempt
+    string? PhotoPaths,          // JSON array of photo file paths
+    string? SignPaths            // JSON array of signature file paths
+);
+
+/// <summary>
+/// SQLite-backed store of harvested inspection records, keyed on consumer_number.
+/// Provides dedupe, persist, and resume-on-restart (R3/R4/R5).
+/// </summary>
+public sealed class InspectionStore : IDisposable
+{
+    private readonly Microsoft.Data.Sqlite.SqliteConnection connection;
+    private bool disposed;
+
+    public InspectionStore(string? dbPath = null)
+    {
+        var dir = dbPath != null
+            ? Path.GetDirectoryName(dbPath) ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenewableEnergyDesktop");
+        Directory.CreateDirectory(dir);
+        var path = dbPath ?? Path.Combine(dir, "inspection-store.db");
+
+        connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}");
+        connection.Open();
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            CREATE TABLE IF NOT EXISTS inspection_records (
+                consumer_number TEXT PRIMARY KEY,
+                cpf_no TEXT NOT NULL,
+                vendor_code TEXT,
+                consumer_name TEXT,
+                latitude TEXT,
+                longitude TEXT,
+                inst_date TEXT,
+                reason_to_revert TEXT,
+                survey_duration_minutes TEXT,
+                is_first_time INTEGER NOT NULL,
+                status INTEGER NOT NULL DEFAULT 0,
+                last_server_message TEXT,
+                last_server_message_at TEXT,
+                original_json TEXT,
+                submitted_data_path TEXT,
+                photo_paths TEXT,
+                sign_paths TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_records_status ON inspection_records(status);
+            CREATE INDEX IF NOT EXISTS idx_records_first_time ON inspection_records(is_first_time);
+            CREATE TABLE IF NOT EXISTS photo_hashes (
+                sha256 TEXT NOT NULL,
+                consumer_number TEXT NOT NULL,
+                role TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_photo_hash ON photo_hashes(sha256);
+        ";
+        cmd.ExecuteNonQuery();
+    }
+
+    public int Upsert(StoredInspectionRecord record)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO inspection_records
+            (consumer_number, cpf_no, vendor_code, consumer_name, latitude, longitude,
+             inst_date, reason_to_revert, survey_duration_minutes, is_first_time,
+             status, last_server_message, last_server_message_at, original_json, updated_at)
+            VALUES (@cn, @cpf, @vc, @cnm, @lat, @lon, @inst, @rtv, @sdm, @ift, @st, @lsm, @lsma, @oj, @ua,
+                    @sdp, @pp, @sp)
+            ON CONFLICT(consumer_number) DO UPDATE SET
+                cpf_no=excluded.cpf_no,
+                vendor_code=excluded.vendor_code,
+                consumer_name=excluded.consumer_name,
+                latitude=excluded.latitude,
+                longitude=excluded.longitude,
+                inst_date=excluded.inst_date,
+                reason_to_revert=excluded.reason_to_revert,
+                survey_duration_minutes=excluded.survey_duration_minutes,
+                is_first_time=excluded.is_first_time,
+                status=CASE WHEN excluded.status > status THEN excluded.status ELSE status END,
+                last_server_message=COALESCE(excluded.last_server_message, inspection_records.last_server_message),
+                last_server_message_at=COALESCE(excluded.last_server_message_at, inspection_records.last_server_message_at),
+                original_json=excluded.original_json,
+                updated_at=excluded.updated_at,
+                submitted_data_path=excluded.submitted_data_path,
+                photo_paths=excluded.photo_paths,
+                sign_paths=excluded.sign_paths
+                updated_at=excluded.updated_at;
+        ";
+        cmd.Parameters.AddWithValue("@cn", record.ConsumerNumber);
+        cmd.Parameters.AddWithValue("@cpf", record.CpfNo ?? "");
+        cmd.Parameters.AddWithValue("@vc", record.VendorCode ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@cnm", record.ConsumerName ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@lat", record.Latitude ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@lon", record.Longitude ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@inst", record.InstallDate ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@rtv", record.ReasonToRevert ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@sdm", record.SurveyDurationMinutes ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@ift", record.IsFirstTime ? 1 : 0);
+        cmd.Parameters.AddWithValue("@st", (int)record.Status);
+        cmd.Parameters.AddWithValue("@lsm", record.LastServerMessage ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@lsma", record.LastServerMessageAt?.ToString("o") ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@oj", record.OriginalJson ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@sdp", record.SubmittedDataPath ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@pp", record.PhotoPaths ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@sp", record.SignPaths ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
+        return cmd.ExecuteNonQuery();
+    }
+
+    public void SetStatus(string consumerNumber, RecordStatus status, string? lastServerMessage = null)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            UPDATE inspection_records
+            SET status=@st,
+                last_server_message=@lsm,
+                last_server_message_at=@lsma,
+                updated_at=@ua
+            WHERE consumer_number=@cn;
+        ";
+        cmd.Parameters.AddWithValue("@cn", consumerNumber);
+        cmd.Parameters.AddWithValue("@st", (int)status);
+        cmd.Parameters.AddWithValue("@lsm", lastServerMessage ?? (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@lsma", DateTime.UtcNow.ToString("o"));
+        cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
+        cmd.ExecuteNonQuery();
+    }
+
+    public List<StoredInspectionRecord> GetAll(bool? firstTimeOnly = null, RecordStatus? status = null)
+    {
+        var sb = new System.Text.StringBuilder("SELECT * FROM inspection_records WHERE 1=1");
+        if (firstTimeOnly.HasValue) sb.Append(" AND is_first_time=@ift");
+        if (status.HasValue) sb.Append(" AND status=@st");
+        sb.Append(" ORDER BY updated_at DESC");
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = sb.ToString();
+        if (firstTimeOnly.HasValue) cmd.Parameters.AddWithValue("@ift", firstTimeOnly.Value ? 1 : 0);
+        if (status.HasValue) cmd.Parameters.AddWithValue("@st", (int)status.Value);
+
+        var results = new List<StoredInspectionRecord>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(new StoredInspectionRecord(
+                ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
+                CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
+                VendorCode: reader.IsDBNull(reader.GetOrdinal("vendor_code")) ? null : reader.GetString(reader.GetOrdinal("vendor_code")),
+                ConsumerName: reader.IsDBNull(reader.GetOrdinal("consumer_name")) ? null : reader.GetString(reader.GetOrdinal("consumer_name")),
+                Latitude: reader.IsDBNull(reader.GetOrdinal("latitude")) ? null : reader.GetString(reader.GetOrdinal("latitude")),
+                Longitude: reader.IsDBNull(reader.GetOrdinal("longitude")) ? null : reader.GetString(reader.GetOrdinal("longitude")),
+                InstallDate: reader.IsDBNull(reader.GetOrdinal("inst_date")) ? null : reader.GetString(reader.GetOrdinal("inst_date")),
+                ReasonToRevert: reader.IsDBNull(reader.GetOrdinal("reason_to_revert")) ? null : reader.GetString(reader.GetOrdinal("reason_to_revert")),
+                SurveyDurationMinutes: reader.IsDBNull(reader.GetOrdinal("survey_duration_minutes")) ? null : reader.GetString(reader.GetOrdinal("survey_duration_minutes")),
+                IsFirstTime: reader.GetInt32(reader.GetOrdinal("is_first_time")) != 0,
+                Status: (RecordStatus)reader.GetInt32(reader.GetOrdinal("status")),
+                LastServerMessage: reader.IsDBNull(reader.GetOrdinal("last_server_message")) ? null : reader.GetString(reader.GetOrdinal("last_server_message")),
+                LastServerMessageAt: reader.IsDBNull(reader.GetOrdinal("last_server_message_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("last_server_message_at")), null, System.Globalization.DateTimeStyles.RoundtripKind),
+                OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
+                SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
+                PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
+                SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths"))
+            ));
+        }
+        return results;
+    }
+
+    public StoredInspectionRecord? GetByConsumerNumber(string consumerNumber)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT * FROM inspection_records WHERE consumer_number=@cn";
+        cmd.Parameters.AddWithValue("@cn", consumerNumber);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) return null;
+        return new StoredInspectionRecord(
+            ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
+            CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
+            VendorCode: reader.IsDBNull(reader.GetOrdinal("vendor_code")) ? null : reader.GetString(reader.GetOrdinal("vendor_code")),
+            ConsumerName: reader.IsDBNull(reader.GetOrdinal("consumer_name")) ? null : reader.GetString(reader.GetOrdinal("consumer_name")),
+            Latitude: reader.IsDBNull(reader.GetOrdinal("latitude")) ? null : reader.GetString(reader.GetOrdinal("latitude")),
+            Longitude: reader.IsDBNull(reader.GetOrdinal("longitude")) ? null : reader.GetString(reader.GetOrdinal("longitude")),
+            InstallDate: reader.IsDBNull(reader.GetOrdinal("inst_date")) ? null : reader.GetString(reader.GetOrdinal("inst_date")),
+            ReasonToRevert: reader.IsDBNull(reader.GetOrdinal("reason_to_revert")) ? null : reader.GetString(reader.GetOrdinal("reason_to_revert")),
+            SurveyDurationMinutes: reader.IsDBNull(reader.GetOrdinal("survey_duration_minutes")) ? null : reader.GetString(reader.GetOrdinal("survey_duration_minutes")),
+            IsFirstTime: reader.GetInt32(reader.GetOrdinal("is_first_time")) != 0,
+            Status: (RecordStatus)reader.GetInt32(reader.GetOrdinal("status")),
+            LastServerMessage: reader.IsDBNull(reader.GetOrdinal("last_server_message")) ? null : reader.GetString(reader.GetOrdinal("last_server_message")),
+            LastServerMessageAt: reader.IsDBNull(reader.GetOrdinal("last_server_message_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("last_server_message_at")), null, System.Globalization.DateTimeStyles.RoundtripKind),
+            OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
+                SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
+                PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
+                SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths"))
+        );
+    }
+
+    public int Count(bool? firstTimeOnly = null, RecordStatus? status = null)
+    {
+        var sb = new System.Text.StringBuilder("SELECT COUNT(*) FROM inspection_records WHERE 1=1");
+        if (firstTimeOnly.HasValue) sb.Append(" AND is_first_time=@ift");
+        if (status.HasValue) sb.Append(" AND status=@st");
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = sb.ToString();
+        if (firstTimeOnly.HasValue) cmd.Parameters.AddWithValue("@ift", firstTimeOnly.Value ? 1 : 0);
+        if (status.HasValue) cmd.Parameters.AddWithValue("@st", (int)status.Value);
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    /// <summary>
+    /// W1: Returns the consumer_number that owns this photo hash for the given role,
+    /// or null if the hash has never been sent. If it returns a different consumer
+    /// than the one being submitted, the photo must not be reused.
+    /// </summary>
+    public string? FindPhotoOwner(string sha256, string role, string currentConsumerNumber)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT consumer_number FROM photo_hashes
+            WHERE sha256=@h AND role=@r
+            LIMIT 1;
+        ";
+        cmd.Parameters.AddWithValue("@h", sha256);
+        cmd.Parameters.AddWithValue("@r", role);
+        using var reader = cmd.ExecuteReader();
+        if (reader.Read())
+        {
+            var owner = reader.GetString(reader.GetOrdinal("consumer_number"));
+            return owner != currentConsumerNumber ? owner : null;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// W1: Insert a photo hash row. Called only after a successful 2xx upload.
+    /// </summary>
+    public void InsertPhotoHash(string sha256, string consumerNumber, string role, string sentAt)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            INSERT INTO photo_hashes (sha256, consumer_number, role, sent_at)
+            VALUES (@h, @cn, @r, @sa);
+        ";
+        cmd.Parameters.AddWithValue("@h", sha256);
+        cmd.Parameters.AddWithValue("@cn", consumerNumber);
+        cmd.Parameters.AddWithValue("@r", role);
+        cmd.Parameters.AddWithValue("@sa", sentAt);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void Dispose()
+    {
+        if (!disposed)
+        {
+            connection.Dispose();
+            disposed = true;
+        }
+    }
+}
+
+

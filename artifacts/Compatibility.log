@@ -1,0 +1,18 @@
+PASS employee endpoint matches APK
+PASS form credentials encoded without agency scheme
+PASS employee session has all schemes
+PASS issued user token retained without appearing in diagnostics
+PASS agency scheme supplied
+PASS server-issued token in data wrapper recognized
+PASS failed sign-in clears previous session
+PASS success without user is not accepted
+PASS unexpected service body is not displayed
+PASS unexpected login redirect rejected
+PASS TOD uses its separate recovered login contract
+PASS sign out clears session
+PASS all 23 unreviewed inspection checks fail validation
+PASS individually completed correct checks pass validation
+PASS incorrect check requires an explanation
+PASS documented incorrect check is retained without blocking unrelated checks
+PASS milestone validation requires photo evidence and bounded remarks
+17 checks passed. No production requests were sent.

@@ -1,0 +1,93 @@
+using Mskpy.Application;
+using Mskpy.Domain;
+using Mskpy.Presentation.Services;
+using Mskpy.Presentation.ViewModels;
+
+var passes = 0;
+void Check(bool ok, string label) { if (!ok) throw new Exception(label); passes++; Console.WriteLine("PASS " + label); }
+var gateway = new FakeGateway(); var secrets = new FakeSecrets(); var desktop = new FakeDesktop();
+var workflow = new ClientWorkflow(gateway);
+using var shell = new ShellViewModel(workflow, secrets, desktop);
+await shell.Login.ExecuteAsync();
+Check(shell.HasError && gateway.LoginCalls == 0, "empty username fails before contacting backend");
+shell.Username = "sample"; await shell.Login.ExecuteAsync();
+Check(shell.IsSignedIn && secrets.Reads == 2, "successful login clears view input at action time");
+Check(!shell.GetType().GetProperties().Any(x => x.Name.Contains("Password")), "password is not a bindable view-model property");
+await shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
+Check(shell.IsList && shell.Applications.Count == 100, "list applies display cap without extra backend calls");
+var reads = gateway.LoadCalls; shell.Search = "Record 119";
+Check(shell.Applications.Count == 1 && gateway.LoadCalls == reads, "search filters locally without transmitting query keystrokes");
+shell.SelectedApplication = shell.Applications[0]; shell.ViewDetails.Execute(null);
+Check(shell.IsDetails && shell.Fields.Any(x => x.Value == "Record 119"), "details are selected through commands and bindings");
+shell.Navigate.Execute("Diagnostics"); shell.CopyDiagnostics.Execute(null);
+Check(desktop.Copied == "Response fields only", "diagnostics command copies structural information only");
+gateway.Pending = new TaskCompletionSource<IReadOnlyList<ApplicationDocument>>(TaskCreationOptions.RunContinuationsAsynchronously);
+var loading = shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
+Check(shell.IsBusy && shell.Cancel.CanExecute(null), "pending network operation exposes cancellation state");
+shell.SignOut.Execute(null);
+gateway.Pending.SetResult(gateway.Records);
+await loading;
+Check(shell.IsSignedOut && shell.Applications.Count == 0 && !shell.IsBusy, "sign-out cancels and suppresses stale list results");
+shell.Username = "sample"; await shell.Login.ExecuteAsync(); gateway.Pending = null; gateway.Expire = true;
+await shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
+Check(shell.IsSignedOut && shell.Error.Contains("expired"), "expired session clears navigation and requests sign-in");
+gateway.Expire = false; await shell.Login.ExecuteAsync(); var beforeInvalidModule = gateway.LoadCalls;
+var blocked = false; try { await workflow.LoadAsync("invented-module", CancellationToken.None); } catch (InvalidOperationException) { blocked = true; }
+Check(blocked && gateway.LoadCalls == beforeInvalidModule, "unregistered modules cannot create undocumented backend requests");
+const string jsrSource = """{"consumer_number":"SAMPLE-JSR","consumer_name":"Synthetic record","wf_action_id":122}""";
+var jsrDocument = new Mskpy.Infrastructure.JsrDocuments().FromRecord(jsrSource);
+var drafts = new FakeJsrDocuments(jsrDocument);
+var jsrInteractions = new FakeJsrInteractions();
+using var jsr = new JsrViewModel(jsrDocument, new JsrWorkflow(drafts), jsrInteractions);
+JsrFieldViewModel Field(string key) => jsr.Fields.Single(f => f.Key == key);
+Field("source").Value = "Well";
+Check(Field("sourceRailing").IsVisible, "JSR well selection reveals the original guard question");
+Field("source").Value = "Canal";
+Check(!Field("sourceRailing").IsVisible && Field("vendorRepName").IsVisible, "JSR conditional visibility follows source and workflow action");
+Field("mobileNetwork").Value = "No"; jsr.Validate.Execute(null);
+Check(!Field("__networks").HasError && !Field("__networks").IsVisible, "JSR does not demand provider selection when mobile network is unavailable");
+Field("mobileNetwork").Value = "Yes"; jsr.Validate.Execute(null);
+Check(Field("__networks").HasError && Field("__networks").IsVisible, "JSR network choices appear and validate only when applicable");
+jsr.Networks.Single(n => n.Name == "Jio").IsSelected = true;
+Check(!Field("__networks").HasError, "JSR edits refresh conditional validation without a network call");
+await jsr.ChoosePhoto.ExecuteAsync(jsr.Photos[0]);
+Check(jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR photo command updates its explicit role and dirty state");
+await jsr.SaveDraft.ExecuteAsync();
+Check(drafts.Saves == 1 && drafts.Saved!.SourceDocumentJson == jsrSource && !jsr.IsDirty, "JSR draft save delegates to application port and preserves original JSON");
+await jsr.ValidateAndSave.ExecuteAsync();
+Check(drafts.Saves == 1 && jsr.HasValidationMessages, "invalid JSR does not save a claimed validated form");
+jsr.RemovePhoto.Execute(jsr.Photos[0]);
+Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears the role without altering other answers");
+Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
+
+sealed class FakeSecrets : ISecretInput { public int Reads; public string ReadAndClear() { Reads++; return "synthetic-password"; } }
+sealed class FakeDesktop : IDesktopActions
+{
+    public string? Copied; public void CopyDiagnostics(string text) => Copied = text;
+    public Task OpenInspectionAsync(string? json, CancellationToken ct) => Task.CompletedTask;
+    public Task OpenJsrAsync(string? json, CancellationToken ct) => Task.CompletedTask;
+}
+sealed class FakeGateway : IClientGateway
+{
+    public int LoginCalls, LoadCalls; public bool Expire;
+    public AccountProfile? Profile { get; private set; }
+    public string Diagnostics => "Response fields only";
+    public TaskCompletionSource<IReadOnlyList<ApplicationDocument>>? Pending;
+    public IReadOnlyList<ApplicationDocument> Records = Enumerable.Range(0, 120).Select(i => new ApplicationDocument("sample-" + i, "Record " + i, [new DisplayField("Name", "Record " + i)], "{}")).ToArray();
+    public Task<AccountProfile> LoginAsync(LoginRequest request, CancellationToken ct) { LoginCalls++; Profile = new(request.Username, request.Role, request.Scheme, []); return Task.FromResult(Profile); }
+    public Task<IReadOnlyList<ApplicationDocument>> GetApplicationsAsync(string module, CancellationToken ct) { LoadCalls++; if (Expire) { SignOut(); throw new SessionExpiredException(); } return Pending?.Task ?? Task.FromResult(Records); }
+    public void SignOut() => Profile = null;
+}
+sealed class FakeJsrDocuments(JsrDocument document) : IJsrDocuments
+{
+    public int Saves; public JsrDraft? Saved;
+    public JsrDocument FromRecord(string json) => document;
+    public Task<JsrDocument> OpenAsync(string path, CancellationToken ct) => Task.FromResult(document);
+    public Task SaveAsync(string path, JsrDraft draft, CancellationToken ct) { Saves++; Saved = draft; return Task.CompletedTask; }
+}
+sealed class FakeJsrInteractions : IJsrInteractions
+{
+    public string? ChooseDraftPath() => "synthetic-draft-path";
+    public Task<SelectedPhoto?> ChoosePhotoAsync(string title, CancellationToken ct) => Task.FromResult<SelectedPhoto?>(new(new PhotoReference("C:\\synthetic.jpg", 1, "synthetic"), null));
+    public Task<SelectedPhoto> RestorePhotoAsync(PhotoReference photo, CancellationToken ct) => Task.FromResult(new SelectedPhoto(photo, null));
+}

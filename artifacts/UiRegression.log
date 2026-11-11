@@ -1,0 +1,19 @@
+PASS 23 independent pairs of correctness choices
+PASS two independent signature canvases
+PASS three explicit photo-role selectors
+PASS offline editor has no live submission action
+PASS saved individual check restored
+PASS network image paths in imported drafts are not fetched
+PASS genuine JPEG file restored with its photo-role mapping
+PASS renamed non-image files are rejected
+PASS MVVM login preserves a single unbound password input
+PASS verified home inventory is bound to the shell view model
+PASS JSR renders source-derived irrigation choices through data templates
+PASS JSR renders the four original mobile-network providers
+PASS JSR renders three named photo roles
+PASS unverified JSR upload cannot trigger a network submission
+PASS JSR selector updates its bound answer and dependent question visibility
+PASS dark selection template retains the required native ComboBox popup part
+PASS JSR imported network image paths are rejected before file access
+PASS JSR restores a genuine JPEG into a frozen thumbnail with a verified file hash
+In-process WPF render and control checks completed using synthetic data. No windows were shown and no production requests were sent.

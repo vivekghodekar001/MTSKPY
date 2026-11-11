@@ -1,0 +1,21 @@
+PASS empty username fails before contacting backend
+PASS successful login clears view input at action time
+PASS password is not a bindable view-model property
+PASS list applies display cap without extra backend calls
+PASS search filters locally without transmitting query keystrokes
+PASS details are selected through commands and bindings
+PASS diagnostics command copies structural information only
+PASS pending network operation exposes cancellation state
+PASS sign-out cancels and suppresses stale list results
+PASS expired session clears navigation and requests sign-in
+PASS unregistered modules cannot create undocumented backend requests
+PASS JSR well selection reveals the original guard question
+PASS JSR conditional visibility follows source and workflow action
+PASS JSR does not demand provider selection when mobile network is unavailable
+PASS JSR network choices appear and validate only when applicable
+PASS JSR edits refresh conditional validation without a network call
+PASS JSR photo command updates its explicit role and dirty state
+PASS JSR draft save delegates to application port and preserves original JSON
+PASS invalid JSR does not save a claimed validated form
+PASS JSR remove-photo command clears the role without altering other answers
+20 view-model/application checks passed. No network requests.

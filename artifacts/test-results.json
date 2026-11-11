@@ -1,0 +1,37 @@
+{
+  "target": ".NET 10",
+  "scope": "Synthetic/injected services and in-process WPF only; no production requests",
+  "results": [
+    {
+      "runner": "Compatibility",
+      "exit_code": 0,
+      "passed_checks": 17,
+      "log": "Compatibility.log"
+    },
+    {
+      "runner": "Transport",
+      "exit_code": 0,
+      "passed_checks": 7,
+      "log": "Transport.log"
+    },
+    {
+      "runner": "ViewModels",
+      "exit_code": 0,
+      "passed_checks": 20,
+      "log": "ViewModels.log"
+    },
+    {
+      "runner": "UiRegression",
+      "exit_code": 0,
+      "passed_checks": 18,
+      "log": "UiRegression.log"
+    },
+    {
+      "runner": "Jsr",
+      "exit_code": 0,
+      "passed_checks": 17,
+      "log": "Jsr.log"
+    }
+  ],
+  "total_passed_checks": 79
+}

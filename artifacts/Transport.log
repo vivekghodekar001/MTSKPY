@@ -1,0 +1,8 @@
+PASS transient GET retries once with a fresh request object
+PASS successful login is never replayed
+PASS failed login POST is not retried
+PASS caller cancellation reaches HTTP and does not create a session
+PASS session display fields exclude credentials and tokens
+PASS diagnostics omit secret values
+PASS HTTP 401 clears session without retry or authorization fallback
+7 HTTP integration checks passed using injected handlers; no production requests.
