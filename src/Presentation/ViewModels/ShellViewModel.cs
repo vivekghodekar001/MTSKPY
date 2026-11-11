@@ -343,21 +343,25 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// been accepted. "All" is the statewide set. The officer lands on their
     /// own work.
     /// </summary>
+    /// <remarks>
+    /// J3: this is the SAME rule the chip counts with (CountSeenUnder). The
+    /// old fallback to the row's own cpf made the list show rows the chip did
+    /// not count, so the two numbers drifted apart.
+    /// </remarks>
     bool InScope(ApplicationDocument doc)
     {
         if (listScope == ListScopeAll) return true;
         var session = profile?.LoginId ?? "";
         if (session.Length == 0) return false;
+        if (string.Equals(DocField(doc, "Status"), RecordStatus.Accepted.ToString(), StringComparison.Ordinal))
+            return false;
         // F1: membership is the SEEN set, so a record seen under two cpfs is in
-        // both officers' queues and never flaps out of one.
+        // both officers' queues and never flaps out of one. The seen set always
+        // contains the row's own cpf (J3), so this covers the owner too.
         var seen = DocField(doc, "SeenCpfs");
-        if (seen.Length > 0 &&
+        return seen.Length > 0 &&
             seen.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(c => string.Equals(c, session, StringComparison.Ordinal)))
-            return !string.Equals(DocField(doc, "Status"), RecordStatus.Accepted.ToString(), StringComparison.Ordinal);
-        // Fall back to the owner of first sighting for rows with no seen set.
-        return string.Equals(DocField(doc, "Cpf"), session, StringComparison.Ordinal)
-            && !string.Equals(DocField(doc, "Status"), RecordStatus.Accepted.ToString(), StringComparison.Ordinal);
+                .Any(c => string.Equals(c, session, StringComparison.Ordinal));
     }
 
     void ApplySearch()

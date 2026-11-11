@@ -142,6 +142,105 @@ try
 }
 finally { try { Directory.Delete(vendorDir, true); } catch { } }
 
+// J3: a row with a NULL seen set (written by an earlier build, before the
+// seen set was stored) must be surfaced by the store-open backfill, and the
+// chip count and the list predicate must then agree exactly.
+{
+    var j3Dir = Path.Combine(Path.GetTempPath(), $"mskpy-j3-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(j3Dir);
+    var j3Db = Path.Combine(j3Dir, "j3.db");
+    try
+    {
+        // Write the row the way an earlier build did: no seen set at all.
+        using (var legacy = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={j3Db}"))
+        {
+            legacy.Open();
+            using var create = legacy.CreateCommand();
+            create.CommandText = @"
+                CREATE TABLE inspection_records (
+                    consumer_number TEXT PRIMARY KEY,
+                    cpf_no TEXT NOT NULL,
+                    vendor_code TEXT,
+                    consumer_name TEXT,
+                    latitude TEXT,
+                    longitude TEXT,
+                    inst_date TEXT,
+                    reason_to_revert TEXT,
+                    survey_duration_minutes TEXT,
+                    is_first_time INTEGER NOT NULL,
+                    status INTEGER NOT NULL DEFAULT 0,
+                    last_server_message TEXT,
+                    last_server_message_at TEXT,
+                    original_json TEXT,
+                    submitted_data_path TEXT,
+                    photo_paths TEXT,
+                    sign_paths TEXT,
+                    seen_cpfs TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO inspection_records
+                (consumer_number, cpf_no, consumer_name, is_first_time, status, seen_cpfs, updated_at)
+                VALUES ('MT4420200801626', '02284251', 'Legacy row', 1, 0, NULL, '2026-01-01T00:00:00.0000000Z');
+            ";
+            create.ExecuteNonQuery();
+        }
+
+        // Opening the store runs the backfill: the row must now be in the
+        // queue of its own cpf, exactly as a freshly harvested row is.
+        using (var store = new Mskpy.Infrastructure.InspectionStore(j3Db))
+        {
+            var healed = store.GetByConsumerNumber("MT4420200801626");
+            Check(healed != null, "a row written by an earlier build is still readable");
+            Check(healed!.SeenCpfs != null && healed.SeenCpfs.Contains("02284251"),
+                "the backfill surfaces a row whose seen set was NULL");
+            Check(store.IsSeenUnder("MT4420200801626", "02284251"),
+                "the backfill puts the healed row in its own cpf's queue");
+            Check(store.CountSeenUnder("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 1,
+                "the chip counts the healed row");
+            Check(store.CountSeenUnder("02284251") == 1,
+                "the healed row is counted once, not twice");
+
+            // Idempotent: a second backfill adds nothing.
+            Check(store.BackfillSeenCpfs() == 0, "the backfill is idempotent");
+            Check(store.CountSeenUnder("02284251") == 1,
+                "the healed row is still counted once after a second backfill");
+        }
+    }
+    finally { try { Directory.Delete(j3Dir, true); } catch { } }
+}
+
+// J3: the chip and the list must use the SAME predicate. A row seen under two
+// cpfs is in both queues, and a row that has been accepted is in neither.
+{
+    var j3Dir = Path.Combine(Path.GetTempPath(), $"mskpy-j3b-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(j3Dir);
+    var j3Db = Path.Combine(j3Dir, "j3b.db");
+    try
+    {
+        using var store = new Mskpy.Infrastructure.InspectionStore(j3Db);
+        using var row = JsonDocument.Parse("""
+        {"consumer_number":"MT4420200801626","cpf_no":"02781310","consumer_name":"Both queues","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01"}
+        """);
+        store.UpsertRows(new[] { row.RootElement }, "02284251");
+
+        Check(store.CountSeenUnder("02284251") == 1,
+            "the chip counts the row under the cpf that listed it");
+        Check(store.CountSeenUnder("02781310") == 1,
+            "the chip counts the row under the cpf that owns it");
+        var seen = store.GetByConsumerNumber("MT4420200801626")!.SeenCpfs;
+        Check(seen != null && seen.Contains("02284251") && seen.Contains("02781310"),
+            "the row's seen set holds both cpfs");
+
+        // An accepted row leaves both queues.
+        store.SetStatus("MT4420200801626", Mskpy.Infrastructure.RecordStatus.Accepted);
+        Check(store.CountSeenUnder("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
+            "an accepted row leaves the chip count");
+        Check(store.CountSeenUnder("02781310", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
+            "an accepted row leaves the other officer's chip count too");
+    }
+    finally { try { Directory.Delete(j3Dir, true); } catch { } }
+}
+
 // F1: a consumer seen under two cpfs belongs to BOTH queues, its cpf_no never
 // changes, and the detail can be fetched from either side.
 {

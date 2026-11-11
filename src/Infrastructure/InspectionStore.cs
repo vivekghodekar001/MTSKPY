@@ -92,6 +92,10 @@ public sealed class InspectionStore : IDisposable
                 submitted_data_path TEXT,
                 photo_paths TEXT,
                 sign_paths TEXT,
+                -- J3: the set of cpfs that have seen this row, stored ON the
+                -- row. It is the record of truth; record_cpfs below is the index
+                -- the EXISTS/COUNT queries use and can always be rebuilt from it.
+                seen_cpfs TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_records_status ON inspection_records(status);
@@ -106,6 +110,7 @@ public sealed class InspectionStore : IDisposable
             -- F1: the cpfs whose list has contained a consumer. cpf_no on the
             -- record is the owner of first sighting; this table is the full set,
             -- so a record seen under two cpfs belongs to BOTH officers' queues.
+            -- J3: this table is an INDEX of inspection_records.seen_cpfs.
             CREATE TABLE IF NOT EXISTS record_cpfs (
                 consumer_number TEXT NOT NULL,
                 cpf_no TEXT NOT NULL,
@@ -116,16 +121,111 @@ public sealed class InspectionStore : IDisposable
         ";
         cmd.ExecuteNonQuery();
 
-        // F1: backfill the seen set for rows harvested before this table existed.
-        using (var backfill = connection.CreateCommand())
+        // J3: a store written by an earlier build has no seen_cpfs column at
+        // all. Add it before the backfill reads it.
+        using (var pragma = connection.CreateCommand())
         {
-            backfill.CommandText = @"
-                INSERT OR IGNORE INTO record_cpfs (consumer_number, cpf_no, first_seen_at)
-                SELECT consumer_number, cpf_no, updated_at FROM inspection_records
-                WHERE cpf_no IS NOT NULL AND TRIM(cpf_no) <> '';
-            ";
-            backfill.ExecuteNonQuery();
+            pragma.CommandText = "PRAGMA table_info(inspection_records);";
+            bool hasSeenCpfs = false;
+            using (var reader = pragma.ExecuteReader())
+                while (reader.Read())
+                    if (reader.GetString(1) == "seen_cpfs") hasSeenCpfs = true;
+            if (!hasSeenCpfs)
+            {
+                using var alter = connection.CreateCommand();
+                alter.CommandText = "ALTER TABLE inspection_records ADD COLUMN seen_cpfs TEXT;";
+                alter.ExecuteNonQuery();
+            }
         }
+
+        // J3: the one-shot backfill. A row written by an earlier build carries
+        // no seen set, so the chip (which counts the index) and the list (which
+        // falls back to the row's own cpf) disagreed until the next restart.
+        // Derive the index from cpf_no plus every entry of the seen set.
+        BackfillSeenCpfs();
+    }
+
+    /// <summary>
+    /// J3: rebuild the seen-cpf index from the row's own cpf_no plus every
+    /// entry of its stored seen set, and repair the seen set from the index.
+    /// Idempotent: running it again adds nothing.
+    /// </summary>
+    /// <returns>how many index rows were added</returns>
+    public int BackfillSeenCpfs()
+    {
+        dbLock.Wait();
+        try
+        {
+            // (1) A row with no seen set takes the one its index already holds.
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = @"
+                    UPDATE inspection_records
+                    SET seen_cpfs = COALESCE((SELECT GROUP_CONCAT(c.cpf_no, ',')
+                                              FROM record_cpfs c
+                                              WHERE c.consumer_number = inspection_records.consumer_number), '')
+                    WHERE seen_cpfs IS NULL OR TRIM(seen_cpfs) = '';
+                ";
+                cmd.ExecuteNonQuery();
+            }
+            // (2) The row's own cpf is part of its seen set: it owns the record.
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = @"
+                    UPDATE inspection_records
+                    SET seen_cpfs = cpf_no
+                    WHERE (seen_cpfs IS NULL OR TRIM(seen_cpfs) = '')
+                      AND cpf_no IS NOT NULL AND TRIM(cpf_no) <> '';
+                ";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = @"
+                    UPDATE inspection_records
+                    SET seen_cpfs = seen_cpfs || ',' || cpf_no
+                    WHERE cpf_no IS NOT NULL AND TRIM(cpf_no) <> ''
+                      AND TRIM(COALESCE(seen_cpfs, '')) <> ''
+                      AND instr(',' || seen_cpfs || ',', ',' || cpf_no || ',') = 0;
+                ";
+                cmd.ExecuteNonQuery();
+            }
+            // (3) Rebuild the index from the seen set: one row per cpf.
+            int added = 0;
+            using (var read = connection.CreateCommand())
+            {
+                read.CommandText = @"
+                    SELECT consumer_number, seen_cpfs, updated_at
+                    FROM inspection_records
+                    WHERE seen_cpfs IS NOT NULL AND TRIM(seen_cpfs) <> '';
+                ";
+                using var reader = read.ExecuteReader();
+                var pairs = new List<(string Consumer, string Cpf, string SeenAt)>();
+                while (reader.Read())
+                {
+                    var consumer = reader.GetString(0);
+                    var seen = reader.GetString(1);
+                    var updated = reader.IsDBNull(2) ? DateTime.UtcNow.ToString("o") : reader.GetString(2);
+                    foreach (var part in seen.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        pairs.Add((consumer, part, updated));
+                }
+                using var tx = connection.BeginTransaction();
+                using var ins = connection.CreateCommand();
+                ins.Transaction = tx;
+                ins.CommandText = "INSERT OR IGNORE INTO record_cpfs (consumer_number, cpf_no, first_seen_at) VALUES ($cn, $cpf, $ts);";
+                var pcn = ins.Parameters.Add("$cn", Microsoft.Data.Sqlite.SqliteType.Text);
+                var pcpf = ins.Parameters.Add("$cpf", Microsoft.Data.Sqlite.SqliteType.Text);
+                var pts = ins.Parameters.Add("$ts", Microsoft.Data.Sqlite.SqliteType.Text);
+                foreach (var (consumer, cpf, seenAt) in pairs)
+                {
+                    pcn.Value = consumer; pcpf.Value = cpf; pts.Value = seenAt;
+                    added += ins.ExecuteNonQuery();
+                }
+                tx.Commit();
+            }
+            return added;
+        }
+        finally { dbLock.Release(); }
     }
 
     public int Upsert(StoredInspectionRecord record, bool preserveStatus = false)
@@ -198,7 +298,13 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@pp", record.PhotoPaths ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@sp", record.SignPaths ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
-            return cmd.ExecuteNonQuery();
+            var result = cmd.ExecuteNonQuery();
+
+            // J3: the row's own cpf is part of its seen set. A row written
+            // between two store opens had no seen set at all until the next
+            // backfill, so the chip and the list disagreed in the meantime.
+            EnsureOwnCpfInSeenSetLocked(record.ConsumerNumber);
+            return result;
         }
         finally
         {
@@ -255,16 +361,75 @@ public sealed class InspectionStore : IDisposable
     {
         if (string.IsNullOrWhiteSpace(consumerNumber) || string.IsNullOrWhiteSpace(cpf)) return;
         dbLock.Wait();
-        try
+        try { AddSeenCpfLocked(consumerNumber, cpf.Trim()); }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>
+    /// J3: records that a consumer appeared in a cpf's list. Both copies are
+    /// written together: the row's seen_cpfs list (the record of truth) and
+    /// the record_cpfs index (what the EXISTS/COUNT queries use). Writing only
+    /// the index is what let the chip and the list disagree.
+    /// </summary>
+    /// <remarks>The caller must hold dbLock.</remarks>
+    void AddSeenCpfLocked(string consumerNumber, string trimmed)
+    {
+        using (var cmd = connection.CreateCommand())
         {
-            using var cmd = connection.CreateCommand();
             cmd.CommandText = "INSERT OR IGNORE INTO record_cpfs (consumer_number, cpf_no, first_seen_at) VALUES ($cn, $cpf, $ts);";
             cmd.Parameters.AddWithValue("$cn", consumerNumber);
-            cmd.Parameters.AddWithValue("$cpf", cpf.Trim());
+            cmd.Parameters.AddWithValue("$cpf", trimmed);
             cmd.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("o"));
             cmd.ExecuteNonQuery();
         }
-        finally { dbLock.Release(); }
+        // J3: the row's own list of seen cpfs, kept in step with the index.
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = @"
+                UPDATE inspection_records
+                SET seen_cpfs = CASE
+                    WHEN seen_cpfs IS NULL OR TRIM(seen_cpfs) = '' THEN $cpf
+                    WHEN instr(',' || seen_cpfs || ',', ',' || $cpf || ',') > 0 THEN seen_cpfs
+                    ELSE seen_cpfs || ',' || $cpf END
+                WHERE consumer_number = $cn;
+            ";
+            cmd.Parameters.AddWithValue("$cn", consumerNumber);
+            cmd.Parameters.AddWithValue("$cpf", trimmed);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// J3: the row's own cpf is part of its seen set, so the owner of a record
+    /// always sees it in their queue. The stored cpf_no is used, not the
+    /// incoming one: cpf_no is insert-only, so the first sighting owns it.
+    /// </summary>
+    /// <remarks>The caller must hold dbLock.</remarks>
+    void EnsureOwnCpfInSeenSetLocked(string consumerNumber)
+    {
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = @"
+                INSERT OR IGNORE INTO record_cpfs (consumer_number, cpf_no, first_seen_at)
+                SELECT consumer_number, cpf_no, updated_at FROM inspection_records
+                WHERE consumer_number = $cn AND TRIM(COALESCE(cpf_no, '')) <> '';
+            ";
+            cmd.Parameters.AddWithValue("$cn", consumerNumber);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = @"
+                UPDATE inspection_records
+                SET seen_cpfs = CASE
+                    WHEN seen_cpfs IS NULL OR TRIM(seen_cpfs) = '' THEN cpf_no
+                    WHEN instr(',' || seen_cpfs || ',', ',' || cpf_no || ',') > 0 THEN seen_cpfs
+                    ELSE seen_cpfs || ',' || cpf_no END
+                WHERE consumer_number = $cn AND TRIM(COALESCE(cpf_no, '')) <> '';
+            ";
+            cmd.Parameters.AddWithValue("$cn", consumerNumber);
+            cmd.ExecuteNonQuery();
+        }
     }
 
     /// <summary>
@@ -390,7 +555,9 @@ public sealed class InspectionStore : IDisposable
         try
         {
             var sb = new System.Text.StringBuilder(
-                "SELECT r.*, (SELECT GROUP_CONCAT(c.cpf_no, ',') FROM record_cpfs c WHERE c.consumer_number = r.consumer_number) AS seen_cpfs FROM inspection_records r WHERE 1=1");
+                // J3: seen_cpfs is stored on the row, so no correlated subquery
+                // runs per row over 36k rows on every list load.
+                "SELECT * FROM inspection_records r WHERE 1=1");
             if (firstTimeOnly.HasValue) sb.Append(" AND r.is_first_time=@ift");
             if (status.HasValue) sb.Append(" AND r.status=@st");
             sb.Append(" ORDER BY r.updated_at DESC");
@@ -439,7 +606,7 @@ public sealed class InspectionStore : IDisposable
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT r.*, (SELECT GROUP_CONCAT(c.cpf_no, ',') FROM record_cpfs c WHERE c.consumer_number = r.consumer_number) AS seen_cpfs FROM inspection_records r WHERE r.consumer_number=@cn";
+            cmd.CommandText = "SELECT * FROM inspection_records WHERE consumer_number=@cn";
             cmd.Parameters.AddWithValue("@cn", consumerNumber);
             using var reader = cmd.ExecuteReader();
             if (!reader.Read()) return null;
