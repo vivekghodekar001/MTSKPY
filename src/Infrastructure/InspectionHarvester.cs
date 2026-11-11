@@ -15,6 +15,7 @@ public sealed class InspectionHarvester : IDisposable
     private readonly string indexTsvPath;
     private readonly string cursorPath;
     private readonly string logPath;
+    private readonly string cyclePath;
     private readonly string inspectionHost;
     private System.Threading.Timer? timer;
     private readonly object pauseLock = new();
@@ -29,6 +30,12 @@ public sealed class InspectionHarvester : IDisposable
     private bool cycleComplete;
     private int cycleNumber = 1;
     private int consecutiveFailures;
+    // J4: the pass timing, so the log can prove a cycle ENDED and that the
+    // next one started after the brake. The cycle number and the pass start
+    // are persisted, so a restart continues the numbering instead of
+    // repeating "cycle 1" and making the log ambiguous.
+    private DateTime cycleStartedAt = DateTime.Now;
+    private DateTime? lastCycleCompletedAt;
 
     /// <summary>E2: consecutive failed requests before the cadence drops.</summary>
     public const int FailureBackoffThreshold = 10;
@@ -58,11 +65,13 @@ public sealed class InspectionHarvester : IDisposable
         this.indexTsvPath = indexTsvPath;
         this.cursorPath = cursorPath ?? Path.Combine(Path.GetDirectoryName(indexTsvPath) ?? Environment.CurrentDirectory, "harvester-cursor.txt");
         this.logPath = Path.Combine(Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester.log");
+        this.cyclePath = Path.Combine(Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester-cycle.txt");
         this.inspectionHost = inspectionHost;
         this.ReWalkIdle = reWalkIdle ?? TimeSpan.FromMinutes(10);
         this.VacuumOnCycleComplete = vacuumOnCycleComplete;
         LoadCpfIds();
         LoadCursor();
+        LoadCycleState();
     }
 
     private void LoadCpfIds()
@@ -102,6 +111,82 @@ public sealed class InspectionHarvester : IDisposable
     {
         try { File.WriteAllText(cursorPath, currentCpfIndex.ToString()); } catch { }
     }
+
+    /// <summary>
+    /// J4: restore the cycle number and the pass start time from disk.
+    /// The file holds two lines: the cycle number, then the pass start time.
+    /// A restart therefore continues the SAME cycle - the pass was interrupted
+    /// mid-walk, it did not finish and start again - and the log keeps a
+    /// single, monotonic sequence of cycles instead of repeating "cycle 1"
+    /// for every run.
+    /// </summary>
+    private void LoadCycleState()
+    {
+        try
+        {
+            if (File.Exists(cyclePath))
+            {
+                var lines = File.ReadAllLines(cyclePath);
+                if (lines.Length > 0 && int.TryParse(lines[0].Trim(), out var saved) && saved >= 1)
+                    cycleNumber = saved;
+                if (lines.Length > 1 && DateTime.TryParse(lines[1].Trim(), out var started))
+                    cycleStartedAt = started;
+            }
+        }
+        catch { /* an unreadable cycle state starts a fresh count */ }
+        // J4: an app upgraded mid-run has no state file yet. The log already
+        // names the cycle that is in flight, so the numbering continues from
+        // there instead of repeating "cycle 1" for the next pass.
+        if (cycleNumber <= 1) RestoreCycleFromLog();
+        SaveCycleState();
+    }
+
+    /// <summary>
+    /// J4: read the cycle number (and the pass start time) back out of the
+    /// walk log. The log lines are "&lt;timestamp&gt; cycle N start/complete ...".
+    /// Only the newest cycle is used, and the counter never moves backwards.
+    /// </summary>
+    private void RestoreCycleFromLog()
+    {
+        try
+        {
+            if (!File.Exists(logPath)) return;
+            var lines = File.ReadAllLines(logPath);
+            int newest = cycleNumber;
+            DateTime? newestStart = null;
+            foreach (var line in lines)
+            {
+                var at = line.IndexOf("cycle ", StringComparison.Ordinal);
+                if (at < 0) continue;
+                var digits = new string(line.Substring(at + 6).TakeWhile(char.IsDigit).ToArray());
+                if (!int.TryParse(digits, out var n)) continue;
+                if (n > newest) { newest = n; newestStart = null; }
+                if (n != newest) continue;
+                if (!line.Contains($"cycle {n} start", StringComparison.Ordinal)) continue;
+                if (DateTime.TryParse(line.Length >= 19 ? line.Substring(0, 19) : "", out var stamp))
+                    newestStart = stamp;
+            }
+            if (newest > cycleNumber) cycleNumber = newest;
+            if (newestStart.HasValue) cycleStartedAt = newestStart.Value;
+        }
+        catch { }
+    }
+
+    private void SaveCycleState()
+    {
+        try
+        {
+            File.WriteAllText(cyclePath,
+                cycleNumber.ToString() + Environment.NewLine + cycleStartedAt.ToString("o"));
+        }
+        catch { }
+    }
+
+    /// <summary>J4: a duration the log can be read against.</summary>
+    internal static string FormatDuration(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes}m {t.Seconds}s"
+        : t.TotalMinutes >= 1 ? $"{t.Minutes}m {t.Seconds}s"
+        : $"{t.Seconds}s";
 
     public void Start()
     {
@@ -152,7 +237,9 @@ public sealed class InspectionHarvester : IDisposable
             if (!cycleComplete)
             {
                 cycleComplete = true;
-                LogEvent($"cycle {cycleNumber} complete: walked {currentCpfIndex} cpfs, seen={RecordsSeen}, added={RecordsAdded}, duplicates={DuplicateRecords}, rateLimits={RateLimitHits}, storeErrors={StoreErrors}");
+                lastCycleCompletedAt = DateTime.Now;
+                var took = lastCycleCompletedAt.Value - cycleStartedAt;
+                LogEvent($"cycle {cycleNumber} complete: walked {currentCpfIndex} cpfs, seen={RecordsSeen}, added={RecordsAdded}, duplicates={DuplicateRecords}, rateLimits={RateLimitHits}, storeErrors={StoreErrors} in {FormatDuration(took)}");
                 OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} complete - next cycle in {ReWalkIdle.TotalMinutes:F0} min.");
                 if (VacuumOnCycleComplete)
                 {
@@ -170,8 +257,11 @@ public sealed class InspectionHarvester : IDisposable
             cycleComplete = false;
             cycleNumber++;
             currentCpfIndex = 0;
+            cycleStartedAt = DateTime.Now;
             SaveCursor();
-            LogEvent($"cycle {cycleNumber} start: re-walking {cpfIds.Count} cpfs from 0");
+            SaveCycleState();
+            var idle = lastCycleCompletedAt.HasValue ? DateTime.Now - lastCycleCompletedAt.Value : TimeSpan.Zero;
+            LogEvent($"cycle {cycleNumber} start: re-walking {cpfIds.Count} cpfs from 0 (after {(int)idle.TotalSeconds}s idle)");
             OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} started.");
             timer?.Change(requestInterval, requestInterval);
             return;

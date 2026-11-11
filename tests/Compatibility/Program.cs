@@ -14,6 +14,12 @@ static string? RawUpdatedAt(string dbFile, string consumer)
     cmd.Parameters.AddWithValue("$cn", consumer);
     return cmd.ExecuteScalar() as string;
 }
+static int CountOccurrences(string haystack, string needle)
+{
+    int n = 0, at = 0;
+    while ((at = haystack.IndexOf(needle, at, StringComparison.Ordinal)) >= 0) { n++; at += needle.Length; }
+    return n;
+}
 var handler = new FakeHandler();
 using var client = new ApiClient(handler);
 handler.Body = "{\"hasErrors\":false,\"data\":{\"success\":true,\"user\":{\"loginId\":\"sample\",\"jwt\":\"test-token\"}}}";
@@ -369,8 +375,87 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
-Console.WriteLine($"{passed} checks passed. No production requests were sent.");
+// J4: the cycle proof must survive a restart. The cycle number continues
+// instead of repeating "cycle 1", and the log records how long the pass ran
+// and how long the brake was, so a completed pass can be read off the log.
+{
+    var walkDir = Path.Combine(Path.GetTempPath(), $"mskpy-cycle-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(walkDir);
+    var indexFile = Path.Combine(walkDir, "index.tsv");
+    var cursorFile = Path.Combine(walkDir, "harvester-cursor.txt");
+    var logFile = Path.Combine(walkDir, "harvester.log");
+    var cycleFile = Path.Combine(walkDir, "harvester-cycle.txt");
+    File.WriteAllLines(indexFile, new[] { "MTWALK0000000001\t02781310" });
+    var dbFile = Path.Combine(walkDir, "walk.db");
 
+    int port = 15741;
+    var listener = new System.Net.HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+    var serving = Task.Run(() =>
+    {
+        while (listener.IsListening)
+        {
+            try
+            {
+                var ctx = listener.GetContext();
+                var body = "[{\"consumer_number\":\"MTWALK0000000001\",\"cpf_no\":\"02781310\",\"consumer_name\":\"Walk test\",\"vendor_code\":\"100038029\",\"latitude\":\"19.5\",\"longitude\":\"74.1\",\"inst_date\":\"2026-08-01\"}]";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+
+    string ReadLog() { try { return File.Exists(logFile) ? File.ReadAllText(logFile) : ""; } catch { return ""; } }
+
+    try
+    {
+        using (var first = new Mskpy.Infrastructure.InspectionHarvester(
+            new Mskpy.Infrastructure.InspectionStore(dbFile), indexFile, $"http://127.0.0.1:{port}", cursorFile,
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false))
+        {
+            first.Start();
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline && !ReadLog().Contains("cycle 2 start")) Thread.Sleep(250);
+        }
+        var afterFirst = ReadLog();
+        Check(afterFirst.Contains("cycle 1 complete"), "the first pass logs its cycle end");
+        Check(afterFirst.Contains("cycle 2 start"), "the first pass re-arms itself");
+        Check(afterFirst.Contains(" in ") && afterFirst.Contains("cpfs, seen="),
+            "the cycle end records the pass counters and how long the pass ran");
+        Check(afterFirst.Contains("(after "), "the re-arm records the brake before the next pass");
+
+        // Restart on the same folder: the numbering must continue.
+        using (var second = new Mskpy.Infrastructure.InspectionHarvester(
+            new Mskpy.Infrastructure.InspectionStore(dbFile), indexFile, $"http://127.0.0.1:{port}", cursorFile,
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false))
+        {
+            Check(second.CycleNumber == 2, "the cycle number continues across a restart");
+            second.Start();
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline && !ReadLog().Contains("cycle 3 start")) Thread.Sleep(250);
+        }
+        var afterSecond = ReadLog();
+        Check(afterSecond.Contains("cycle 2 complete"), "the restarted pass completes the cycle it was in");
+        Check(afterSecond.Contains("cycle 3 start"), "the restarted pass re-arms into the next cycle");
+        Check(CountOccurrences(afterSecond, "cycle 1 complete") == 1,
+            "a restart does not repeat the cycle number");
+        Check(File.Exists(cycleFile) && File.ReadAllLines(cycleFile).Length >= 2,
+            "the cycle state is persisted next to the cursor");
+    }
+    finally
+    {
+        listener.Stop();
+        listener.Close();
+        try { Directory.Delete(walkDir, true); } catch { }
+    }
+}
+
+Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {
     public HttpStatusCode Status = HttpStatusCode.OK;
