@@ -101,7 +101,94 @@ internal static class Program
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(jpegPath)));
         var selectedPhoto = new WpfJsrInteractions(() => null).RestorePhotoAsync(new PhotoReference(jpegPath, new FileInfo(jpegPath).Length, hash), CancellationToken.None).GetAwaiter().GetResult();
         Assert(selectedPhoto.Preview is BitmapImage preview && preview.IsFrozen && selectedPhoto.Reference.Sha256 == hash, "JSR restores a genuine JPEG into a frozen thumbnail with a verified file hash");
+        SignatureTimerRegression();
         Console.WriteLine("In-process WPF render and control checks completed using synthetic data. No windows were shown and no production requests were sent.");
+    }
+
+    /// <summary>
+    /// Regression for the crash that closed the app mid-inspection. The signature
+    /// debounce timer fires on a thread-pool thread; reading InkCanvas.Strokes
+    /// there raised InvalidOperationException ("a different thread owns it") and
+    /// terminated the process, losing the operator's staged form. The timer
+    /// callback must marshal onto the UI thread first.
+    /// </summary>
+    static void SignatureTimerRegression()
+    {
+        var raw = new Dictionary<string, JsonElement>();
+        using (var doc = JsonDocument.Parse("""
+        {"consumer_number":"MT4420200801626","consumer_name":"Synthetic","inst_date":"2026-08-01","latitude":"19.525251","longitude":"74.119873","address":"Synthetic address","vendor_code":"100038029"}
+        """))
+            foreach (var p in doc.RootElement.EnumerateObject()) raw[p.Name] = p.Value.Clone();
+
+        var record = new Mskpy.Domain.InspectionRecord(
+            ConsumerNumber: "MT4420200801626",
+            CpfNo: "0000000000",
+            VendorCode: "100038029",
+            ConsumerName: "Synthetic",
+            Latitude: "19.525251",
+            Longitude: "74.119873",
+            InstallDate: "2026-08-01",
+            SurveyStartTime: null,
+            SurveyEndTime: null,
+            SurveyDurationMinutes: null,
+            Address: "Synthetic address",
+            Raw: raw);
+
+        var transport = new Mskpy.Infrastructure.MskpyInspectionTransport("synthetic-login");
+        using var gateway = new Mskpy.Infrastructure.InspectionGateway(transport, new Mskpy.Infrastructure.InspectionIndex());
+        var workflow = new Mskpy.Infrastructure.InspectionWorkflow(
+            gateway,
+            new Mskpy.Infrastructure.InspectionMultipartBuilder(),
+            new Mskpy.Infrastructure.LocationProvider { GeolocatorTimeout = TimeSpan.FromSeconds(1) });
+        var owner = new Window();
+        var inspection = new InspectionWindow(
+            record, record.ConsumerNumber, record.CpfNo, "synthetic-login", "100038029", workflow,
+            new Mskpy.Presentation.Services.WindowsLocationProvider(TimeSpan.FromSeconds(1)), owner);
+
+        var root = (FrameworkElement)inspection.Content;
+        root.Measure(new Size(1000, 820));
+        root.Arrange(new Rect(0, 0, 1000, 820));
+        root.UpdateLayout();
+        // The canvases live on the Photos tab, which is not the selected tab, so
+        // they are in the logical tree but not the visual one.
+        var canvases = Descendants(root).OfType<InkCanvas>().ToArray();
+        Assert(canvases.Length == 2, "live inspection window exposes two signature canvases");
+
+        // The fault shape is real: a background thread cannot read Strokes.
+        var offThread = Task.Run(() =>
+        {
+            try { var _ = canvases[0].Strokes.Count; return (Exception?)null; }
+            catch (Exception e) { return e; }
+        }).GetAwaiter().GetResult();
+        Assert(offThread is InvalidOperationException, "reading InkCanvas.Strokes off the UI thread is the crash shape");
+
+        // Now the real debounce timer: a stroke arms it, and its callback runs on
+        // a thread-pool thread. The counter only advances if the callback marshalled
+        // back to the UI thread and completed. Before the fix this killed the process.
+        foreach (var canvas in canvases)
+        {
+            var points = new System.Windows.Input.StylusPointCollection(
+                new System.Windows.Input.StylusPoint[] { new System.Windows.Input.StylusPoint(12, 12) });
+            var attributes = new System.Windows.Ink.DrawingAttributes
+            {
+                Width = 2.5,
+                Height = 2.5,
+                Color = System.Windows.Media.Colors.Black
+            };
+            canvas.Strokes.Add(new System.Windows.Ink.Stroke(points, attributes));
+        }
+
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline && inspection.SignatureCheckCount == 0)
+        {
+            Thread.Sleep(120);
+            // Invoke at a low priority so queued Normal-priority work is pumped first.
+            inspection.Dispatcher.Invoke(new Action(() => { }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+        Assert(inspection.SignatureCheckCount > 0, "the debounced signature check completes on the UI thread without killing the process");
+        var statusText = string.Join(" | ", Descendants(root).OfType<TextBlock>().Select(t => t.Text));
+        Assert(!statusText.Contains("Signature check failed", StringComparison.Ordinal),
+            "the debounced signature check runs the real comparison, not an error path");
     }
     static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
     {

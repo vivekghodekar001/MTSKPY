@@ -32,6 +32,8 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        InstallCrashGuards();
+
         // V5: Headless CLI submit mode. If --submit=<consumer> is passed,
         // run the submit flow headlessly and exit.
         var cliArgs = Environment.GetCommandLineArgs();
@@ -100,4 +102,53 @@ public partial class App : System.Windows.Application
     }
 
     protected override void OnExit(ExitEventArgs e) { shell?.Dispose(); gateway?.Dispose(); base.OnExit(e); }
+
+    /// <summary>Where fatal errors are appended so a field crash is diagnosable.</summary>
+    internal static string ErrorLogPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RenewableEnergyDesktop", "app-errors.log");
+
+    static void LogCrash(string kind, Exception ex)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(ErrorLogPath)!;
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(ErrorLogPath,
+                $"{DateTime.Now:s} [{kind}] {ex}{Environment.NewLine}{Environment.NewLine}");
+        }
+        catch { /* logging must never throw */ }
+    }
+
+    /// <summary>
+    /// A linestaff officer must never lose a staged inspection because an
+    /// unexpected error killed the process. UI-thread errors are reported and
+    /// swallowed; background-thread errors are logged before the process ends.
+    /// </summary>
+    void InstallCrashGuards()
+    {
+        DispatcherUnhandledException += (_, args) =>
+        {
+            LogCrash("ui", args.Exception);
+            args.Handled = true;
+            try
+            {
+                MessageBox.Show(
+                    $"Unexpected error — the form is still open. Close and reopen the inspection window and repeat the step.\n\n{args.Exception.Message}",
+                    "MSKPY-Windows", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch { /* no UI available */ }
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception ex) LogCrash("background", ex);
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            LogCrash("task", args.Exception);
+            args.SetObserved();
+        };
+    }
 }

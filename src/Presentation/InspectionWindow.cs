@@ -467,11 +467,20 @@ public sealed class InspectionWindow : Window
         allowedDist.Text = "";
     }
 
-    /// <summary>Z5: one status line — collapses when empty, accent brush when populated.</summary>
+    /// <summary>
+    /// Z5: one status line — collapses when empty, accent brush when populated.
+    /// Safe to call from any thread: the debounce timer and the harvester both
+    /// report from background threads.
+    /// </summary>
     void SetStatus(string? text)
     {
-        status.Text = text ?? "";
-        status.Visibility = string.IsNullOrEmpty(status.Text) ? Visibility.Collapsed : Visibility.Visible;
+        void Apply()
+        {
+            status.Text = text ?? "";
+            status.Visibility = string.IsNullOrEmpty(status.Text) ? Visibility.Collapsed : Visibility.Visible;
+        }
+        if (Dispatcher.CheckAccess()) Apply();
+        else Dispatcher.BeginInvoke(new Action(Apply));
     }
 
     string FieldValue(string key) =>
@@ -613,8 +622,10 @@ public sealed class InspectionWindow : Window
                 image.Source = Thumbnail(consumerPhotoPath);
                 fname.Text = Path.GetFileName(stamped) + " (EXIF stamped)";
             }
-            catch (Exception ex) when (ex is IOException or NotSupportedException or FileFormatException or ArgumentException or InvalidDataException)
+            catch (Exception ex)
             {
+                // A bad, locked or unreadable file must never take the app down
+                // mid-inspection — report it and let the officer pick another.
                 SetStatus("Photo could not be loaded: " + ex.Message);
             }
         };
@@ -967,17 +978,54 @@ public sealed class InspectionWindow : Window
         onVerifyComplete?.Invoke(record, outcome);
     }
 
-    /// <summary>T3: debounced signature-duplicate check at attach time.</summary>
-    void CheckSignatureDuplicates()
+    /// <summary>
+    /// The duplicate-signature comparison. It reads InkCanvas.Strokes, so it MUST
+    /// run on the UI thread — callers on any other thread have to marshal first.
+    /// </summary>
+    internal bool SignaturesIdentical()
     {
         var pathA = SignToPng(beneficiary);
         var pathB = SignToPng(representative);
-        var duplicate = pathA != null && pathB != null && ComputeSha256(pathA) == ComputeSha256(pathB);
-        this.Dispatcher.Invoke(() =>
+        return pathA != null && pathB != null && ComputeSha256(pathA) == ComputeSha256(pathB);
+    }
+
+    /// <summary>
+    /// How many debounced signature checks have completed. Test hook: it only
+    /// advances when the timer callback ran and marshalled back to the UI thread.
+    /// </summary>
+    internal int SignatureCheckCount { get; private set; }
+
+    /// <summary>T3: debounced signature-duplicate check at attach time.</summary>
+    void CheckSignatureDuplicates()
+    {
+        // The debounce timer fires on a thread-pool thread. InkCanvas.Strokes is
+        // owned by the UI thread, so reading it here raised
+        // InvalidOperationException ("a different thread owns it") and killed the
+        // process — the operator lost the staged form. Every WPF touch must be
+        // marshalled onto the dispatcher first.
+        try
         {
-            if (duplicate)
-                SetStatus("Duplicate signature: beneficiary and vendor representative signatures are byte-identical. Draw two different signatures.");
-        });
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    if (SignaturesIdentical())
+                        SetStatus("Duplicate signature: beneficiary and vendor representative signatures are byte-identical. Draw two different signatures.");
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Signature check failed: " + ex.Message);
+                }
+                finally
+                {
+                    SignatureCheckCount++;
+                }
+            }));
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Signature check failed: " + ex.Message);
+        }
     }
 
     /// <summary>W1: SHA-256 of a file for the photo uniqueness gate.</summary>
