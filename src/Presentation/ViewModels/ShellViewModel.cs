@@ -34,6 +34,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     ModuleDefinition? currentModule;
     SchemeOption selectedScheme;
     ApplicationDocument? selectedApplication;
+    // X4: track consumers with open detail windows to prevent double-open.
+    readonly HashSet<string> openDetailConsumers = new();
     // Manual session fields (P0/P1: manual session without full sign-in).
     string manualLoginId = "", manualVendorCode = "";
     // X1: session vendor code, persisted per login id under LocalAppData.
@@ -156,6 +158,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (consumer.Length < 15 ||
                 !consumer.StartsWith("MT", StringComparison.OrdinalIgnoreCase) ||
                 !consumer.All(char.IsLetterOrDigit)) return;
+            if (openDetailConsumers.Contains(consumer)) return;
             _ = OpenDetailForSearched(consumer, null);
         }
     }
@@ -459,11 +462,14 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             var effVendorCode = !string.IsNullOrWhiteSpace(manualVendorCode)
                 ? manualVendorCode
                 : record.VendorCode;
-            new InspectionWindow(record, consumer, cpf, profile.LoginId, effVendorCode, wf, winLoc,
+            openDetailConsumers.Add(consumer);
+            var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, effVendorCode, wf, winLoc,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,
                 onSubmitComplete: PersistSubmitOutcome,
-                onVerifyComplete: PersistVerifyOutcome).ShowDialog();
+                onVerifyComplete: PersistVerifyOutcome);
+            win.Closed += (_, _) => openDetailConsumers.Remove(consumer);
+            win.ShowDialog();
         }
         catch (Exception ex)
         {

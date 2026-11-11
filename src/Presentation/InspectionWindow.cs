@@ -343,7 +343,6 @@ public sealed class InspectionWindow : Window
         bodyBox.Text = "Awaiting submission…";
         footer.Children.Add(bodyBox);
 
-        outer.Children.Add(scroll);
         outer.Children.Add(footer);
         Content = outer;
         allowedDist.Text = "";
