@@ -58,10 +58,11 @@ public sealed class InspectionWindow : Window
     readonly Dictionary<string, string> photoSources = new(); // suffix -> original chosen file
     readonly Dictionary<string, string> photoHashes = new(); // suffix -> SHA-256 of stamped file (W1)
     readonly Dictionary<string, string> signs = new();    // suffix -> local png path
-    readonly InkCanvas beneficiary = new() { Background = Brushes.White, Height = 155 };
-    readonly InkCanvas representative = new() { Background = Brushes.White, Height = 155 };
+    // Z3: signature canvases sit side by side under the third photo slot, 110 px tall.
+    readonly InkCanvas beneficiary = new() { Background = Brushes.White, Height = 110, HorizontalAlignment = HorizontalAlignment.Stretch };
+    readonly InkCanvas representative = new() { Background = Brushes.White, Height = 110, HorizontalAlignment = HorizontalAlignment.Stretch };
 
-    readonly TextBlock status = new() { Margin = new Thickness(0, 10, 0, 0) };
+    readonly TextBlock status = new() { Margin = new Thickness(0, 2, 0, 2) };
     readonly TextBlock bodyBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
     readonly TextBlock manifestBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
     readonly TextBlock locationBox = new() { Margin = new Thickness(0, 6, 0, 0) };
@@ -126,6 +127,10 @@ public sealed class InspectionWindow : Window
         FontFamily = new FontFamily("Segoe UI");
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
+        // Z5: the status line uses the accent brush and collapses when empty.
+        status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Accent");
+        status.Visibility = Visibility.Collapsed;
+
         // Y2: Grid layout — header row, scrollable tabs row, footer row
         var grid = new Grid { Margin = new Thickness(26), Background = Background };
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -182,10 +187,9 @@ public sealed class InspectionWindow : Window
         Grid.SetRow(headerCard, 0);
         grid.Children.Add(headerCard);
 
-        // Y2: TabControl in a ScrollViewer, Row 1
-        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        // Z6: each tab owns exactly one ScrollViewer. The Photos tab's single
+        // scroller is shared by both of its columns.
         var tabControl = new TabControl { Margin = new Thickness(0, 0, 0, 10) };
-        scroll.Content = tabControl;
 
         // Part A tab — checks only
         var partA = SurveyRules.InspectionChecks.Where(x => x.Part == "A").ToList();
@@ -240,7 +244,11 @@ public sealed class InspectionWindow : Window
                 checkAnswers[check.Field] = (yes, no, remark);
                 partAPanel.Children.Add(checkPanel);
             }
-            partATab.Content = partAPanel;
+            partATab.Content = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = partAPanel
+            };
             tabControl.Items.Add(partATab);
         }
 
@@ -297,7 +305,11 @@ public sealed class InspectionWindow : Window
                 checkAnswers[check.Field] = (yes, no, remark);
                 partBPanel.Children.Add(checkPanel);
             }
-            partBTab.Content = partBPanel;
+            partBTab.Content = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = partBPanel
+            };
             tabControl.Items.Add(partBTab);
         }
 
@@ -307,22 +319,30 @@ public sealed class InspectionWindow : Window
         photosGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         photosGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
+        // Z6: no per-column scroller — the tab below carries one shared scroller.
         // Left column: Site Photos + Signatures
-        var leftScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var leftPanel = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
-        leftPanel.Children.Add(Label("Site Photos (3 JPEG)", 19));
+        leftPanel.Children.Add(Label("Site Photos (3 JPEG)", 15, new Thickness(0, 0, 0, 6)));
         foreach (var slot in PhotoSlots) AddPhotoSlot(leftPanel, slot.Suffix, slot.Label);
-        leftPanel.Children.Add(Label("Signatures (2 PNG)", 19));
-        AddSignature(leftPanel, "Beneficiary signature", beneficiary);
-        AddSignature(leftPanel, "Vendor representative signature", representative);
-        leftScroll.Content = leftPanel;
-        Grid.SetColumn(leftScroll, 0);
-        photosGrid.Children.Add(leftScroll);
+
+        // Z3: both signature canvases sit side by side directly under the third slot.
+        var signRow = new Grid { Margin = new Thickness(0, 4, 0, 0) };
+        signRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        signRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var benBlock = BuildSignatureBlock("Beneficiary signature", beneficiary);
+        var repBlock = BuildSignatureBlock("Vendor representative signature", representative);
+        Grid.SetColumn(benBlock, 0);
+        Grid.SetColumn(repBlock, 1);
+        signRow.Children.Add(benBlock);
+        signRow.Children.Add(repBlock);
+        leftPanel.Children.Add(signRow);
+
+        Grid.SetColumn(leftPanel, 0);
+        photosGrid.Children.Add(leftPanel);
 
         // Right column: Installer Details + Location
-        var rightScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0) };
-        rightPanel.Children.Add(Label("Installer Details", 16));
+        rightPanel.Children.Add(Label("Installer Details", 15, new Thickness(0, 0, 0, 6)));
         var installerFields = new StackPanel();
         // P1: installer boxes start EMPTY — the officer types whoever actually
         // attended. The stored name is only whoever attended last time and must
@@ -340,7 +360,7 @@ public sealed class InspectionWindow : Window
         // Location (P4): manual override -> live Windows position -> installation
         // coordinates. The source used for the upload is always reported.
         var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        locationCard.Children.Add(Label("Location", 16));
+        locationCard.Children.Add(Label("Location", 15, new Thickness(0, 0, 0, 6)));
         var clearLat = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
         clearLat.Click += (_, _) => manualLat.Text = "";
         var clearLong = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
@@ -362,30 +382,35 @@ public sealed class InspectionWindow : Window
         locationBox.Text = "Not resolved yet. Submit uses the live Windows position, then the installation coordinates.";
         locationCard.Children.Add(locationBox);
         rightPanel.Children.Add(locationCard);
-        rightScroll.Content = rightPanel;
-        Grid.SetColumn(rightScroll, 1);
-        photosGrid.Children.Add(rightScroll);
 
-        photosTab.Content = photosGrid;
+        Grid.SetColumn(rightPanel, 1);
+        photosGrid.Children.Add(rightPanel);
+
+        // Z6: one shared scroller for the whole Photos tab — both columns scroll together.
+        photosTab.Content = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = photosGrid
+        };
         tabControl.Items.Add(photosTab);
 
         // Y2: Footer row — manifest box, buttons row, body box
-        var footer = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-        // Y3: One status line
-        status.Text = "";
+        var footer = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        // Z5: One status line — collapses when empty, accent brush when populated.
+        SetStatus("");
         footer.Children.Add(status);
-        // Y3: manifest box empty initially (no "No submission yet.")
+        // Z4: manifest label + 3-line box with its own scroll
+        footer.Children.Add(Label("Manifest (pre-send):", 13, new Thickness(0, 2, 0, 2)));
         manifestBox.FontFamily = new FontFamily("Consolas");
         manifestBox.FontSize = 11;
         manifestBox.Background = Brushes.White;
         manifestBox.Padding = new Thickness(8);
         manifestBox.Text = "";
         manifestBox.TextWrapping = TextWrapping.Wrap;
-        // Y2: manifest box ~3 lines with its own scroll
         var manifestScroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 60
+            MaxHeight = 58
         };
         manifestScroll.Content = manifestBox;
         footer.Children.Add(manifestScroll);
@@ -403,7 +428,7 @@ public sealed class InspectionWindow : Window
         actions.Children.Add(closeBtn);
         footer.Children.Add(actions);
 
-        // Y2: body box fixed 120 px with its own scroll
+        // Z4: body box fixed 90 px with its own scroll
         bodyBox.FontFamily = new FontFamily("Consolas");
         bodyBox.FontSize = 11;
         bodyBox.Background = Brushes.White;
@@ -413,18 +438,25 @@ public sealed class InspectionWindow : Window
         var bodyScroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Height = 120
+            Height = 90
         };
         bodyScroll.Content = bodyBox;
         footer.Children.Add(bodyScroll);
 
-        Grid.SetRow(scroll, 1);
-        grid.Children.Add(scroll);
+        Grid.SetRow(tabControl, 1);
+        grid.Children.Add(tabControl);
         Grid.SetRow(footer, 2);
         grid.Children.Add(footer);
 
         Content = grid;
         allowedDist.Text = "";
+    }
+
+    /// <summary>Z5: one status line — collapses when empty, accent brush when populated.</summary>
+    void SetStatus(string? text)
+    {
+        status.Text = text ?? "";
+        status.Visibility = string.IsNullOrEmpty(status.Text) ? Visibility.Collapsed : Visibility.Visible;
     }
 
     string FieldValue(string key) =>
@@ -468,22 +500,23 @@ public sealed class InspectionWindow : Window
 
     async Task ResolveLocation()
     {
-        status.Text = "Resolving location…";
+        SetStatus("Resolving location…");
         var loc = await workflow.location.ResolveAsync(
             Empty(manualLat.Text), Empty(manualLong.Text), Empty(manualAcc.Text),
             record.Latitude, record.Longitude, CancellationToken.None);
         locationBox.Text = DescribeLocation(loc, DistanceToInstall(loc.Lat, loc.Long));
-        status.Text = "Location resolved: " + loc.Source;
+        SetStatus("Location resolved: " + loc.Source);
     }
 
     void AddPhotoSlot(Panel target, string suffix, string label)
     {
-        var panel = new StackPanel();
-        panel.Children.Add(Label(label, 15));
-        var image = new Image { Height = 120, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 6) };
-        var fname = Label("No photo selected", 12);
-        panel.Children.Add(fname); panel.Children.Add(image);
-        var row = new WrapPanel();
+        // Z2: compact slot — label, 110 px thumbnail, Choose/Remove row right under it.
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        panel.Children.Add(Label(label, 14, new Thickness(0, 0, 0, 2)));
+        var image = new Image { Height = 110, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2) };
+        var fname = Hint("No photo selected", 11);
+        panel.Children.Add(image);
+        var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
         var choose = new Button { Content = "Choose JPEG…", Margin = new Thickness(0, 0, 8, 0) };
         choose.Click += (_, _) =>
         {
@@ -537,7 +570,7 @@ public sealed class InspectionWindow : Window
             }
             catch (Exception ex) when (ex is IOException or NotSupportedException or FileFormatException or ArgumentException or InvalidDataException)
             {
-                status.Text = "Photo could not be loaded: " + ex.Message;
+                SetStatus("Photo could not be loaded: " + ex.Message);
             }
         };
         var remove = new Button { Content = "Remove", Margin = new Thickness(0, 0, 0, 0) };
@@ -549,29 +582,32 @@ public sealed class InspectionWindow : Window
         };
         row.Children.Add(choose); row.Children.Add(remove);
         panel.Children.Add(row);
+        // Z1: the file-name caption is a hint — muted brush.
+        panel.Children.Add(fname);
         target.Children.Add(panel);
     }
 
-    void AddSignature(Panel target, string title, InkCanvas canvas)
+    /// <summary>Z3: a signature block — label, 110 px canvas, Clear button beneath it.</summary>
+    StackPanel BuildSignatureBlock(string title, InkCanvas canvas)
     {
-        target.Children.Add(Label(title, 15));
+        var block = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
+        block.Children.Add(Label(title, 14, new Thickness(0, 0, 0, 2)));
         canvas.DefaultDrawingAttributes.Color = Colors.Black;
         canvas.DefaultDrawingAttributes.Width = canvas.DefaultDrawingAttributes.Height = 2.5;
         canvas.Strokes.StrokesChanged += (_, _) =>
         {
             // T2: at attach time, only report signed/not signed — no refusal here.
-            status.Text = canvas.Strokes.Count == 0
+            SetStatus(canvas.Strokes.Count == 0
                 ? $"Blank signature: '{title}' has no strokes. Draw a signature."
-                : $"Signed: '{title}'.";
+                : $"Signed: '{title}'.");
             // T3: debounced duplicate check at attach time.
             signatureDebounceTimer.Change(400, Timeout.Infinite);
         };
-        target.Children.Add(canvas);
-        var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 10) };
-        var clear = new Button { Content = "Clear signature", Margin = new Thickness(0, 0, 0, 0) };
+        block.Children.Add(canvas);
+        var clear = new Button { Content = "Clear", Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(10, 2, 10, 2) };
         clear.Click += (_, _) => canvas.Strokes.Clear();
-        actions.Children.Add(clear);
-        target.Children.Add(actions);
+        block.Children.Add(clear);
+        return block;
     }
 
     static BitmapImage Thumbnail(string path)
@@ -593,13 +629,24 @@ public sealed class InspectionWindow : Window
         Margin = new Thickness(0, 0, 0, 14)
     };
 
-    static TextBlock Label(string text, double size) => new()
+    // Z1: labels use the normal body-text brush, never Muted.
+    static TextBlock Label(string text, double size, Thickness? margin = null) => new()
     {
         Text = text,
         FontSize = size,
         Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
         TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 4, 0, 7)
+        Margin = margin ?? new Thickness(0, 4, 0, 7)
+    };
+
+    /// <summary>Z1: the muted brush is reserved for hints such as "No photo selected".</summary>
+    static TextBlock Hint(string text, double size) => new()
+    {
+        Text = text,
+        FontSize = size,
+        Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 0, 0, 2)
     };
 
     static StackPanel CreateFieldRow(string label, TextBox box, Button clear)
@@ -624,14 +671,14 @@ public sealed class InspectionWindow : Window
         submitBusy = true;
         // P3: stop harvesting for the duration of the upload.
         harvester?.Pause();
-        status.Text = "Submitting…";
+        SetStatus("Submitting…");
         try
         {
             // S8: vendor mismatch is a warning, not a refusal — submit proceeds.
             if (!string.IsNullOrWhiteSpace(vendorCode) &&
                 !string.IsNullOrWhiteSpace(record.VendorCode) &&
                 !string.Equals(vendorCode, record.VendorCode, StringComparison.Ordinal))
-                status.Text = $"Warning: session vendor {vendorCode} ≠ record vendor {record.VendorCode}. Submitting anyway.";
+                SetStatus($"Warning: session vendor {vendorCode} ≠ record vendor {record.VendorCode}. Submitting anyway.");
 
             // T4: installer field validation (bytecode Yup: non-empty name,
             // mobile ^[1-9]\d{9,} 10+ digits).
@@ -825,9 +872,9 @@ public sealed class InspectionWindow : Window
 
             bodyBox.Text = $"HTTP {(int)outcome.StatusCode} {outcome.StatusCode}\n\n{outcome.Body}";
             if (outcome.Error != null) bodyBox.Text += "\n\nGate: " + outcome.Error;
-            status.Text = outcome.Ok ? "Submit complete (HTTP 2xx). Body shown above." : $"Submit returned HTTP {(int)outcome.StatusCode}. Body shown above.";
+            SetStatus(outcome.Ok ? "Submit complete (HTTP 2xx). Body shown above." : $"Submit returned HTTP {(int)outcome.StatusCode}. Body shown above.");
             if (outcome.DataFilePath != null)
-                status.Text += $"  data.json written: {outcome.DataFilePath}";
+                SetStatus(status.Text + $"  data.json written: {outcome.DataFilePath}");
 
             // W1: insert photo hash rows only after a successful 2xx upload.
             var sentAt = DateTime.UtcNow.ToString("o");
@@ -846,7 +893,7 @@ public sealed class InspectionWindow : Window
         catch (Exception ex)
         {
             bodyBox.Text = "Submit failed: " + ex.Message;
-            status.Text = "Submit failed.";
+            SetStatus("Submit failed.");
             MessageBox.Show(this, bodyBox.Text, "Submit error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
@@ -863,7 +910,7 @@ public sealed class InspectionWindow : Window
         if (outcome.UpdatedDt != null) text += $", updated_dt={outcome.UpdatedDt}";
         if (outcome.Error != null) text += $" · {outcome.Error}";
         bodyBox.Text += "\n\n--- VERIFY ---\n" + text;
-        status.Text = outcome.Ok ? "Verify complete." : "Verify failed.";
+        SetStatus(outcome.Ok ? "Verify complete." : "Verify failed.");
         if (outcome.Count > 1)
             MessageBox.Show(this, $"WARN: count={outcome.Count} > 1 for consumer_number {consumerNumber}", "Verify warning", MessageBoxButton.OK, MessageBoxImage.Warning);
         onVerifyComplete?.Invoke(record, outcome);
@@ -878,7 +925,7 @@ public sealed class InspectionWindow : Window
         this.Dispatcher.Invoke(() =>
         {
             if (duplicate)
-                status.Text = "Duplicate signature: beneficiary and vendor representative signatures are byte-identical. Draw two different signatures.";
+                SetStatus("Duplicate signature: beneficiary and vendor representative signatures are byte-identical. Draw two different signatures.");
         });
     }
 
