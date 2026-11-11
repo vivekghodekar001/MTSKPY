@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Mskpy.Infrastructure")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f978f94ebaa98f667fe596d517f22f7d3a588e7c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7b2ea7e8b3222178e4e990ab7bfd232bb78a1221")]
 [assembly: System.Reflection.AssemblyProductAttribute("Mskpy.Infrastructure")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Mskpy.Infrastructure")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
