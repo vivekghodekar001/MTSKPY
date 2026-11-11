@@ -318,6 +318,12 @@ public sealed class InspectionStore : IDisposable
                 using var cmd = vacuumConnection.CreateCommand();
                 cmd.CommandText = "VACUUM;";
                 cmd.ExecuteNonQuery();
+                // In WAL mode the vacuum rewrites the whole database INTO the -wal
+                // file; without this checkpoint the store carried a 158 MB -wal
+                // beside a 179 MB database.
+                using var checkpoint = vacuumConnection.CreateCommand();
+                checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+                checkpoint.ExecuteNonQuery();
             }
             catch
             {
