@@ -1,9 +1,11 @@
 <Application x:Class="Mskpy.Windows.App"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:vm="clr-namespace:Mskpy.Presentation.ViewModels"
  >
  <Application.Resources>
   <BooleanToVisibilityConverter x:Key="BoolVisibility"/>
+  <vm:EqualsConverter x:Key="EqualsValue"/>
   <SolidColorBrush x:Key="Bg" Color="#25232A"/>
   <SolidColorBrush x:Key="Surface" Color="#302D38"/>
   <SolidColorBrush x:Key="Text" Color="#E9E5EE"/>

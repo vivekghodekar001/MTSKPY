@@ -192,6 +192,48 @@ public sealed class InspectionStore : IDisposable
         return (added, duplicates);
     }
 
+    /// <summary>
+    /// D4: reclaim the space left by deleted rows. Best-effort: a vacuum that
+    /// cannot run must never disturb the harvest.
+    /// </summary>
+    public void Vacuum()
+    {
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "VACUUM;";
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // Vacuum is best-effort.
+        }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>D4: removes rows by consumer number. Returns how many went.</summary>
+    public int DeleteByConsumerNumbers(IEnumerable<string> consumerNumbers)
+    {
+        var numbers = consumerNumbers.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToList();
+        if (numbers.Count == 0) return 0;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM inspection_records WHERE consumer_number = $cn;";
+            var p = cmd.Parameters.Add("$cn", Microsoft.Data.Sqlite.SqliteType.Text);
+            int removed = 0;
+            foreach (var n in numbers)
+            {
+                p.Value = n;
+                removed += cmd.ExecuteNonQuery();
+            }
+            return removed;
+        }
+        finally { dbLock.Release(); }
+    }
+
     static string? TryGetString(JsonElement el, string key) =>
         el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 

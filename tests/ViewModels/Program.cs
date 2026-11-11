@@ -13,9 +13,19 @@ var workflow = new ClientWorkflow(gateway);
 var storePath = Path.Combine(Path.GetTempPath(), $"vm-store-{Guid.NewGuid():N}.db");
 using (var seed = new Mskpy.Infrastructure.InspectionStore(storePath))
 {
+    // Three rows on the session's own cpf ("sample") and two on another cpf, so
+    // the D1 scope split can be checked.
     foreach (var name in new[] { "Record 119", "Record 5", "Record 7" })
         seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
-            ConsumerNumber: "MT" + name.GetHashCode().ToString("X8"), CpfNo: "02284251",
+            ConsumerNumber: "MT" + name.GetHashCode().ToString("X8"), CpfNo: "sample",
+            VendorCode: "100038029", ConsumerName: name, Latitude: "19.525251", Longitude: "74.119873",
+            InstallDate: "2026-08-01", ReasonToRevert: null, SurveyDurationMinutes: null,
+            IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.New,
+            LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+            SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+    foreach (var name in new[] { "Other 1", "Other 2" })
+        seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+            ConsumerNumber: "MX" + name.GetHashCode().ToString("X8"), CpfNo: "02781310",
             VendorCode: "100038029", ConsumerName: name, Latitude: "19.525251", Longitude: "74.119873",
             InstallDate: "2026-08-01", ReasonToRevert: null, SurveyDurationMinutes: null,
             IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.New,
@@ -30,6 +40,14 @@ Check(shell.IsSignedIn && secrets.Reads == 2, "successful login clears view inpu
 Check(!shell.GetType().GetProperties().Any(x => x.Name.Contains("Password")), "password is not a bindable view-model property");
 await shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
 Check(shell.IsList && shell.Applications.Count == 3 && gateway.LoadCalls == 1, "list comes from the store with no display cap and no live fallback");
+Check(shell.ListScope == "MyPending" && shell.Applications.All(x => x.Fields.Any(f => f.Label == "Cpf" && f.Value == "sample")),
+    "the officer lands on their own pending queue by default");
+Check(shell.MyPendingCount == 3 && shell.MyPendingChip.Contains("3") && shell.AllChip.Contains("5"),
+    "the scope chips carry the counts of each set");
+shell.ListScope = "All";
+Check(shell.Applications.Count == 5, "the statewide set is one click away");
+shell.ListScope = "MyPending";
+Check(shell.Applications.Count == 3, "switching back to the officer's own queue restores it");
 var reads = gateway.LoadCalls; shell.Search = "Record 119";
 Check(shell.Applications.Count == 1 && gateway.LoadCalls == reads, "search filters locally without transmitting query keystrokes");
 shell.SelectedApplication = shell.Applications[0]; shell.ViewDetails.Execute(null);

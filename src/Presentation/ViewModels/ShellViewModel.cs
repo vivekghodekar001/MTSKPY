@@ -172,6 +172,24 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page;
     public string ModuleDescription => currentModule?.Description ?? "";
     public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
+    // D1: the list scope. The officer's own queue is the default; the statewide
+    // set is one click away.
+    public const string ListScopeMyPending = "MyPending";
+    public const string ListScopeAll = "All";
+    string listScope = ListScopeMyPending;
+    public string ListScope
+    {
+        get => listScope;
+        set
+        {
+            if (!Set(ref listScope, value)) return;
+            ApplySearch();
+        }
+    }
+    /// <summary>D1: the officer's own pending queue — their cpf, not yet accepted.</summary>
+    public int MyPendingCount => loaded.Count(InScope);
+    public string MyPendingChip => $"My pending ({MyPendingCount})";
+    public string AllChip => $"All Maharashtra ({loaded.Count})";
     public ApplicationDocument? SelectedApplication { get => selectedApplication; set { if (Set(ref selectedApplication, value)) RefreshCommands(); } }
     public AsyncCommand Login { get; }
     public AsyncCommand OpenModule { get; }
@@ -200,6 +218,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             ct.ThrowIfCancellationRequested();
             if (version != generation) return;
             profile = account; Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut));
+            // D1: the officer lands on their own pending queue, not the statewide dump.
+            listScope = ListScopeMyPending;
+            Changed(nameof(ListScope));
             NavigateTo("Home"); Status = "Signed in.";
             // B1: one GET for the session's own pending list, written into the
             // store, so the officer sees their rows within seconds instead of
@@ -261,10 +282,27 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 new("Consumer", r.ConsumerNumber),
                 new("Name", r.ConsumerName ?? ""),
                 new("Vendor", r.VendorCode ?? ""),
-                new("Status", r.Status.ToString())
+                new("Status", r.Status.ToString()),
+                // D1: the cpf is what "my queue" is defined by, so it travels with the row.
+                new("Cpf", r.CpfNo ?? "")
             },
             OriginalJson: r.OriginalJson ?? ""
         )).ToList();
+    }
+
+    static string DocField(ApplicationDocument doc, string label) =>
+        doc.Fields.FirstOrDefault(f => f.Label == label)?.Value ?? "";
+
+    /// <summary>
+    /// D1: the list is scoped. "MyPending" is the officer's own queue — the
+    /// records whose cpf is the session login id and that have not been accepted.
+    /// "All" is the statewide set. The officer lands on their own work.
+    /// </summary>
+    bool InScope(ApplicationDocument doc)
+    {
+        if (listScope == ListScopeAll) return true;
+        return string.Equals(DocField(doc, "Cpf"), profile?.LoginId ?? "", StringComparison.Ordinal)
+            && !string.Equals(DocField(doc, "Status"), RecordStatus.Accepted.ToString(), StringComparison.Ordinal);
     }
 
     void ApplySearch()
@@ -272,10 +310,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Applications.Clear();
         // A3: the whole store is listed. Row virtualisation (recycling) keeps the
         // scroll smooth with thousands of rows, so the old 100-row cap is gone.
-        foreach (var row in loaded.Where(x => string.IsNullOrWhiteSpace(Search) || x.Fields.Any(f => f.Value.Contains(Search, StringComparison.OrdinalIgnoreCase))))
+        foreach (var row in loaded.Where(x => InScope(x)
+            && (string.IsNullOrWhiteSpace(Search) || x.Fields.Any(f => f.Value.Contains(Search, StringComparison.OrdinalIgnoreCase)))))
             Applications.Add(row);
         if (SelectedApplication != null && !Applications.Contains(SelectedApplication)) SelectedApplication = null;
         Changed(nameof(RecordCount));
+        Changed(nameof(MyPendingChip));
+        Changed(nameof(AllChip));
         RefreshRecordCounts();
     }
 
@@ -339,7 +380,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
         else if (destination == "Diagnostics")
         {
-            Fields.Add(new("Build", "0.5 · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Index path", IndexPath)); Fields.Add(new("Harvester", HarvesterStatus)); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
+            RefreshIndexAge();
+            Fields.Add(new("Build", "0.5 · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Index path", IndexPath)); Fields.Add(new("Index last written", IndexLastWrite)); Fields.Add(new("Index age", IsIndexStale ? $"STALE - {IndexAge}" : IndexAge)); Fields.Add(new("Harvester", HarvesterStatus)); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
             Fields.Add(new("Manual login id", manualLoginId));
             // Vendor code is an editable TextBox, not a read-only field
         }
@@ -425,6 +467,27 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// D3: the index file's age. A stale index means new consumers are missing
+    /// from the walk, so it must be visible rather than assumed.
+    /// </summary>
+    DateTime? indexLastWrite;
+    public string IndexLastWrite => indexLastWrite?.ToString("dd MMM yyyy HH:mm") ?? "(index file not found)";
+    public string IndexAge => indexLastWrite == null
+        ? "missing"
+        : $"{(DateTime.Now - indexLastWrite.Value).TotalHours:F1} h old";
+    public bool IsIndexStale => indexLastWrite == null || (DateTime.Now - indexLastWrite.Value) > TimeSpan.FromHours(24);
+
+    void RefreshIndexAge()
+    {
+        DateTime? stamp = null;
+        try { if (File.Exists(IndexPath)) stamp = File.GetLastWriteTime(IndexPath); } catch { }
+        indexLastWrite = stamp;
+        Changed(nameof(IndexLastWrite));
+        Changed(nameof(IndexAge));
+        Changed(nameof(IsIndexStale));
+    }
+
+    /// <summary>
     /// A5: the index file can change while the app is running. Reloading re-reads
     /// the tsv, restarts the harvester against it and keeps the session alive.
     /// </summary>
@@ -481,6 +544,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }));
         };
         harvester.Start();
+        RefreshIndexAge();
     }
 
     /// <summary>A5: point the app at an index file and reload it without a restart.</summary>
@@ -493,7 +557,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         index?.Reload(path);
         Changed(nameof(IndexLoaded));
         StartHarvester();
-        Status = $"Index reloaded: {path} ({index?.Entries.Count ?? 0} consumers)";
+        RefreshIndexAge();
+        Status = $"Index reloaded: {path} ({index?.Entries.Count ?? 0} consumers, {IndexAge})";
         // Refresh the Diagnostics fields so the new index is shown at once.
         if (page == "Diagnostics") NavigateTo("Diagnostics");
     }

@@ -133,6 +133,68 @@ try
 }
 finally { try { Directory.Delete(vendorDir, true); } catch { } }
 
+// D2: a completed pass must idle and then re-arm itself from the start.
+{
+    var walkDir = Path.Combine(Path.GetTempPath(), $"mskpy-walk-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(walkDir);
+    var indexFile = Path.Combine(walkDir, "index.tsv");
+    var cursorFile = Path.Combine(walkDir, "harvester-cursor.txt");
+    var logFile = Path.Combine(walkDir, "harvester.log");
+    File.WriteAllLines(indexFile, new[] { "MTWALK0000000001\t02781310" });
+    var dbFile = Path.Combine(walkDir, "walk.db");
+
+    int port = 15731;
+    var listener = new System.Net.HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+    var serving = Task.Run(() =>
+    {
+        while (listener.IsListening)
+        {
+            try
+            {
+                var ctx = listener.GetContext();
+                var body = "[{\"consumer_number\":\"MTWALK0000000001\",\"cpf_no\":\"02781310\",\"consumer_name\":\"Walk test\",\"vendor_code\":\"100038029\",\"latitude\":\"19.5\",\"longitude\":\"74.1\",\"inst_date\":\"2026-08-01\"}]";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+
+    try
+    {
+        using var walkStore = new Mskpy.Infrastructure.InspectionStore(dbFile);
+        using var harvester = new Mskpy.Infrastructure.InspectionHarvester(
+            walkStore, indexFile, $"http://127.0.0.1:{port}", cursorFile,
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: true);
+        harvester.Start();
+
+        var deadline = DateTime.UtcNow.AddSeconds(25);
+        var log = "";
+        while (DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(500);
+            try { if (File.Exists(logFile)) log = File.ReadAllText(logFile); } catch { }
+            if (log.Contains("cycle 2 start")) break;
+        }
+        Check(log.Contains("cycle 1 complete"), "a finished pass logs its cycle end");
+        Check(log.Contains("cycle 2 start"), "a finished pass re-arms itself after the idle");
+        Check(harvester.CycleNumber >= 2, "the harvester reports the cycle it is on");
+        Check(log.Contains("store vacuumed"), "a completed pass vacuums the store");
+        Check(walkStore.GetAll().Count == 1, "the re-walk re-reads the same consumer without duplicating it");
+    }
+    finally
+    {
+        listener.Stop();
+        listener.Close();
+        try { Directory.Delete(walkDir, true); } catch { }
+    }
+}
+
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 
 sealed class FakeHandler : HttpMessageHandler

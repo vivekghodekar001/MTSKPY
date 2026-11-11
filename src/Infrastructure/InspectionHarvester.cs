@@ -25,17 +25,35 @@ public sealed class InspectionHarvester : IDisposable
     private TimeSpan requestInterval = TimeSpan.FromSeconds(1);
     private int consecutiveErrors;
     private bool backoffMode;
+    // D2: re-walk state. A completed pass idles, then re-arms from the start.
+    private bool cycleComplete;
+    private int cycleNumber = 1;
+
+    /// <summary>
+    /// D2: how long to idle after a completed pass before re-walking the index.
+    /// This is the brake on a permanent 3,361-request cycle against a host that
+    /// intermittently fails — do not shorten it without measuring.
+    /// </summary>
+    public TimeSpan ReWalkIdle { get; }
+
+    /// <summary>D4: reclaim store space once a pass completes.</summary>
+    public bool VacuumOnCycleComplete { get; }
+
+    /// <summary>The pass currently being walked (1-based).</summary>
+    public int CycleNumber => cycleNumber;
 
     public event Action<int>? OnRecordsAdded;   // count of newly added records
     public event Action<string>? OnStatusChanged; // human-readable status
 
-    public InspectionHarvester(InspectionStore store, string indexTsvPath, string inspectionHost, string? cursorPath = null)
+    public InspectionHarvester(InspectionStore store, string indexTsvPath, string inspectionHost, string? cursorPath = null, TimeSpan? reWalkIdle = null, bool vacuumOnCycleComplete = true)
     {
         this.store = store;
         this.indexTsvPath = indexTsvPath;
         this.cursorPath = cursorPath ?? Path.Combine(Path.GetDirectoryName(indexTsvPath) ?? Environment.CurrentDirectory, "harvester-cursor.txt");
         this.logPath = Path.Combine(Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester.log");
         this.inspectionHost = inspectionHost;
+        this.ReWalkIdle = reWalkIdle ?? TimeSpan.FromMinutes(10);
+        this.VacuumOnCycleComplete = vacuumOnCycleComplete;
         LoadCpfIds();
         LoadCursor();
     }
@@ -97,14 +115,37 @@ public sealed class InspectionHarvester : IDisposable
 
     private async Task TickAsync()
     {
-        lock (pauseLock)
+        bool pausedNow;
+        lock (pauseLock) { pausedNow = paused; }
+        if (pausedNow || cpfIds.Count == 0)
         {
-            if (paused || cpfIds.Count == 0 || currentCpfIndex >= cpfIds.Count) return;
+            // A submit is in flight, or there is nothing to walk. If the pass is
+            // waiting to re-arm, come back shortly rather than a whole idle.
+            if (cycleComplete) timer?.Change(TimeSpan.FromSeconds(30), Timeout.InfiniteTimeSpan);
+            return;
         }
 
+        // D2: the pass reached the end of the index. Idle for the brake period,
+        // then re-arm from the start. Upsert dedupes, so a re-walk costs
+        // requests and adds only genuinely new consumers.
         if (currentCpfIndex >= cpfIds.Count)
         {
-            timer?.Change(Timeout.Infinite, Timeout.Infinite);
+            if (!cycleComplete)
+            {
+                cycleComplete = true;
+                LogEvent($"cycle {cycleNumber} complete: walked {currentCpfIndex} cpfs, seen={RecordsSeen}, added={RecordsAdded}, duplicates={DuplicateRecords}, rateLimits={RateLimitHits}, storeErrors={StoreErrors}");
+                OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} complete - next cycle in {ReWalkIdle.TotalMinutes:F0} min.");
+                if (VacuumOnCycleComplete) { try { store.Vacuum(); LogEvent("store vacuumed"); } catch { } }
+                timer?.Change(ReWalkIdle, Timeout.InfiniteTimeSpan);
+                return;
+            }
+            cycleComplete = false;
+            cycleNumber++;
+            currentCpfIndex = 0;
+            SaveCursor();
+            LogEvent($"cycle {cycleNumber} start: re-walking {cpfIds.Count} cpfs from 0");
+            OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} started.");
+            timer?.Change(requestInterval, requestInterval);
             return;
         }
 
