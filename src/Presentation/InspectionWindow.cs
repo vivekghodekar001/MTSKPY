@@ -75,7 +75,17 @@ public sealed class InspectionWindow : Window
         Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
     };
     readonly TextBlock bodyBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
-    readonly TextBlock manifestBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
+    // J1: the manifest box sizes itself to its content up to a maximum, then
+    // scrolls. Signature parts are muted so "PNG present" reads at a glance.
+    readonly StackPanel manifestPanel = new();
+    readonly Border manifestBox = new()
+    {
+        Background = Brushes.White,
+        Padding = new Thickness(8, 4, 8, 4),
+        Margin = new Thickness(0, 2, 0, 2)
+    };
+    readonly TextBlock manifestLabel = new() { FontSize = 13, Margin = new Thickness(0, 2, 0, 2) };
+    readonly ScrollViewer manifestScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = double.NaN, MaxHeight = 190 };
     readonly TextBlock locationBox = new() { Margin = new Thickness(0, 6, 0, 0) };
     readonly TextBox manualLat = new() { Width = 140, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox manualLong = new() { Width = 140, Margin = new Thickness(0, 0, 8, 0) };
@@ -421,23 +431,16 @@ public sealed class InspectionWindow : Window
         // Z5: One status line — collapses when empty, accent brush when populated.
         SetStatus("");
         footer.Children.Add(status);
-        // Z4: manifest label + 3-line box with its own scroll
-        footer.Children.Add(Label("Manifest (pre-send):", 13, new Thickness(0, 2, 0, 2)));
-        manifestBox.FontFamily = new FontFamily("Consolas");
-        manifestBox.FontSize = 11;
-        manifestBox.Background = Brushes.White;
-        // Z1: the manifest/body boxes are white, so their text must be dark.
-        manifestBox.Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F));
-        manifestBox.Padding = new Thickness(8);
-        manifestBox.Text = "";
-        manifestBox.TextWrapping = TextWrapping.Wrap;
-        var manifestScroll = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 58
-        };
+        // J1: manifest label + a box that sizes to its content up to a maximum
+        // and then scrolls. With no parts it collapses to nothing, so the empty
+        // state is not a large blank box.
+        manifestLabel.Text = "Manifest (pre-send):";
+        manifestLabel.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
+        footer.Children.Add(manifestLabel);
+        manifestBox.Child = manifestPanel;
         manifestScroll.Content = manifestBox;
         footer.Children.Add(manifestScroll);
+        SetManifest(Array.Empty<InspectionMultipartBuilder.ManifestEntry>());
 
         // Actions — left-aligned buttons row
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
@@ -491,6 +494,51 @@ public sealed class InspectionWindow : Window
     {
         banner.Text = "Opened from the local store. The server did not return this record; submit may be rejected.";
         banner.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// J1: renders every part of the pre-send manifest. The box grows with its
+    /// content up to the ceiling and then scrolls; with no parts it collapses
+    /// to nothing. Signature parts are muted and carry their byte size.
+    /// </summary>
+    void SetManifest(IReadOnlyList<InspectionMultipartBuilder.ManifestEntry> parts, string? location = null)
+    {
+        manifestPanel.Children.Clear();
+        var muted = (Brush)System.Windows.Application.Current.FindResource("Muted");
+        var body = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F));
+        foreach (var part in parts)
+        {
+            var isSignature = part.PartName.EndsWith("-benSign.png", StringComparison.OrdinalIgnoreCase)
+                            || part.PartName.EndsWith("-vendorRepSign.png", StringComparison.OrdinalIgnoreCase);
+            manifestPanel.Children.Add(new TextBlock
+            {
+                // The data part's size is only known once the blob is built.
+                Text = part.Size > 0
+                    ? $"{part.PartName}  ({part.ContentType}, {part.Size} B)"
+                    : $"{part.PartName}  ({part.ContentType}, size set at submit)",
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 11,
+                Foreground = isSignature ? muted : body,
+                Margin = new Thickness(0, 1, 0, 1),
+                TextWrapping = TextWrapping.NoWrap
+            });
+        }
+        if (!string.IsNullOrWhiteSpace(location))
+        {
+            manifestPanel.Children.Add(new TextBlock
+            {
+                Text = location!,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 11,
+                Foreground = muted,
+                Margin = new Thickness(0, 4, 0, 1),
+                TextWrapping = TextWrapping.Wrap
+            });
+        }
+        // Nothing to show: collapse the label and the box entirely.
+        var visible = parts.Count > 0;
+        manifestLabel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        manifestScroll.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     void SetStatus(string? text)
@@ -567,6 +615,57 @@ public sealed class InspectionWindow : Window
         ToolTip = toolTip
     };
 
+    /// <summary>
+    /// J1: the pre-send manifest, rebuilt as the officer attaches. It lists the
+    /// data part and every photo and signature that is present, with sizes, so
+    /// the officer can see what is about to go on the wire.
+    /// </summary>
+    void RefreshManifestPreview()
+    {
+        var parts = new List<InspectionMultipartBuilder.ManifestEntry>
+        {
+            new() { PartName = "data", ContentType = "text/plain", Size = 0, Source = "data.json (size set at submit)" }
+        };
+        foreach (var slot in PhotoSlots)
+        {
+            if (!photos.TryGetValue(slot.Suffix, out var path) || !File.Exists(path)) continue;
+            parts.Add(new InspectionMultipartBuilder.ManifestEntry
+            {
+                PartName = $"Insp-{consumerNumber}-{slot.Suffix}.jpg",
+                ContentType = "image/jpeg",
+                Size = new FileInfo(path).Length,
+                Source = path
+            });
+        }
+        foreach (var slot in SignSlots)
+        {
+            if (!signs.TryGetValue(slot.Suffix, out var path) || !File.Exists(path)) continue;
+            parts.Add(new InspectionMultipartBuilder.ManifestEntry
+            {
+                PartName = $"Insp-{consumerNumber}-{slot.Suffix}.png",
+                ContentType = "image/png",
+                Size = new FileInfo(path).Length,
+                Source = path
+            });
+        }
+        SetManifest(parts);
+    }
+
+    /// <summary>
+    /// J1: renders a canvas to a PNG at a stable path so the pre-send manifest
+    /// can show the signature part and its size before the submit.
+    /// </summary>
+    void RefreshSignaturePreviews()
+    {
+        foreach (var (suffix, canvas) in new[] { ("benSign", beneficiary), ("vendorRepSign", representative) })
+        {
+            if (canvas.Strokes.Count == 0) { signs.Remove(suffix); continue; }
+            var path = Path.Combine(Path.GetTempPath(), $"insp-sign-preview-{consumerNumber}-{suffix}.png");
+            if (RenderCanvasToPng(canvas, path) != null) signs[suffix] = path;
+        }
+        RefreshManifestPreview();
+    }
+
     void AddPhotoSlot(Panel target, string suffix, string label)
     {
         // Z2/Z7: compact slot — label, 110 px thumbnail, then the Choose/Remove row
@@ -642,6 +741,8 @@ public sealed class InspectionWindow : Window
                 photos[suffix] = consumerPhotoPath;
                 image.Source = Thumbnail(consumerPhotoPath);
                 fname.Text = Path.GetFileName(stamped) + " (EXIF stamped)";
+                // J1: the manifest preview lists what is attached.
+                RefreshManifestPreview();
             }
             catch (Exception ex)
             {
@@ -656,6 +757,8 @@ public sealed class InspectionWindow : Window
             photos.Remove(suffix);
             image.Source = null;
             fname.Text = "No photo selected";
+            // J1: the manifest preview drops the removed part.
+            RefreshManifestPreview();
         };
         row.Children.Add(choose); row.Children.Add(remove);
         // Z1: the file-name caption is a hint — muted brush, on the button row.
@@ -664,7 +767,7 @@ public sealed class InspectionWindow : Window
         target.Children.Add(panel);
     }
 
-    /// <summary>Z3: a signature block — label, 110 px canvas, Clear button beneath it.</summary>
+    /// <summary>Z3: a signature block — label, 110 px canvas, Clear disc in its corner.</summary>
     StackPanel BuildSignatureBlock(string title, InkCanvas canvas)
     {
         var block = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
@@ -945,9 +1048,8 @@ public sealed class InspectionWindow : Window
                 resolvedLocation: resolved,
                 sessionLoginId: loginId);
 
-            manifestBox.Text = "MANIFEST:\n  " + string.Join("\n  ", outcome.Manifest.Select(m =>
-                $"{m.PartName} ({m.ContentType}, {m.Size}B, source={m.Source})"));
-            manifestBox.Text += "\n\n" + (outcome.LocationSummary ?? "Location: not resolved.");
+            // J1: every part is listed by name with its size; signatures are muted.
+            SetManifest(outcome.Manifest, outcome.LocationSummary);
 
             bodyBox.Text = $"HTTP {(int)outcome.StatusCode} {outcome.StatusCode}\n\n{outcome.Body}";
             if (outcome.Error != null) bodyBox.Text += "\n\nGate: " + outcome.Error;
@@ -1028,6 +1130,9 @@ public sealed class InspectionWindow : Window
                 {
                     if (SignaturesIdentical())
                         SetStatus("Duplicate signature: beneficiary and vendor representative signatures are byte-identical. Draw two different signatures.");
+                    // J1: the signature parts appear in the pre-send manifest as
+                    // soon as they are drawn.
+                    RefreshSignaturePreviews();
                 }
                 catch (Exception ex)
                 {
@@ -1076,14 +1181,21 @@ public sealed class InspectionWindow : Window
     string? SignToPng(InkCanvas canvas)
     {
         if (canvas.Strokes.Count == 0) return null;
+        var tmp = Path.Combine(Path.GetTempPath(), $"insp-sign-{Guid.NewGuid():N}.png");
+        return RenderCanvasToPng(canvas, tmp);
+    }
+
+    /// <summary>Renders an ink canvas to a PNG at the given path. UI thread only.</summary>
+    static string? RenderCanvasToPng(InkCanvas canvas, string path)
+    {
+        if (canvas.Strokes.Count == 0) return null;
         var width = Math.Max(1, (int)Math.Ceiling(canvas.ActualWidth > 0 ? canvas.ActualWidth : 400));
         var height = Math.Max(1, (int)Math.Ceiling(canvas.ActualHeight > 0 ? canvas.ActualHeight : 200));
         var target = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
         target.Render(canvas);
         var png = new PngBitmapEncoder();
         png.Frames.Add(BitmapFrame.Create(target));
-        var tmp = Path.Combine(Path.GetTempPath(), $"insp-sign-{Guid.NewGuid():N}.png");
-        using (var stream = File.Create(tmp)) png.Save(stream);
-        return tmp;
+        using (var stream = File.Create(path)) png.Save(stream);
+        return path;
     }
 }
