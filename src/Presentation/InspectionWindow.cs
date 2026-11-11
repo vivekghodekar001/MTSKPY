@@ -118,11 +118,9 @@ public sealed class InspectionWindow : Window
         signatureDebounceTimer = new System.Threading.Timer(_ => CheckSignatureDuplicates(), null, Timeout.Infinite, Timeout.Infinite);
 
         Title = $"Pump Inspection — {consumerNumber}";
-        Width = 1000; MinWidth = 760; MinHeight = 700;
-        // T5: size to content height, capped at the work area so the submit,
-        // verify, manifest and body blocks are always reachable without hunting.
-        SizeToContent = SizeToContent.Height;
-        MaxHeight = System.Windows.SystemParameters.WorkArea.Height - 60;
+        Width = 1000; MinWidth = 760; MinHeight = 560;
+        // D4: fixed height capped at work area minus margin; no SizeToContent.
+        Height = Math.Min(820, System.Windows.SystemParameters.WorkArea.Height - 60);
         Background = (Brush)System.Windows.Application.Current.FindResource("Bg");
         Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         FontFamily = new FontFamily("Segoe UI");
@@ -140,109 +138,19 @@ public sealed class InspectionWindow : Window
         DockPanel.SetDock(bottom, Dock.Bottom);
         outer.Children.Add(bottom);
 
+        // Scrollable content area with tabbed parts
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         outer.Children.Add(scroll);
-        var body = new StackPanel();
-        scroll.Content = body;
+        var tabControl = new TabControl { Margin = new Thickness(0, 0, 0, 10) };
+        scroll.Content = tabControl;
 
-        // Header card, read-only
-        var headerCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        headerCard.Children.Add(Label("Record Details", 16));
-        var info = new StackPanel();
-        foreach (var (key, title) in new[]
+        // Part A tab — checks only
+        var partA = SurveyRules.InspectionChecks.Where(x => x.Part == "A").ToList();
+        if (partA.Count > 0)
         {
-            ("consumer_name", "Name"),
-            ("consumer_number", "Application No"),
-            ("address", "Address"),
-            ("inst_date", "Inst Date"),
-            ("latitude", "Inst Latitude"),
-            ("longitude", "Inst Longitude")
-        })
-        {
-            var val = FieldValue(key);
-            // T3: Inst Date rendered via toDDMONYYYY (same formatter as commDate),
-            // header card only — the blob is untouched.
-            if (key == "inst_date" && !string.IsNullOrEmpty(val))
-                val = FormatInstDate(val);
-            info.Children.Add(Label(title + ": " + (string.IsNullOrEmpty(val) ? "Not provided" : val), 14));
-        }
-        headerCard.Children.Add(info);
-        var navBtn = new Button
-        {
-            Content = "Navigate to Inst Location",
-            Margin = new Thickness(0, 8, 0, 0),
-            Padding = new Thickness(10, 4, 10, 4)
-        };
-        navBtn.Click += (_, _) =>
-        {
-            var lat = FieldValue("latitude");
-            var lon = FieldValue("longitude");
-            if (!string.IsNullOrEmpty(lat) && !string.IsNullOrEmpty(lon))
-            {
-                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = $"https://www.google.com/maps?q={lat},{lon}",
-                    UseShellExecute = true
-                }); } catch { }
-            }
-        };
-        headerCard.Children.Add(navBtn);
-        body.Children.Add(headerCard);
-
-        // Installer Details section
-        var installerCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        installerCard.Children.Add(Label("Installer Details", 16));
-        var installerFields = new StackPanel();
-        // P1: installer boxes start EMPTY — the officer types whoever actually
-        // attended. The stored name is only whoever attended last time and must
-        // not block a legitimate re-inspection with a different person.
-        vendorPersonNameBox.Text = "";
-        vendorPersonMobileBox.Text = "";
-        var clearName = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Name" };
-        clearName.Click += (_, _) => vendorPersonNameBox.Text = "";
-        var clearMobile = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Mobile No" };
-        clearMobile.Click += (_, _) => vendorPersonMobileBox.Text = "";
-        installerFields.Children.Add(CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName));
-        installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
-        installerCard.Children.Add(installerFields);
-        body.Children.Add(installerCard);
-
-        // Location (P4): manual override -> live Windows position -> installation
-        // coordinates. The source used for the upload is always reported.
-        var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        locationCard.Children.Add(Label("Location", 16));
-        var clearLat = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-        clearLat.Click += (_, _) => manualLat.Text = "";
-        var clearLong = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-        clearLong.Click += (_, _) => manualLong.Text = "";
-        var clearAcc = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-        clearAcc.Click += (_, _) => manualAcc.Text = "";
-        locationCard.Children.Add(CreateFieldRow("Manual latitude", manualLat, clearLat));
-        locationCard.Children.Add(CreateFieldRow("Manual longitude", manualLong, clearLong));
-        locationCard.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
-        var locationActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-        var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(10, 4, 10, 4) };
-        resolveBtn.Click += async (_, _) => await ResolveLocation();
-        locationActions.Children.Add(resolveBtn);
-        locationActions.Children.Add(distRestricted);
-        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", VerticalAlignment = VerticalAlignment.Center });
-        locationActions.Children.Add(allowedDist);
-        locationCard.Children.Add(locationActions);
-        locationBox.TextWrapping = TextWrapping.Wrap;
-        locationBox.Text = "Not resolved yet. Submit uses the live Windows position, then the installation coordinates.";
-        locationCard.Children.Add(locationBox);
-        body.Children.Add(locationCard);
-
-        // Checks (Part A and Part B tabs)
-        body.Children.Add(Label("Inspection Checks", 19));
-        var tabPanel = new TabControl { Margin = new Thickness(0, 6, 0, 6) };
-        foreach (var part in new[] { "A", "B" })
-        {
-            var partChecks = SurveyRules.InspectionChecks.Where(x => x.Part == part).ToList();
-            if (partChecks.Count == 0) continue;
-            var tabItem = new TabItem { Header = $"Part {part}", Margin = new Thickness(0) };
-            var partPanel = new StackPanel { Margin = new Thickness(8) };
-            foreach (var check in partChecks)
+            var partATab = new TabItem { Header = "Part A", Margin = new Thickness(0) };
+            var partAPanel = new StackPanel { Margin = new Thickness(8) };
+            foreach (var check in partA)
             {
                 var checkPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 4) };
                 var val = FieldValue(check.OriginalRecordField);
@@ -287,30 +195,133 @@ public sealed class InspectionWindow : Window
                 yes.Checked += (_, _) => remark.IsEnabled = false;
                 checkPanel.Children.Add(remark);
                 checkAnswers[check.Field] = (yes, no, remark);
-                partPanel.Children.Add(checkPanel);
+                partAPanel.Children.Add(checkPanel);
             }
-            tabItem.Content = partPanel;
-            tabPanel.Items.Add(tabItem);
+            partATab.Content = partAPanel;
+            tabControl.Items.Add(partATab);
         }
-        body.Children.Add(tabPanel);
 
-        // Photos
-        body.Children.Add(Label("Site Photos (3 JPEG)", 19));
-        foreach (var slot in PhotoSlots) AddPhotoSlot(body, slot.Suffix, slot.Label);
+        // Part B tab — checks only
+        var partB = SurveyRules.InspectionChecks.Where(x => x.Part == "B").ToList();
+        if (partB.Count > 0)
+        {
+            var partBTab = new TabItem { Header = "Part B", Margin = new Thickness(0) };
+            var partBPanel = new StackPanel { Margin = new Thickness(8) };
+            foreach (var check in partB)
+            {
+                var checkPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 4) };
+                var val = FieldValue(check.OriginalRecordField);
+                var valText = string.IsNullOrEmpty(val) ? "Not provided" : val;
+                var labelPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+                labelPanel.Children.Add(new TextBlock
+                {
+                    Text = "⚠ ",
+                    FontSize = 13,
+                    Foreground = Brushes.Orange,
+                    Margin = new Thickness(0, 0, 4, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                labelPanel.Children.Add(new TextBlock
+                {
+                    Text = check.Label + ": ",
+                    FontSize = 13,
+                    FontWeight = FontWeights.Normal,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                labelPanel.Children.Add(new TextBlock
+                {
+                    Text = valText,
+                    FontSize = 13,
+                    FontWeight = FontWeights.Bold,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                checkPanel.Children.Add(labelPanel);
+                var radios = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+                var yes = new RadioButton { Content = "Correct", GroupName = check.Field, IsChecked = true };
+                var no = new RadioButton { Content = "Incorrect", GroupName = check.Field };
+                radios.Children.Add(yes); radios.Children.Add(no);
+                checkPanel.Children.Add(radios);
+                var remark = new TextBox
+                {
+                    Width = 520,
+                    Margin = new Thickness(0, 4, 0, 0),
+                    ToolTip = "Remark (required when Incorrect)",
+                    IsEnabled = false
+                };
+                no.Checked += (_, _) => remark.IsEnabled = true;
+                yes.Checked += (_, _) => remark.IsEnabled = false;
+                checkPanel.Children.Add(remark);
+                checkAnswers[check.Field] = (yes, no, remark);
+                partBPanel.Children.Add(checkPanel);
+            }
+            partBTab.Content = partBPanel;
+            tabControl.Items.Add(partBTab);
+        }
 
-        // Signatures
-        body.Children.Add(Label("Signatures (2 PNG)", 19));
-        AddSignature(body, "Beneficiary signature", beneficiary);
-        AddSignature(body, "Vendor representative signature", representative);
+        // Photos & Signatures tab — installer details, location, photos, signatures
+        var photosTab = new TabItem { Header = "Photos & Signatures", Margin = new Thickness(0) };
+        var photosPanel = new StackPanel { Margin = new Thickness(8) };
+        photosPanel.Children.Add(Label("Installer Details", 16));
+        var installerFields = new StackPanel();
+        // P1: installer boxes start EMPTY — the officer types whoever actually
+        // attended. The stored name is only whoever attended last time and must
+        // not block a legitimate re-inspection with a different person.
+        vendorPersonNameBox.Text = "";
+        vendorPersonMobileBox.Text = "";
+        var clearName = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Name" };
+        clearName.Click += (_, _) => vendorPersonNameBox.Text = "";
+        var clearMobile = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Mobile No" };
+        clearMobile.Click += (_, _) => vendorPersonMobileBox.Text = "";
+        installerFields.Children.Add(CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName));
+        installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
+        photosPanel.Children.Add(installerFields);
 
-        // Manifest
-        body.Children.Add(Label("Manifest (pre-send)", 17));
+        // Location (P4): manual override -> live Windows position -> installation
+        // coordinates. The source used for the upload is always reported.
+        var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
+        locationCard.Children.Add(Label("Location", 16));
+        var clearLat = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
+        clearLat.Click += (_, _) => manualLat.Text = "";
+        var clearLong = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
+        clearLong.Click += (_, _) => manualLong.Text = "";
+        var clearAcc = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
+        clearAcc.Click += (_, _) => manualAcc.Text = "";
+        locationCard.Children.Add(CreateFieldRow("Manual latitude", manualLat, clearLat));
+        locationCard.Children.Add(CreateFieldRow("Manual longitude", manualLong, clearLong));
+        locationCard.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
+        var locationActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(10, 4, 10, 4) };
+        resolveBtn.Click += (_, _) => ResolveLocation();
+        locationActions.Children.Add(resolveBtn);
+        locationActions.Children.Add(distRestricted);
+        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", VerticalAlignment = VerticalAlignment.Center });
+        locationActions.Children.Add(allowedDist);
+        locationCard.Children.Add(locationActions);
+        locationBox.TextWrapping = TextWrapping.Wrap;
+        locationBox.Text = "Not resolved yet. Submit uses the live Windows position, then the installation coordinates.";
+        locationCard.Children.Add(locationBox);
+        photosPanel.Children.Add(locationCard);
+
+        photosPanel.Children.Add(Label("Site Photos (3 JPEG)", 19));
+        foreach (var slot in PhotoSlots) AddPhotoSlot(photosPanel, slot.Suffix, slot.Label);
+
+        photosPanel.Children.Add(Label("Signatures (2 PNG)", 19));
+        AddSignature(photosPanel, "Beneficiary signature", beneficiary);
+        AddSignature(photosPanel, "Vendor representative signature", representative);
+
+        photosTab.Content = photosPanel;
+        tabControl.Items.Add(photosTab);
+
+        // Fixed footer block — always visible, outside scroll
+        var footer = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
+        // Manifest (pre-send)
         manifestBox.FontFamily = new FontFamily("Consolas");
         manifestBox.FontSize = 11;
         manifestBox.Background = Brushes.White;
         manifestBox.Padding = new Thickness(8);
         manifestBox.Text = "No submission yet.";
-        body.Children.Add(manifestBox);
+        DockPanel.SetDock(manifestBox, Dock.Top);
+        footer.Children.Add(manifestBox);
 
         // Actions
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
@@ -323,16 +334,17 @@ public sealed class InspectionWindow : Window
         var closeBtn = new Button { Content = "Close", Margin = new Thickness(0, 0, 0, 0), Padding = new Thickness(14, 6, 14, 6) };
         closeBtn.Click += (_, _) => Close();
         actions.Children.Add(closeBtn);
-        body.Children.Add(actions);
+        footer.Children.Add(actions);
 
-        body.Children.Add(Label("Submission response (verbatim)", 17));
         bodyBox.FontFamily = new FontFamily("Consolas");
         bodyBox.FontSize = 11;
         bodyBox.Background = Brushes.White;
         bodyBox.Padding = new Thickness(8);
         bodyBox.Text = "Awaiting submission…";
-        body.Children.Add(bodyBox);
+        footer.Children.Add(bodyBox);
 
+        outer.Children.Add(scroll);
+        outer.Children.Add(footer);
         Content = outer;
         allowedDist.Text = "";
     }
@@ -565,7 +577,7 @@ public sealed class InspectionWindow : Window
                 !IsNumber(Empty(manualAcc.Text)))
                 throw new InvalidDataException("Manual latitude, longitude and accuracy must be numbers.");
 
-            // P4: resolve the position once, then re-stamp the three photos from
+            // P4: resolve the position once, then re-stamp the photos from
             // their originals with exactly the pair the blob will carry, so the
             // upload, the EXIF GPS and the distance all agree.
             var resolved = await workflow.location.ResolveAsync(
@@ -834,6 +846,3 @@ public sealed class InspectionWindow : Window
         return tmp;
     }
 }
-
-
-

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Mskpy.Domain")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7b2ea7e8b3222178e4e990ab7bfd232bb78a1221")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7cfd6b98a8fa93120b565f51e21fcbe3c714a998")]
 [assembly: System.Reflection.AssemblyProductAttribute("Mskpy.Domain")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Mskpy.Domain")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

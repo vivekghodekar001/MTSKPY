@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MSKPY-Windows")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.5.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.5.0+7b2ea7e8b3222178e4e990ab7bfd232bb78a1221")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.5.0+7cfd6b98a8fa93120b565f51e21fcbe3c714a998")]
 [assembly: System.Reflection.AssemblyProductAttribute("MSKPY-Windows")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MSKPY-Windows")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.5.0.0")]
