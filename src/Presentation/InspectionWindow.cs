@@ -602,6 +602,52 @@ public sealed class InspectionWindow : Window
     }
 
     /// <summary>
+    /// J2: the signature clear button — a small round muted disc with an
+    /// uppercase X, docked in the top-right corner of the ink canvas. It is
+    /// deliberately small and in the corner so it cannot eat a stroke tap.
+    /// </summary>
+    static Button MakeClearButton(string automationName, Brush muted, Brush hover, Action onClick)
+    {
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.SetValue(FrameworkElement.NameProperty, "bg");
+        border.SetValue(Border.BackgroundProperty, muted);
+        border.SetValue(Border.CornerRadiusProperty, new CornerRadius(11));
+        border.SetValue(Border.WidthProperty, 22.0);
+        border.SetValue(Border.HeightProperty, 22.0);
+
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        presenter.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        border.AppendChild(presenter);
+
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = border };
+
+        var button = new Button
+        {
+            Template = template,
+            Content = "X",
+            Width = 22,
+            Height = 22,
+            FontSize = 11,
+            FontWeight = FontWeights.Bold,
+            // Dark glyph on the muted disc — white on a light muted disc is unreadable.
+            Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F)),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            ToolTip = automationName,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 3, 3, 0)
+        };
+        System.Windows.Automation.AutomationProperties.SetName(button, automationName);
+        button.MouseEnter += (_, _) => { if (button.Template.FindName("bg", button) is Border b) b.Background = hover; };
+        button.MouseLeave += (_, _) => { if (button.Template.FindName("bg", button) is Border b) b.Background = muted; };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    /// <summary>
     /// Z2: a compact button. The app-wide Button style is 44 px tall, which pushed
     /// the third photo slot and both signature canvases below the fold.
     /// </summary>
@@ -785,11 +831,17 @@ public sealed class InspectionWindow : Window
             // T3: debounced duplicate check at attach time.
             signatureDebounceTimer.Change(400, Timeout.Infinite);
         };
-        block.Children.Add(canvas);
-        var clear = CompactButton("Clear");
-        clear.Margin = new Thickness(0, 4, 0, 0);
-        clear.Click += (_, _) => canvas.Strokes.Clear();
-        block.Children.Add(clear);
+        // J2: the canvas hosts the small round Clear disc in its top-right corner.
+        var host = new Grid();
+        host.Children.Add(canvas);
+        var muted = (Brush)System.Windows.Application.Current.FindResource("Muted");
+        var hover = new SolidColorBrush(Color.FromRgb(0xE2, 0xDE, 0xE8));
+        var clear = MakeClearButton(
+            title.StartsWith("Beneficiary", StringComparison.Ordinal) ? "Clear beneficiary signature" : "Clear representative signature",
+            muted, hover,
+            () => canvas.Strokes.Clear());
+        host.Children.Add(clear);
+        block.Children.Add(host);
         return block;
     }
 
