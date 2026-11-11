@@ -120,8 +120,9 @@ public sealed class InspectionWindow : Window
 
         Title = $"Pump Inspection — {consumerNumber}";
         Width = 1000; MinWidth = 760; MinHeight = 560;
-        // D4: fixed height capped at work area minus margin; no SizeToContent.
-        Height = Math.Min(820, System.Windows.SystemParameters.WorkArea.Height - 60);
+        // Z7: use the full work area so the Photos tab shows all three photo slots
+        // and both signature canvases without scrolling. Still no SizeToContent.
+        Height = Math.Min(1000, System.Windows.SystemParameters.WorkArea.Height - 60);
         Background = (Brush)System.Windows.Application.Current.FindResource("Bg");
         Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         FontFamily = new FontFamily("Segoe UI");
@@ -508,16 +509,46 @@ public sealed class InspectionWindow : Window
         SetStatus("Location resolved: " + loc.Source);
     }
 
+    /// <summary>
+    /// Z2: a compact button. The app-wide Button style is 44 px tall, which pushed
+    /// the third photo slot and both signature canvases below the fold.
+    /// </summary>
+    static Button CompactButton(string content, string? toolTip = null) => new()
+    {
+        Content = content,
+        Margin = new Thickness(0, 0, 8, 0),
+        Padding = new Thickness(12, 4, 12, 4),
+        FontSize = 13,
+        VerticalAlignment = VerticalAlignment.Center,
+        ToolTip = toolTip
+    };
+
     void AddPhotoSlot(Panel target, string suffix, string label)
     {
-        // Z2: compact slot — label, 110 px thumbnail, Choose/Remove row right under it.
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        // Z2/Z7: compact slot — label, 110 px thumbnail, then the Choose/Remove row
+        // immediately under it, with the file-name hint on the same line.
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
         panel.Children.Add(Label(label, 14, new Thickness(0, 0, 0, 2)));
-        var image = new Image { Height = 110, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 2) };
+        var image = new Image
+        {
+            Stretch = Stretch.UniformToFill,
+            ClipToBounds = true
+        };
+        // White frame so an empty slot reads as a photo placeholder.
+        var thumbFrame = new Border
+        {
+            Width = 110,
+            Height = 74,
+            Background = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 2, 0, 2),
+            Child = image
+        };
         var fname = Hint("No photo selected", 11);
-        panel.Children.Add(image);
-        var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
-        var choose = new Button { Content = "Choose JPEG…", Margin = new Thickness(0, 0, 8, 0) };
+        fname.VerticalAlignment = VerticalAlignment.Center;
+        panel.Children.Add(thumbFrame);
+        var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        var choose = CompactButton("Choose JPEG…");
         choose.Click += (_, _) =>
         {
             var picker = new Microsoft.Win32.OpenFileDialog
@@ -573,7 +604,7 @@ public sealed class InspectionWindow : Window
                 SetStatus("Photo could not be loaded: " + ex.Message);
             }
         };
-        var remove = new Button { Content = "Remove", Margin = new Thickness(0, 0, 0, 0) };
+        var remove = CompactButton("Remove");
         remove.Click += (_, _) =>
         {
             photos.Remove(suffix);
@@ -581,9 +612,9 @@ public sealed class InspectionWindow : Window
             fname.Text = "No photo selected";
         };
         row.Children.Add(choose); row.Children.Add(remove);
+        // Z1: the file-name caption is a hint — muted brush, on the button row.
+        row.Children.Add(fname);
         panel.Children.Add(row);
-        // Z1: the file-name caption is a hint — muted brush.
-        panel.Children.Add(fname);
         target.Children.Add(panel);
     }
 
@@ -606,7 +637,8 @@ public sealed class InspectionWindow : Window
             signatureDebounceTimer.Change(400, Timeout.Infinite);
         };
         block.Children.Add(canvas);
-        var clear = new Button { Content = "Clear", Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(10, 2, 10, 2) };
+        var clear = CompactButton("Clear");
+        clear.Margin = new Thickness(0, 4, 0, 0);
         clear.Click += (_, _) => canvas.Strokes.Clear();
         block.Children.Add(clear);
         return block;

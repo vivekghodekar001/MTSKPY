@@ -10,6 +10,10 @@
   <SolidColorBrush x:Key="Muted" Color="#C7C2CF"/>
   <SolidColorBrush x:Key="Accent" Color="#C9BFFF"/>
   <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+  <!-- The default TabControl template paints its content area with the system
+       window brush (white). The app's body text is light, so a white content area
+       makes every label unreadable. Keep the content area on the app background. -->
+  <Style TargetType="TabControl"><Setter Property="Background" Value="{StaticResource Bg}"/></Style>
   <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}" Color="#302D38"/>
   <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#E9E5EE"/>
   <Style TargetType="ComboBox">
