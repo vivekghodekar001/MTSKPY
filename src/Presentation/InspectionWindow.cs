@@ -592,6 +592,8 @@ public sealed class InspectionWindow : Window
     {
         var block = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
         block.Children.Add(Label(title, 14, new Thickness(0, 0, 0, 2)));
+        // Name the canvas so it is reachable by assistive tech and by UI automation.
+        System.Windows.Automation.AutomationProperties.SetName(canvas, title + " canvas");
         canvas.DefaultDrawingAttributes.Color = Colors.Black;
         canvas.DefaultDrawingAttributes.Width = canvas.DefaultDrawingAttributes.Height = 2.5;
         canvas.Strokes.StrokesChanged += (_, _) =>
