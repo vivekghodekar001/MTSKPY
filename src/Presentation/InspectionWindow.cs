@@ -126,14 +126,16 @@ public sealed class InspectionWindow : Window
         Background = (Brush)System.Windows.Application.Current.FindResource("Bg");
         Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         FontFamily = new FontFamily("Segoe UI");
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        // Z7: the window now fills the work area, so centre it on the screen —
+        // centring on the owner pushed its footer below the taskbar.
+        WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         // Z5: the status line uses the accent brush and collapses when empty.
         status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Accent");
         status.Visibility = Visibility.Collapsed;
 
         // Y2: Grid layout — header row, scrollable tabs row, footer row
-        var grid = new Grid { Margin = new Thickness(26), Background = Background };
+        var grid = new Grid { Margin = new Thickness(16), Background = Background };
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -217,6 +219,8 @@ public sealed class InspectionWindow : Window
                     Text = check.Label + ": ",
                     FontSize = 13,
                     FontWeight = FontWeights.Normal,
+                    // Z1: body-text brush, not the inherited accent foreground.
+                    Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 labelPanel.Children.Add(new TextBlock
@@ -224,6 +228,7 @@ public sealed class InspectionWindow : Window
                     Text = valText,
                     FontSize = 13,
                     FontWeight = FontWeights.Bold,
+                    Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 checkPanel.Children.Add(labelPanel);
@@ -278,6 +283,8 @@ public sealed class InspectionWindow : Window
                     Text = check.Label + ": ",
                     FontSize = 13,
                     FontWeight = FontWeights.Normal,
+                    // Z1: body-text brush, not the inherited accent foreground.
+                    Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 labelPanel.Children.Add(new TextBlock
@@ -285,6 +292,7 @@ public sealed class InspectionWindow : Window
                     Text = valText,
                     FontSize = 13,
                     FontWeight = FontWeights.Bold,
+                    Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 checkPanel.Children.Add(labelPanel);
@@ -376,10 +384,12 @@ public sealed class InspectionWindow : Window
         resolveBtn.Click += async (_, _) => await ResolveLocation();
         locationActions.Children.Add(resolveBtn);
         locationActions.Children.Add(distRestricted);
-        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", VerticalAlignment = VerticalAlignment.Center });
+        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
         locationActions.Children.Add(allowedDist);
         locationCard.Children.Add(locationActions);
         locationBox.TextWrapping = TextWrapping.Wrap;
+        // Z1: body-text brush — the inherited tab foreground is the accent purple.
+        locationBox.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         locationBox.Text = "Not resolved yet. Submit uses the live Windows position, then the installation coordinates.";
         locationCard.Children.Add(locationBox);
         rightPanel.Children.Add(locationCard);
@@ -405,6 +415,8 @@ public sealed class InspectionWindow : Window
         manifestBox.FontFamily = new FontFamily("Consolas");
         manifestBox.FontSize = 11;
         manifestBox.Background = Brushes.White;
+        // Z1: the manifest/body boxes are white, so their text must be dark.
+        manifestBox.Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F));
         manifestBox.Padding = new Thickness(8);
         manifestBox.Text = "";
         manifestBox.TextWrapping = TextWrapping.Wrap;
@@ -433,6 +445,8 @@ public sealed class InspectionWindow : Window
         bodyBox.FontFamily = new FontFamily("Consolas");
         bodyBox.FontSize = 11;
         bodyBox.Background = Brushes.White;
+        // Z1: the body box is white, so its text must be dark.
+        bodyBox.Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F));
         bodyBox.Padding = new Thickness(8);
         bodyBox.Text = "Awaiting submission…";  // Y3: keep this
         bodyBox.TextWrapping = TextWrapping.Wrap;
@@ -527,7 +541,7 @@ public sealed class InspectionWindow : Window
     {
         // Z2/Z7: compact slot — label, 110 px thumbnail, then the Choose/Remove row
         // immediately under it, with the file-name hint on the same line.
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 4) };
         panel.Children.Add(Label(label, 14, new Thickness(0, 0, 0, 2)));
         var image = new Image
         {
@@ -538,7 +552,7 @@ public sealed class InspectionWindow : Window
         var thumbFrame = new Border
         {
             Width = 110,
-            Height = 74,
+            Height = 60,
             Background = Brushes.White,
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 2, 0, 2),
@@ -690,6 +704,9 @@ public sealed class InspectionWindow : Window
         {
             Text = label + ": ",
             FontSize = 13,
+            // Z1: field labels use the normal body-text brush. Without this they
+            // inherit the tab's accent foreground and read as purple on dark.
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 6, 0),
             MinWidth = 150
