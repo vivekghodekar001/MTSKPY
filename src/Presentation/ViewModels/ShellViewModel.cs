@@ -295,7 +295,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 new("Vendor", r.VendorCode ?? ""),
                 new("Status", r.Status.ToString()),
                 // D1: the cpf is what "my queue" is defined by, so it travels with the row.
-                new("Cpf", r.CpfNo ?? "")
+                new("Cpf", r.CpfNo ?? ""),
+                // F1: every cpf whose list has contained this row.
+                new("SeenCpfs", r.SeenCpfs ?? "")
             },
             OriginalJson: r.OriginalJson ?? ""
         )).ToList();
@@ -305,14 +307,25 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         doc.Fields.FirstOrDefault(f => f.Label == label)?.Value ?? "";
 
     /// <summary>
-    /// D1: the list is scoped. "MyPending" is the officer's own queue — the
-    /// records whose cpf is the session login id and that have not been accepted.
-    /// "All" is the statewide set. The officer lands on their own work.
+    /// D1/F1: the list is scoped. "MyPending" is the officer's own queue — the
+    /// records whose seen-cpf set contains the session's cpf and that have not
+    /// been accepted. "All" is the statewide set. The officer lands on their
+    /// own work.
     /// </summary>
     bool InScope(ApplicationDocument doc)
     {
         if (listScope == ListScopeAll) return true;
-        return string.Equals(DocField(doc, "Cpf"), profile?.LoginId ?? "", StringComparison.Ordinal)
+        var session = profile?.LoginId ?? "";
+        if (session.Length == 0) return false;
+        // F1: membership is the SEEN set, so a record seen under two cpfs is in
+        // both officers' queues and never flaps out of one.
+        var seen = DocField(doc, "SeenCpfs");
+        if (seen.Length > 0 &&
+            seen.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(c => string.Equals(c, session, StringComparison.Ordinal)))
+            return !string.Equals(DocField(doc, "Status"), RecordStatus.Accepted.ToString(), StringComparison.Ordinal);
+        // Fall back to the owner of first sighting for rows with no seen set.
+        return string.Equals(DocField(doc, "Cpf"), session, StringComparison.Ordinal)
             && !string.Equals(DocField(doc, "Status"), RecordStatus.Accepted.ToString(), StringComparison.Ordinal);
     }
 
@@ -392,7 +405,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         else if (destination == "Diagnostics")
         {
             RefreshIndexAge();
-            Fields.Add(new("Build", "0.5 · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Index path", IndexPath)); Fields.Add(new("Index last written", IndexLastWrite)); Fields.Add(new("Index age", IsIndexStale ? $"STALE - {IndexAge}" : IndexAge)); Fields.Add(new("Harvester", HarvesterStatus)); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
+            Fields.Add(new("Build", $"{AppVersion} · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Index path", IndexPath)); Fields.Add(new("Index last written", IndexLastWrite)); Fields.Add(new("Index age", IsIndexStale ? $"STALE - {IndexAge}" : IndexAge)); Fields.Add(new("Harvester", HarvesterStatus)); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
             Fields.Add(new("Manual login id", manualLoginId));
             // Vendor code is an editable TextBox, not a read-only field
         }
@@ -463,7 +476,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 return;
             }
             var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
-            var (added, duplicates) = store.UpsertRows(rows);
+            // F1: these rows came from the session's own list, so the session's
+            // cpf is one of the cpfs they have been seen under.
+            var (added, duplicates) = store.UpsertRows(rows, loginId);
             Status = $"Session list: {rows.Count} rows ({added} new, {duplicates} already held).";
             RefreshRecordCounts();
         }
@@ -479,6 +494,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Status = "Session list could not be fetched (" + ex.Message + "). The harvester will fill the store.";
         }
     }
+
+    /// <summary>F3: the running build's version, stamped from the assembly.</summary>
+    public static string AppVersion =>
+        System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
 
     /// <summary>
     /// D3: the index file's age. A stale index means new consumers are missing
@@ -638,6 +657,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         try
         {
             var stored = store?.GetByConsumerNumber(consumerNumber);
+            // F1: the detail is fetched with the session's own cpf when the record
+            // has been seen under it — the server filters by that cpf and returns
+            // exactly this row. Otherwise the record's own cpf is used.
+            var detailCpf = store?.GetDetailCpf(consumerNumber, profile?.LoginId);
+            if (!string.IsNullOrWhiteSpace(detailCpf)) return detailCpf;
             if (!string.IsNullOrWhiteSpace(stored?.CpfNo)) return stored!.CpfNo;
         }
         catch { /* the store is best-effort */ }

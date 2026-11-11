@@ -36,7 +36,8 @@ public sealed record StoredInspectionRecord(
     string? OriginalJson,      // Full raw record JSON
     string? SubmittedDataPath,   // Path to data.json from last submit attempt
     string? PhotoPaths,          // JSON array of photo file paths
-    string? SignPaths            // JSON array of signature file paths
+    string? SignPaths,           // JSON array of signature file paths
+    string? SeenCpfs = null      // F1: every cpf whose list has contained this row
 );
 
 /// <summary>
@@ -102,8 +103,29 @@ public sealed class InspectionStore : IDisposable
                 sent_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS ix_photo_hash ON photo_hashes(sha256);
+            -- F1: the cpfs whose list has contained a consumer. cpf_no on the
+            -- record is the owner of first sighting; this table is the full set,
+            -- so a record seen under two cpfs belongs to BOTH officers' queues.
+            CREATE TABLE IF NOT EXISTS record_cpfs (
+                consumer_number TEXT NOT NULL,
+                cpf_no TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                PRIMARY KEY (consumer_number, cpf_no)
+            );
+            CREATE INDEX IF NOT EXISTS ix_record_cpfs_cpf ON record_cpfs(cpf_no);
         ";
         cmd.ExecuteNonQuery();
+
+        // F1: backfill the seen set for rows harvested before this table existed.
+        using (var backfill = connection.CreateCommand())
+        {
+            backfill.CommandText = @"
+                INSERT OR IGNORE INTO record_cpfs (consumer_number, cpf_no, first_seen_at)
+                SELECT consumer_number, cpf_no, updated_at FROM inspection_records
+                WHERE cpf_no IS NOT NULL AND TRIM(cpf_no) <> '';
+            ";
+            backfill.ExecuteNonQuery();
+        }
     }
 
     public int Upsert(StoredInspectionRecord record, bool preserveStatus = false)
@@ -121,7 +143,11 @@ public sealed class InspectionStore : IDisposable
                 VALUES (@cn, @cpf, @vc, @cnm, @lat, @lon, @inst, @rtv, @sdm, @ift, @st, @lsm, @lsma, @oj, @ua,
                         @sdp, @pp, @sp)
                 ON CONFLICT(consumer_number) DO UPDATE SET
-                    cpf_no=excluded.cpf_no,
+                    -- F1: cpf_no is INSERT-ONLY. The list endpoint is per-cpf and
+                    -- the same consumer appears under different cpfs in different
+                    -- officers' responses; letting the last writer set the owner
+                    -- made the queue flap (41 -> 32 -> 41 mid-walk).
+                    cpf_no=inspection_records.cpf_no,
                     vendor_code=excluded.vendor_code,
                     consumer_name=excluded.consumer_name,
                     latitude=excluded.latitude,
@@ -185,7 +211,7 @@ public sealed class InspectionStore : IDisposable
     /// how many the store already held. Shared by the harvester and the
     /// sign-in seed so both take exactly the same path into the store.
     /// </summary>
-    public (int Added, int Duplicates) UpsertRows(IReadOnlyList<JsonElement> rows)
+    public (int Added, int Duplicates) UpsertRows(IReadOnlyList<JsonElement> rows, string? fetchedUnderCpf = null)
     {
         int added = 0, duplicates = 0;
         foreach (var row in rows)
@@ -215,9 +241,59 @@ public sealed class InspectionStore : IDisposable
             // officer has already submitted stays Accepted and stays out of
             // "My pending" — it must not be rewritten to New on every re-walk.
             Upsert(stored, preserveStatus: true);
+            // F1: remember the cpf this row was fetched under, so it belongs to
+            // that officer's queue even if another cpf's list also carries it.
+            if (!string.IsNullOrWhiteSpace(fetchedUnderCpf))
+                RecordCpf(record.ConsumerNumber, fetchedUnderCpf);
             if (isNew) added++; else duplicates++;
         }
         return (added, duplicates);
+    }
+
+    /// <summary>F1: records that a consumer appeared in a cpf's list.</summary>
+    public void RecordCpf(string consumerNumber, string cpf)
+    {
+        if (string.IsNullOrWhiteSpace(consumerNumber) || string.IsNullOrWhiteSpace(cpf)) return;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "INSERT OR IGNORE INTO record_cpfs (consumer_number, cpf_no, first_seen_at) VALUES ($cn, $cpf, $ts);";
+            cmd.Parameters.AddWithValue("$cn", consumerNumber);
+            cmd.Parameters.AddWithValue("$cpf", cpf.Trim());
+            cmd.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("o"));
+            cmd.ExecuteNonQuery();
+        }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>
+    /// F1: the cpf to fetch a record's detail with. The session's own cpf is
+    /// preferred when the record has been seen under it (the server filters by
+    /// that cpf, so it returns exactly this row); otherwise the record's own
+    /// cpf is used.
+    /// </summary>
+    public string? GetDetailCpf(string consumerNumber, string? sessionCpf)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionCpf) && IsSeenUnder(consumerNumber, sessionCpf))
+            return sessionCpf;
+        return GetByConsumerNumber(consumerNumber)?.CpfNo;
+    }
+
+    /// <summary>F1: whether a consumer has been seen in this cpf's list.</summary>
+    public bool IsSeenUnder(string consumerNumber, string cpf)
+    {
+        if (string.IsNullOrWhiteSpace(consumerNumber) || string.IsNullOrWhiteSpace(cpf)) return false;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM record_cpfs WHERE consumer_number=$cn AND cpf_no=$cpf LIMIT 1;";
+            cmd.Parameters.AddWithValue("$cn", consumerNumber);
+            cmd.Parameters.AddWithValue("$cpf", cpf.Trim());
+            return cmd.ExecuteScalar() != null;
+        }
+        finally { dbLock.Release(); }
     }
 
     /// <summary>
@@ -307,10 +383,11 @@ public sealed class InspectionStore : IDisposable
         dbLock.Wait();
         try
         {
-            var sb = new System.Text.StringBuilder("SELECT * FROM inspection_records WHERE 1=1");
-            if (firstTimeOnly.HasValue) sb.Append(" AND is_first_time=@ift");
-            if (status.HasValue) sb.Append(" AND status=@st");
-            sb.Append(" ORDER BY updated_at DESC");
+            var sb = new System.Text.StringBuilder(
+                "SELECT r.*, (SELECT GROUP_CONCAT(c.cpf_no, ',') FROM record_cpfs c WHERE c.consumer_number = r.consumer_number) AS seen_cpfs FROM inspection_records r WHERE 1=1");
+            if (firstTimeOnly.HasValue) sb.Append(" AND r.is_first_time=@ift");
+            if (status.HasValue) sb.Append(" AND r.status=@st");
+            sb.Append(" ORDER BY r.updated_at DESC");
 
             using var cmd = connection.CreateCommand();
             cmd.CommandText = sb.ToString();
@@ -338,7 +415,8 @@ public sealed class InspectionStore : IDisposable
                     OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
                     SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
                     PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
-                    SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths"))
+                    SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
+                    SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs"))
                 ));
             }
             return results;
@@ -355,7 +433,7 @@ public sealed class InspectionStore : IDisposable
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT * FROM inspection_records WHERE consumer_number=@cn";
+            cmd.CommandText = "SELECT r.*, (SELECT GROUP_CONCAT(c.cpf_no, ',') FROM record_cpfs c WHERE c.consumer_number = r.consumer_number) AS seen_cpfs FROM inspection_records r WHERE r.consumer_number=@cn";
             cmd.Parameters.AddWithValue("@cn", consumerNumber);
             using var reader = cmd.ExecuteReader();
             if (!reader.Read()) return null;
@@ -376,7 +454,8 @@ public sealed class InspectionStore : IDisposable
                 OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
                 SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
                 PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
-                SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths"))
+                SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
+                SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs"))
             );
         }
         finally

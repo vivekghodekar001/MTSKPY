@@ -142,6 +142,42 @@ try
 }
 finally { try { Directory.Delete(vendorDir, true); } catch { } }
 
+// F1: a consumer seen under two cpfs belongs to BOTH queues, its cpf_no never
+// changes, and the detail can be fetched from either side.
+{
+    var ownDir = Path.Combine(Path.GetTempPath(), $"mskpy-own-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(ownDir);
+    var ownDb = Path.Combine(ownDir, "own.db");
+    try
+    {
+        using var ownStore = new Mskpy.Infrastructure.InspectionStore(ownDb);
+        using var row = JsonDocument.Parse("""
+        {"consumer_number":"MT4420200801626","cpf_no":"02781310","consumer_name":"Seen twice","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01"}
+        """);
+        ownStore.UpsertRows(new[] { row.RootElement }, "02284251");
+        ownStore.UpsertRows(new[] { row.RootElement }, "02781310");
+
+        var stored = ownStore.GetByConsumerNumber("MT4420200801626")!;
+        Check(stored.CpfNo == "02781310", "the row's cpf_no is set on insert and never overwritten");
+        Check(stored.SeenCpfs != null && stored.SeenCpfs.Contains("02284251") && stored.SeenCpfs.Contains("02781310"),
+            "a consumer seen under two cpfs is recorded under both");
+        Check(ownStore.IsSeenUnder("MT4420200801626", "02284251"), "the row belongs to the first officer's queue");
+        Check(ownStore.IsSeenUnder("MT4420200801626", "02781310"), "the row belongs to the second officer's queue too");
+        Check(ownStore.GetDetailCpf("MT4420200801626", "02284251") == "02284251",
+            "the detail is fetched with the session's cpf when the row was seen under it");
+        Check(ownStore.GetDetailCpf("MT4420200801626", "09999999") == "02781310",
+            "the detail falls back to the row's own cpf for an officer who has not seen it");
+
+        // A re-walk must not move the owner either.
+        ownStore.UpsertRows(new[] { row.RootElement }, "02781310");
+        var after = ownStore.GetByConsumerNumber("MT4420200801626")!;
+        Check(after.CpfNo == "02781310", "a re-walk leaves the row's cpf_no unchanged");
+        Check(after.SeenCpfs != null && after.SeenCpfs.Contains("02284251"),
+            "a re-walk does not drop a cpf the row was seen under");
+    }
+    finally { try { Directory.Delete(ownDir, true); } catch { } }
+}
+
 // D2: a completed pass must idle and then re-arm itself from the start.
 {
     var walkDir = Path.Combine(Path.GetTempPath(), $"mskpy-walk-{Guid.NewGuid():N}");

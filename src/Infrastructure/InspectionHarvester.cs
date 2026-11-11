@@ -246,7 +246,9 @@ public sealed class InspectionHarvester : IDisposable
             try { doc = JsonDocument.Parse(body); } catch { RequestErrors++; NoteFailure(cpf, "unparseable body"); return; }
 
             var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
-            var (added, duplicates) = store.UpsertRows(rows);
+            // F1: the rows are recorded under the cpf they were FETCHED with, not
+            // under whichever cpf the row itself happens to carry.
+            var (added, duplicates) = store.UpsertRows(rows, cpf);
 
             RecordsSeen += rows.Count;
             RecordsAdded += added;
