@@ -14,6 +14,7 @@ public sealed class InspectionHarvester : IDisposable
     private readonly InspectionStore store;
     private readonly string indexTsvPath;
     private readonly string cursorPath;
+    private readonly string logPath;
     private readonly string inspectionHost;
     private System.Threading.Timer? timer;
     private readonly object pauseLock = new();
@@ -33,6 +34,7 @@ public sealed class InspectionHarvester : IDisposable
         this.store = store;
         this.indexTsvPath = indexTsvPath;
         this.cursorPath = cursorPath ?? Path.Combine(Path.GetDirectoryName(indexTsvPath) ?? Environment.CurrentDirectory, "harvester-cursor.txt");
+        this.logPath = Path.Combine(Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester.log");
         this.inspectionHost = inspectionHost;
         LoadCpfIds();
         LoadCursor();
@@ -79,6 +81,15 @@ public sealed class InspectionHarvester : IDisposable
     public void Start()
     {
         timer = new System.Threading.Timer(async _ => await TickAsync(), null, TimeSpan.Zero, requestInterval);
+    }
+
+    /// <summary>
+    /// Records walk events (rate limits, errors) so a long run can be audited
+    /// without a debugger. Best-effort: logging must never stop the walk.
+    /// </summary>
+    private void LogEvent(string message)
+    {
+        try { File.AppendAllText(logPath, $"{DateTime.Now:s} {message}{Environment.NewLine}"); } catch { }
     }
 
     public void Pause() { lock (pauseLock) { paused = true; } }
@@ -128,6 +139,7 @@ public sealed class InspectionHarvester : IDisposable
             {
                 consecutiveErrors++;
                 RateLimitHits++;
+                LogEvent($"rate-limited {(int)response.StatusCode} at cpf {cpf} ({currentCpfIndex}/{cpfIds.Count}); hits={RateLimitHits}");
                 if (!backoffMode)
                 {
                     OnStatusChanged?.Invoke($"Harvester rate-limited ({response.StatusCode}), slowing to 1 req/2s…");
@@ -168,6 +180,7 @@ public sealed class InspectionHarvester : IDisposable
             // look healthy while it persisted nothing at all.
             StoreErrors++;
             LastError = ex.Message;
+            LogEvent($"ERROR at cpf {cpf}: {ex.Message}");
             OnStatusChanged?.Invoke($"Harvester error on cpf {cpf}: {ex.Message}");
         }
     }
