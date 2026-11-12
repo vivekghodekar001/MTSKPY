@@ -130,7 +130,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Cancel = new RelayCommand(_ => CancelPending(), _ => IsBusy);
         Navigate = new RelayCommand(p => NavigateTo(p as string ?? "Home"), _ => !IsBusy && IsSignedIn);
         SignOut = new RelayCommand(_ => EndSession(), _ => IsSignedIn || IsBusy);
-        ViewDetails = new RelayCommand(_ => ShowDetails(), _ => SelectedApplication != null && !IsBusy);
+        ViewDetails = new RelayCommand(_ => ShowDetails(null), _ => !IsBusy);
         ShowReturned = new RelayCommand(_ => NavigateTo("Returned"), _ => !IsBusy && IsSignedIn && store != null);
         ShowNeedsRedo = new RelayCommand(_ => NavigateTo("NeedsRedo"), _ => !IsBusy && IsSignedIn && store != null);
         RetryRecord = new AsyncCommand((_, ct) => RetryRecordAsync(_), ShowError, _ => !IsBusy && IsSignedIn);
@@ -267,7 +267,73 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool IsInspectionSection => page == "Applications" || IsInspectionDetails;
     public bool IsProfilePage => page == "Profile";
     public bool IsSettingsPage => page == "Settings";
-    public ApplicationDocument? SelectedApplication { get => selectedApplication; set { if (Set(ref selectedApplication, value)) RefreshCommands(); } }
+    public ApplicationDocument? SelectedApplication
+    {
+        get => selectedApplication;
+        set
+        {
+            if (!Set(ref selectedApplication, value)) return;
+            RefreshCommands();
+            Changed(nameof(HasSelection));
+            // C2: ONE CLICK TO THE FORM. Selecting a row opens the live
+            // inspection for it. The details are still reachable - they are
+            // the only place the record's cpf and seen officers are shown -
+            // through the row's own Details link and through a right-click.
+            if (value == null || suppressAutoOpen) return;
+            ScheduleOpen(value);
+        }
+    }
+
+    /// <summary>
+    /// C2: the open is deferred a moment. Clicking the row's Details link
+    /// also changes the list's selection - WPF selects the item under the
+    /// mouse - so without the delay the form would open on top of the
+    /// details the officer asked for. By the time the open would happen, a
+    /// deliberate "Details" has moved the app off the list, and a row the
+    /// officer has navigated away from is not opened either.
+    /// </summary>
+    void ScheduleOpen(ApplicationDocument row)
+    {
+        CancelPendingOpen();
+        pendingOpen = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+        pendingOpen.Tick += (s, e) =>
+        {
+            pendingOpen?.Stop();
+            if (page == "Applications" && SelectedApplication == row) OpenLiveInspection();
+        };
+        pendingOpen.Start();
+    }
+
+    /// <summary>C2: drop the deferred open - the officer asked for something else.</summary>
+    void CancelPendingOpen()
+    {
+        pendingOpen?.Stop();
+        pendingOpen = null;
+    }
+
+    System.Windows.Threading.DispatcherTimer? pendingOpen;
+
+    /// <summary>
+    /// C2: the list's context menu is open. A right-click selects the row
+    /// under the pointer in WPF, so the deferred open would fire over the
+    /// menu the officer is choosing from; the menu cancels it.
+    /// </summary>
+    bool contextMenuOpen;
+    public bool ContextMenuOpen
+    {
+        get => contextMenuOpen;
+        set
+        {
+            if (!Set(ref contextMenuOpen, value)) return;
+            if (value) CancelPendingOpen();
+        }
+    }
+
+    /// <summary>C2: is a row selected? The details link sits beside the list.</summary>
+    public bool HasSelection => SelectedApplication != null;
+
+    /// <summary>C2: the details are shown without opening the form.</summary>
+    bool suppressAutoOpen;
     public AsyncCommand Login { get; }
     public AsyncCommand OpenModule { get; }
     public AsyncCommand Refresh { get; }
@@ -509,9 +575,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // Vendor code is an editable TextBox, not a read-only field
         }
     }
-    void ShowDetails()
+    void ShowDetails(object? parameter)
     {
-        if (SelectedApplication == null) return; Fields.Clear(); foreach (var field in SelectedApplication.Fields) Fields.Add(field); SetPage("Details");
+        var row = parameter as ApplicationDocument ?? SelectedApplication;
+        if (row == null) return;
+        // The details must not open the form: the row was picked deliberately.
+        suppressAutoOpen = true;
+        try { SelectedApplication = row; }
+        finally { suppressAutoOpen = false; }
+        Fields.Clear(); foreach (var field in row.Fields) Fields.Add(field); SetPage("Details");
     }
     void SetPage(string name)
     {
@@ -914,6 +986,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         var app = SelectedApplication;
         if (app == null) { Status = "Select an application first."; return; }
+        if (index == null || builder == null || location == null) { Error = "Inspection services not initialized."; return; }
         _ = OpenDetailForSearched(app.Identity, null);
     }
 

@@ -68,5 +68,20 @@
   <Style TargetType="TextBox"><Setter Property="Background" Value="{StaticResource Surface}"/><Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="CaretBrush" Value="{StaticResource Text}"/><Setter Property="BorderBrush" Value="#8D8699"/><Setter Property="Padding" Value="12"/><Setter Property="FontSize" Value="16"/><Setter Property="MinHeight" Value="46"/></Style>
   <Style TargetType="PasswordBox"><Setter Property="Background" Value="{StaticResource Surface}"/><Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="CaretBrush" Value="{StaticResource Text}"/><Setter Property="BorderBrush" Value="#8D8699"/><Setter Property="Padding" Value="12"/><Setter Property="FontSize" Value="16"/><Setter Property="MinHeight" Value="46"/></Style>
   <Style TargetType="RadioButton"><Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="FontSize" Value="16"/><Setter Property="Margin" Value="0,0,24,0"/></Style>
+ <!-- C2/C5: a link - no chrome, the accent colour, a hand cursor. Used for the
+      row's Details link and for the installer name's suggestions. -->
+ <Style x:Key="LinkButton" TargetType="Button">
+  <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{StaticResource Accent}"/>
+  <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="6,2"/>
+  <Setter Property="FontSize" Value="13"/><Setter Property="Cursor" Value="Hand"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+   <Border x:Name="Frame" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+   </Border><ControlTemplate.Triggers>
+    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Background" Value="#3A3646"/></Trigger>
+    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Frame" Property="Opacity" Value="0.45"/></Trigger>
+   </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+ </Style>
  </Application.Resources>
 </Application>
