@@ -36,12 +36,25 @@ public sealed class InspectionHarvester : IDisposable
     // repeating "cycle 1" and making the log ambiguous.
     private DateTime cycleStartedAt = DateTime.Now;
     private DateTime? lastCycleCompletedAt;
+    // J7: the give-up policy. The walk stops asking when the host has failed
+    // for GiveUpAfter without a single success; the officer resumes it.
+    private readonly TimeSpan giveUpAfter;
+    private DateTime? failureStreakStartedAt;
+    private bool gaveUp;
 
     /// <summary>E2: consecutive failed requests before the cadence drops.</summary>
     public const int FailureBackoffThreshold = 10;
 
     /// <summary>E2: the cadence once the host has stopped answering.</summary>
     public static readonly TimeSpan FailureBackoffInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// J7: how long the host may keep failing before the walk gives up. A
+    /// walk that cannot get an answer is not a walk: after this long without
+    /// a single successful request the pass is abandoned, the walk stops
+    /// asking, and the officer decides when to try again.
+    /// </summary>
+    public static readonly TimeSpan GiveUpAfter = TimeSpan.FromMinutes(10);
 
     /// <summary>
     /// D2: how long to idle after a completed pass before re-walking the index.
@@ -59,7 +72,7 @@ public sealed class InspectionHarvester : IDisposable
     public event Action<int>? OnRecordsAdded;   // count of newly added records
     public event Action<string>? OnStatusChanged; // human-readable status
 
-    public InspectionHarvester(InspectionStore store, string indexTsvPath, string inspectionHost, string? cursorPath = null, TimeSpan? reWalkIdle = null, bool vacuumOnCycleComplete = true)
+    public InspectionHarvester(InspectionStore store, string indexTsvPath, string inspectionHost, string? cursorPath = null, TimeSpan? reWalkIdle = null, bool vacuumOnCycleComplete = true, TimeSpan? giveUpAfter = null)
     {
         this.store = store;
         this.indexTsvPath = indexTsvPath;
@@ -69,6 +82,7 @@ public sealed class InspectionHarvester : IDisposable
         this.inspectionHost = inspectionHost;
         this.ReWalkIdle = reWalkIdle ?? TimeSpan.FromMinutes(10);
         this.VacuumOnCycleComplete = vacuumOnCycleComplete;
+        this.giveUpAfter = giveUpAfter ?? GiveUpAfter;
         LoadCpfIds();
         LoadCursor();
         LoadCycleState();
@@ -219,6 +233,9 @@ public sealed class InspectionHarvester : IDisposable
 
     private async Task TickAsync()
     {
+        // J7: a walk that gave up does not ask the host anything until the
+        // officer resumes it.
+        if (gaveUp) return;
         bool pausedNow;
         lock (pauseLock) { pausedNow = paused; }
         if (pausedNow || cpfIds.Count == 0)
@@ -306,6 +323,22 @@ public sealed class InspectionHarvester : IDisposable
                     requestInterval = TimeSpan.FromSeconds(2);
                     timer?.Change(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
                 }
+                // J7: a 429 is the host asking for less traffic - it is alive.
+                // A 503 is the host failing, so it counts towards the give-up.
+                if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+                    NoteFailure(cpf, "HTTP 503");
+                return;
+            }
+
+            // J7/E2: a response that is not a success is a FAILURE, and it must
+            // not clear the failure counters. The counters used to be reset
+            // here, before the status was looked at, so an HTTP 500 looked
+            // like a success to the walk: the backoff never engaged and the
+            // walk asked a broken host once a second for ever.
+            if (!response.IsSuccessStatusCode)
+            {
+                RequestErrors++;
+                NoteFailure(cpf, $"HTTP {(int)response.StatusCode}");
                 return;
             }
 
@@ -318,17 +351,13 @@ public sealed class InspectionHarvester : IDisposable
             }
             // E2: a success clears the failure backoff too.
             consecutiveFailures = 0;
+            // J7: a success breaks the failure streak - the give-up clock only
+            // runs while the host keeps failing.
+            failureStreakStartedAt = null;
             if (requestInterval != TimeSpan.FromSeconds(1) && requestInterval != TimeSpan.FromSeconds(2))
             {
                 requestInterval = TimeSpan.FromSeconds(1);
                 timer?.Change(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                RequestErrors++;
-                NoteFailure(cpf, $"HTTP {(int)response.StatusCode}");
-                return;
             }
 
             var body = await response.Content.ReadAsStringAsync();
@@ -371,10 +400,16 @@ public sealed class InspectionHarvester : IDisposable
     /// E2: when the host stops answering, the walk must stop hammering it.
     /// After a run of consecutive failures the cadence drops to one request a
     /// long while; a single success restores the normal rate.
+    ///
+    /// J7: if the host keeps failing for GiveUpAfter, the pass is abandoned.
+    /// Backing off to one request every 30 seconds is a brake; giving up is
+    /// the stop. A walk that cannot get an answer must not ask again and
+    /// again for ever - it must end, say so, and wait for the officer.
     /// </summary>
     private void NoteFailure(string cpf, string reason)
     {
         consecutiveFailures++;
+        failureStreakStartedAt ??= DateTime.Now;
         if (consecutiveFailures >= FailureBackoffThreshold && requestInterval < FailureBackoffInterval)
         {
             requestInterval = FailureBackoffInterval;
@@ -382,10 +417,60 @@ public sealed class InspectionHarvester : IDisposable
             LogEvent($"{consecutiveFailures} consecutive failures ({reason}) - slowing to 1 req/{(int)FailureBackoffInterval.TotalSeconds}s");
             OnStatusChanged?.Invoke($"Harvester: {consecutiveFailures} consecutive failures - slowing to 1 req/{(int)FailureBackoffInterval.TotalSeconds}s.");
         }
+        if (!gaveUp && DateTime.Now - failureStreakStartedAt.Value >= giveUpAfter) GiveUp(reason);
+    }
+
+    /// <summary>J7: end the pass and stop asking. The officer resumes it.</summary>
+    private void GiveUp(string reason)
+    {
+        gaveUp = true;
+        GaveUpAt = DateTime.Now;
+        var since = failureStreakStartedAt.HasValue ? GaveUpAt.Value - failureStreakStartedAt.Value : TimeSpan.Zero;
+        // The timer is stopped: no further request is made until the officer
+        // resumes the harvest.
+        timer?.Change(Timeout.Infinite, Timeout.Infinite);
+        LogEvent($"cycle {cycleNumber} abandoned after {since.TotalMinutes:F0} minutes of failures ({reason}) - no more requests until the harvest is resumed");
+        OnStatusChanged?.Invoke($"Harvester gave up after {since.TotalMinutes:F0} minutes of failures - the walk is stopped until it is resumed.");
+    }
+
+    /// <summary>
+    /// J7: the officer resumes the walk. The give-up flag is cleared, the
+    /// failure streak is forgotten, and a new pass is armed from the start of
+    /// the index - the index may have changed while the walk was stopped, so
+    /// the safe place to start is the beginning.
+    /// </summary>
+    public void ResumeHarvest()
+    {
+        wasGaveUp = gaveUp;
+        gaveUp = false;
+        GaveUpAt = null;
+        consecutiveFailures = 0;
+        failureStreakStartedAt = null;
+        backoffMode = false;
+        requestInterval = TimeSpan.FromSeconds(1);
+        cycleComplete = false;
+        cycleNumber++;
+        currentCpfIndex = 0;
+        cycleStartedAt = DateTime.Now;
+        SaveCursor();
+        SaveCycleState();
+        LogEvent($"cycle {cycleNumber} start: re-walking {cpfIds.Count} cpfs from 0 ({(wasGaveUp ? "resumed by the officer after a give-up" : "re-armed by the officer")})");
+        OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} resumed.");
+        timer?.Change(requestInterval, requestInterval);
     }
 
     public int TotalCpfIds => cpfIds.Count;
     public int ProcessedCpfIds => currentCpfIndex;
+
+    /// <summary>J7: the walk gave up and is not asking the host anything.</summary>
+    public bool GaveUp => gaveUp;
+
+    /// <summary>J7: when the walk gave up (null while it is walking).</summary>
+    public DateTime? GaveUpAt { get; private set; }
+
+    /// <summary>J7: whether the last resume was a resume after a give-up.</summary>
+    public bool WasGaveUp => wasGaveUp;
+    private bool wasGaveUp;
 
     // A2: harvest counters, so the walk can be proven without guessing.
     public int RecordsSeen { get; private set; }        // rows the server returned

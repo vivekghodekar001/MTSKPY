@@ -455,6 +455,78 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// J7: the give-up policy. A walk that cannot get an answer must stop asking:
+// after the give-up window without a single success the pass is abandoned, the
+// walk stops, and the officer resumes it.
+{
+    var walkDir = Path.Combine(Path.GetTempPath(), $"mskpy-giveup-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(walkDir);
+    var indexFile = Path.Combine(walkDir, "index.tsv");
+    var cursorFile = Path.Combine(walkDir, "harvester-cursor.txt");
+    var logFile = Path.Combine(walkDir, "harvester.log");
+    File.WriteAllLines(indexFile, new[] { "MTWALK0000000001\t02781310", "MTWALK0000000002\t02781311" });
+    var dbFile = Path.Combine(walkDir, "giveup.db");
+
+    // A port nothing listens on: every request fails at once.
+    int port = 15751;
+    int requests = 0;
+    var counting = new HttpListener();
+    counting.Prefixes.Add($"http://127.0.0.1:{port}/");
+    counting.Start();
+    var serving = Task.Run(() =>
+    {
+        while (counting.IsListening)
+        {
+            try
+            {
+                var ctx = counting.GetContext();
+                Interlocked.Increment(ref requests);
+                ctx.Response.StatusCode = 500;
+                ctx.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+
+    string ReadLog() { try { return File.Exists(logFile) ? File.ReadAllText(logFile) : ""; } catch { return ""; } }
+
+    try
+    {
+        using var store = new Mskpy.Infrastructure.InspectionStore(dbFile);
+        // A two-second give-up window: the policy is the same, the clock is not.
+        using var harvester = new Mskpy.Infrastructure.InspectionHarvester(
+            store, indexFile, $"http://127.0.0.1:{port}", cursorFile,
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false,
+            giveUpAfter: TimeSpan.FromSeconds(2));
+
+        harvester.Start();
+        var deadline = DateTime.UtcNow.AddSeconds(25);
+        while (DateTime.UtcNow < deadline && !harvester.GaveUp) Thread.Sleep(200);
+        Check(harvester.GaveUp, "a walk that cannot get an answer gives up");
+        Check(harvester.GaveUpAt.HasValue, "the give-up is timestamped");
+        Check(ReadLog().Contains("abandoned"), "the give-up is logged");
+
+        // No further request may be made.
+        Thread.Sleep(2500);
+        var afterGiveUp = Volatile.Read(ref requests);
+        Thread.Sleep(2500);
+        Check(Volatile.Read(ref requests) == afterGiveUp, "a walk that gave up stops asking the host");
+
+        // The officer resumes it.
+        harvester.ResumeHarvest();
+        Check(!harvester.GaveUp, "resuming clears the give-up");
+        Thread.Sleep(2500);
+        Check(Volatile.Read(ref requests) > afterGiveUp, "the resumed walk asks the host again");
+        Check(ReadLog().Contains("resumed by the officer after a give-up"), "the resume is logged");
+    }
+    finally
+    {
+        counting.Stop();
+        counting.Close();
+        try { Directory.Delete(walkDir, true); } catch { }
+    }
+}
+
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
 // rebuild unions the store's pairs with the pairs the file already held.

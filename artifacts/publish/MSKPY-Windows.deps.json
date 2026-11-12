@@ -7,7 +7,7 @@
   "targets": {
     ".NETCoreApp,Version=v10.0": {},
     ".NETCoreApp,Version=v10.0/win-x64": {
-      "MSKPY-Windows/0.7.0": {
+      "MSKPY-Windows/0.8.0": {
         "dependencies": {
           "Mskpy.Application": "1.0.0",
           "Mskpy.Infrastructure": "1.0.0"
@@ -106,7 +106,7 @@
     }
   },
   "libraries": {
-    "MSKPY-Windows/0.7.0": {
+    "MSKPY-Windows/0.8.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

@@ -32,6 +32,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public RelayCommand ReloadIndexCommand { get; }
     // J5: rebuild the index from the harvest store.
     public RelayCommand RebuildIndexCommand { get; }
+    // J7: resume a harvest that gave up.
+    public RelayCommand ResumeHarvestCommand { get; }
     // Edge 3: an explicit vendor escape hatch. Empty (the default) means the
     // record's own vendor_code. When set it replaces BOTH the header and the
     // body, so the two can never disagree.
@@ -123,6 +125,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         OpenLiveInspectionCommand = new RelayCommand(_ => OpenLiveInspection(), _ => !IsBusy && IsSignedIn && SelectedApplication != null);
         ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
         RebuildIndexCommand = new RelayCommand(_ => RebuildIndex(), _ => !IsBusy && store != null);
+        ResumeHarvestCommand = new RelayCommand(_ => ResumeHarvest(), _ => !IsBusy);
         OpenInspection = new AsyncCommand((_, ct) => OpenInspectionAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && index != null && builder != null && location != null);
     }
 
@@ -165,6 +168,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     // A4: the harvester's own progress line, kept apart from the operator status.
     string harvesterStatus = "";
     public string HarvesterStatus => harvesterStatus;
+    // J7: the walk gave up - it is not asking the host anything.
+    public bool HarvesterGaveUp => harvester?.GaveUp ?? false;
+    public string HarvesterState => harvester == null
+        ? "not running - sign in and open the Inspection module to start the walk"
+        : HarvesterGaveUp
+            ? $"STOPPED - gave up at {(harvester?.GaveUpAt?.ToString("HH:mm:ss") ?? "?")}. No request is made until the harvest is resumed."
+            : "walking";
     public string Error { get => error; private set { if (Set(ref error, value)) Changed(nameof(HasError)); } }
     public bool HasError => Error.Length > 0;
     public bool IsBusy { get => busy; private set { if (Set(ref busy, value)) { Changed(nameof(IsIdle)); RefreshCommands(); } } }
@@ -454,6 +464,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Fields.Add(new("Index population (pairs)", IndexPairs.ToString("N0")));
             Fields.Add(new("Index consumers", IndexConsumers.ToString("N0")));
             Fields.Add(new("Index cpfs (the walk list)", IndexCpfs.ToString("N0")));
+            // J7: the walk's own state - a stopped walk must be visible.
+            Fields.Add(new("Harvest state", HarvesterState));
             Fields.Add(new("Manual login id", manualLoginId));
             // Vendor code is an editable TextBox, not a read-only field
         }
@@ -620,6 +632,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             {
                 harvesterStatus = text;
                 Changed(nameof(HarvesterStatus));
+                // J7: the give-up flag is part of the harvester's state, so it
+                // has to follow the harvester.
+                Changed(nameof(HarvesterGaveUp));
+                Changed(nameof(HarvesterState));
             }));
         };
         harvester.Start();
@@ -689,6 +705,23 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         try { if (File.Exists(HarvesterCursorPath)) File.Delete(HarvesterCursorPath); }
         catch { /* a cursor that cannot be cleared is not fatal */ }
+    }
+
+    /// <summary>
+    /// J7: the officer resumes a harvest that gave up. The flag is cleared and
+    /// a new pass is armed from the start of the index. The session is not
+    /// touched - signing in and signing out stay usable while the walk is
+    /// stopped.
+    /// </summary>
+    void ResumeHarvest()
+    {
+        if (harvester == null) { Status = "The harvester is not running."; return; }
+        harvester.ResumeHarvest();
+        Changed(nameof(HarvesterGaveUp));
+        Changed(nameof(HarvesterState));
+        Changed(nameof(HarvesterStatus));
+        Status = "Harvest resumed - the walk starts again from the beginning of the index.";
+        if (page == "Diagnostics") NavigateTo("Diagnostics");
     }
 
     /// <summary>
