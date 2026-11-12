@@ -19,9 +19,18 @@
     <PublishProfile Include="FolderSelfContained"/>
   </ItemGroup>
   <!-- L2: the seed index travels with the published folder - it is what the
-       app starts with on a fresh machine. -->
+       app starts with on a fresh machine. L4: the folder's own setup and
+       documentation. -->
   <ItemGroup>
     <Content Include="seed\index.tsv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="Setup.cmd">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="README.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
