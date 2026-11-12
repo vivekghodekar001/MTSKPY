@@ -298,14 +298,14 @@ public sealed class InspectionHarvester : IDisposable
             return;
         }
 
-        var cpf = cpfIds[currentCpfIndex];
-        currentCpfIndex++;
-        SaveCursor();
-
         // K2: the probe takes one slot in every eight requests, so the walk
         // keeps seven of every eight. The probe never runs in the last 100
         // cpfs of a pass - that is the end of the pass, and it must not be
         // delayed - and it stops entirely when the walk has given up.
+        //
+        // The decision comes BEFORE the walk takes its next cpf: a probe
+        // tick must not consume a cpf the walk has not asked for, or one cpf
+        // in eight would be skipped in every pass.
         if (ProbeDue())
         {
             requestsSinceProbe = 0;
@@ -313,6 +313,10 @@ public sealed class InspectionHarvester : IDisposable
             return;
         }
         requestsSinceProbe++;
+
+        var cpf = cpfIds[currentCpfIndex];
+        currentCpfIndex++;
+        SaveCursor();
 
         try
         {

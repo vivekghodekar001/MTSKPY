@@ -674,6 +674,8 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
         Check(first80.Count == 80, "the run made 80 requests");
         Check(walks == 70, "the walk kept 70 of the 80 requests");
         Check(probes == 10, "the probe took 10 of the 80 requests - one in eight");
+        Check(first80.Where(c => walkCpfs.Contains(c)).Distinct().Count() == walks,
+            "the walk skipped no cpf - a probe tick does not consume one");
 
         // Phase B: a short index, so the walk enters its last 100 cpfs.
         var indexB = Path.Combine(dir, "index-b.tsv");
