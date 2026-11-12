@@ -17,6 +17,13 @@ public enum RecordStatus
 }
 
 /// <summary>
+/// A (consumer_number, cpf_no) pair the store knows. Primary marks the row's
+/// own cpf_no - the officer the record was first seen under - so the index
+/// builder can write it first for that consumer.
+/// </summary>
+public sealed record IndexPair(string ConsumerNumber, string CpfNo, bool Primary);
+
+/// <summary>
 /// A harvested record persisted in the local SQLite store, keyed on consumer_number.
 /// </summary>
 public sealed record StoredInspectionRecord(
@@ -630,6 +637,68 @@ public sealed class InspectionStore : IDisposable
                 SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
                 SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs"))
             );
+        }
+        finally
+        {
+            dbLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// J5: every (consumer_number, cpf_no) pair the store knows, for the
+    /// index rebuild. The row's own cpf_no is the PRIMARY pair - it is the
+    /// officer the record was first seen under, and it is what the index
+    /// resolves the consumer to. Every other cpf the row has been listed
+    /// under follows, because a consumer listed under two officers resolves
+    /// under either of them. The record_cpfs index is unioned in so a pair
+    /// the index knows but the row's own seen set does not is not lost.
+    /// </summary>
+    public List<IndexPair> GetIndexPairs()
+    {
+        dbLock.Wait();
+        try
+        {
+            var primary = new Dictionary<string, string>(StringComparer.Ordinal);
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = "SELECT consumer_number, cpf_no FROM inspection_records";
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var cn = reader.GetString(0);
+                    var cpf = reader.IsDBNull(1) ? "" : reader.GetString(1).Trim();
+                    if (cn.Length == 0 || cpf.Length == 0) continue;
+                    primary[cn] = cpf;
+                }
+            }
+
+            var seen = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = "SELECT consumer_number, cpf_no FROM record_cpfs";
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var cn = reader.GetString(0);
+                    var cpf = reader.IsDBNull(1) ? "" : reader.GetString(1).Trim();
+                    if (cn.Length == 0 || cpf.Length == 0) continue;
+                    if (!seen.TryGetValue(cn, out var list)) seen[cn] = list = new List<string>();
+                    if (!list.Contains(cpf)) list.Add(cpf);
+                }
+            }
+
+            var pairs = new List<IndexPair>();
+            var consumers = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var cn in primary.Keys.Concat(seen.Keys).Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal))
+            {
+                consumers.Add(cn);
+                var own = primary.TryGetValue(cn, out var c) ? c : "";
+                if (own.Length > 0) pairs.Add(new IndexPair(cn, own, true));
+                if (seen.TryGetValue(cn, out var list))
+                    foreach (var cpf in list)
+                        if (cpf != own) pairs.Add(new IndexPair(cn, cpf, false));
+            }
+            return pairs;
         }
         finally
         {

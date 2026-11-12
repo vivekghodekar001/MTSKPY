@@ -14,10 +14,27 @@ public sealed class InspectionIndex
     IReadOnlyDictionary<string, string> entries = new Dictionary<string, string>(StringComparer.Ordinal);
     bool loaded;
     string? tsvPath;
+    // J5: the file can name a consumer under more than one cpf (a consumer
+    // listed under two officers resolves under either). The file's counts are
+    // kept so the app can show what it actually holds.
+    int pairCount;
+    int cpfCount;
 
     public IReadOnlyDictionary<string, string> Entries
     {
         get { lock (gate) return entries; }
+    }
+
+    /// <summary>J5: the number of (consumer, cpf) pairs in the file.</summary>
+    public int PairCount
+    {
+        get { lock (gate) return pairCount; }
+    }
+
+    /// <summary>J5: the number of distinct cpfs in the file - the walk list.</summary>
+    public int CpfCount
+    {
+        get { lock (gate) return cpfCount; }
     }
 
     public bool Loaded
@@ -46,6 +63,8 @@ public sealed class InspectionIndex
             if (path != null) tsvPath = path;
         }
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+        var cpfs = new HashSet<string>(StringComparer.Ordinal);
+        int pairs = 0;
         var current = tsvPath;
         var exists = current != null && File.Exists(current);
         if (current != null && exists)
@@ -55,13 +74,26 @@ public sealed class InspectionIndex
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split('\t');
                 if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[0]) && !string.IsNullOrWhiteSpace(parts[1]))
-                    dict[parts[0].Trim()] = parts[1].Trim();
+                {
+                    var consumer = parts[0].Trim();
+                    var cpf = parts[1].Trim();
+                    pairs++;
+                    cpfs.Add(cpf);
+                    // J5: the FIRST cpf named for a consumer wins. The file
+                    // lists the row's own cpf first, so that is the officer
+                    // the record was first seen under; a consumer listed under
+                    // two officers resolves under either, so the choice is
+                    // stable rather than dependent on the line order.
+                    if (!dict.ContainsKey(consumer)) dict[consumer] = cpf;
+                }
             }
         }
         lock (gate)
         {
             entries = dict;
             loaded = exists;
+            pairCount = pairs;
+            cpfCount = cpfs.Count;
         }
     }
 

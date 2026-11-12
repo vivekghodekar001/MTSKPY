@@ -76,6 +76,7 @@
       <StackPanel Orientation="Horizontal" Visibility="{Binding IsDiagnostics,Converter={StaticResource BoolVisibility}}" Margin="0,12,0,0">
        <TextBox Text="{Binding IndexPath,UpdateSourceTrigger=PropertyChanged}" Width="520" AutomationProperties.Name="Index file path" ToolTip="Path to index.tsv — the file the harvester walks"/>
        <Button Content="Reload index" Command="{Binding ReloadIndexCommand}" Margin="12,0,0,0" Padding="14,6" ToolTip="Re-read index.tsv and restart the harvester without restarting the app"/>
+       <Button Content="Rebuild index from store" Command="{Binding RebuildIndexCommand}" Margin="12,0,0,0" Padding="14,6" AutomationProperties.Name="Rebuild index from store" ToolTip="Rebuild index.tsv from the harvest store, unioned with the pairs the file already holds, then restart the walk from 0"/>
       </StackPanel>
       <StackPanel Orientation="Horizontal" Visibility="{Binding IsDiagnostics,Converter={StaticResource BoolVisibility}}" Margin="0,12,0,0">
        <TextBox Text="{Binding VendorOverride,UpdateSourceTrigger=PropertyChanged}" Width="200" AutomationProperties.Name="Vendor override" ToolTip="Escape hatch. Empty means the record's own vendor_code. When set it replaces BOTH the header and the body, so they always agree."/>

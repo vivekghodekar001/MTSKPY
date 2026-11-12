@@ -95,6 +95,36 @@ await jsr.ValidateAndSave.ExecuteAsync();
 Check(drafts.Saves == 1 && jsr.HasValidationMessages, "invalid JSR does not save a claimed validated form");
 jsr.RemovePhoto.Execute(jsr.Photos[0]);
 Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears the role without altering other answers");
+// J5: the shell rebuilds the index from the harvest store and re-arms the
+// walk from the beginning of the new list.
+{
+    var indexDir = Path.Combine(Path.GetTempPath(), $"vm-index-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(indexDir);
+    var indexFile = Path.Combine(indexDir, "index.tsv");
+    var cursorFile = Path.Combine(indexDir, "harvester-cursor.txt");
+    // The old file: one consumer the store knows nothing about.
+    File.WriteAllLines(indexFile, new[] { "MTOLD0000000001\t02781310" });
+    // A cursor left over from an earlier walk - the rebuild must drop it.
+    File.WriteAllText(cursorFile, "9999");
+    var index = new Mskpy.Infrastructure.InspectionIndex(indexFile);
+    // A dead host: the rebuild re-arms the walk, and the walk must not be
+    // able to reach the production service from a test.
+    using var rebuilt = new ShellViewModel(workflow, secrets, desktop, index, null, null, null,
+        "http://127.0.0.1:1", indexFile, storePath);
+    Check(rebuilt.IndexConsumers == 1 && rebuilt.IndexPairs == 1 && rebuilt.IndexCpfs == 1,
+        "the shell reports what the index file holds");
+    rebuilt.RebuildIndexCommand.Execute(null);
+    Check(!rebuilt.HasError && rebuilt.Status.Contains("Index rebuilt"), "the rebuild reports what it did");
+    // The store holds five rows over two cpfs; the old file adds one consumer
+    // the store has not reached. The rebuild is the union of the two.
+    Check(File.ReadAllLines(indexFile).Length == 6, "the rebuilt index holds the store's pairs and the file's own");
+    Check(rebuilt.IndexConsumers == 6 && rebuilt.IndexPairs == 6 && rebuilt.IndexCpfs == 2,
+        "the shell reports the rebuilt population");
+    Check(!File.Exists(cursorFile) || File.ReadAllText(cursorFile).Trim() != "9999",
+        "the rebuild drops the walk cursor, so the new list is walked from 0");
+    try { Directory.Delete(indexDir, true); } catch { }
+}
+
 Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
 
 sealed class FakeSecrets : ISecretInput { public int Reads; public string ReadAndClear() { Reads++; return "synthetic-password"; } }

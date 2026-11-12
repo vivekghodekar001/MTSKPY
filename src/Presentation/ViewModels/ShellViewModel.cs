@@ -30,6 +30,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     string indexPath = "";
     public string IndexPath { get => indexPath; set => Set(ref indexPath, value?.Trim() ?? ""); }
     public RelayCommand ReloadIndexCommand { get; }
+    // J5: rebuild the index from the harvest store.
+    public RelayCommand RebuildIndexCommand { get; }
     // Edge 3: an explicit vendor escape hatch. Empty (the default) means the
     // record's own vendor_code. When set it replaces BOTH the header and the
     // body, so the two can never disagree.
@@ -120,6 +122,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         CopyDiagnostics = new RelayCommand(_ => desktop.CopyDiagnostics(workflow.Diagnostics));
         OpenLiveInspectionCommand = new RelayCommand(_ => OpenLiveInspection(), _ => !IsBusy && IsSignedIn && SelectedApplication != null);
         ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
+        RebuildIndexCommand = new RelayCommand(_ => RebuildIndex(), _ => !IsBusy && store != null);
         OpenInspection = new AsyncCommand((_, ct) => OpenInspectionAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && index != null && builder != null && location != null);
     }
 
@@ -178,6 +181,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool IsJsrDetails => IsDetails && currentModule?.Key == "jsr";
     public bool IsInspectionDetails => IsDetails && currentModule?.Key == "inspection";
     public bool IndexLoaded => index?.Loaded ?? false;
+    // J5: what the index file actually holds. The pair count is the
+    // population the file can resolve - a consumer listed under two officers
+    // is two pairs - and the cpf count is the walk list the harvester walks.
+    public int IndexConsumers => index?.Entries.Count ?? 0;
+    public int IndexPairs => index?.PairCount ?? 0;
+    public int IndexCpfs => index?.CpfCount ?? 0;
     public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page;
     public string ModuleDescription => currentModule?.Description ?? "";
     public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
@@ -441,6 +450,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         {
             RefreshIndexAge();
             Fields.Add(new("Build", $"{AppVersion} · .NET 10 linestaff-inspection reconstruction")); Fields.Add(new("Account response structure", workflow.Diagnostics)); Fields.Add(new("Index loaded", IndexLoaded ? "Yes" : "No")); Fields.Add(new("Index path", IndexPath)); Fields.Add(new("Index last written", IndexLastWrite)); Fields.Add(new("Index age", IsIndexStale ? $"STALE - {IndexAge}" : IndexAge)); Fields.Add(new("Harvester", HarvesterStatus)); Fields.Add(new("Integration status", "Inspection live transport implemented per G1 bytecode contract."));
+            // J5: the population the index can resolve, and the walk list.
+            Fields.Add(new("Index population (pairs)", IndexPairs.ToString("N0")));
+            Fields.Add(new("Index consumers", IndexConsumers.ToString("N0")));
+            Fields.Add(new("Index cpfs (the walk list)", IndexCpfs.ToString("N0")));
             Fields.Add(new("Manual login id", manualLoginId));
             // Vendor code is an editable TextBox, not a read-only field
         }
@@ -569,9 +582,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Status = $"Index not found: {IndexPath}. Set the path and reload.";
             return;
         }
-        var harvesterCursor = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RenewableEnergyDesktop", "harvester-cursor.txt");
+        var harvesterCursor = HarvesterCursorPath;
         harvester = new InspectionHarvester(store, IndexPath, inspectionHostOverride ?? "https://mobileappnj.mahadiscom.in", harvesterCursor);
         harvester.OnRecordsAdded += added =>
         {
@@ -624,11 +635,79 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         IndexPath = path;
         index?.Reload(path);
         Changed(nameof(IndexLoaded));
+        Changed(nameof(IndexConsumers)); Changed(nameof(IndexPairs)); Changed(nameof(IndexCpfs));
         StartHarvester();
         RefreshIndexAge();
-        Status = $"Index reloaded: {path} ({index?.Entries.Count ?? 0} consumers, {IndexAge})";
+        Status = $"Index reloaded: {path} ({IndexConsumers} consumers, {IndexPairs} pairs, {IndexCpfs} cpfs, {IndexAge})";
         // Refresh the Diagnostics fields so the new index is shown at once.
         if (page == "Diagnostics") NavigateTo("Diagnostics");
+    }
+
+    /// <summary>
+    /// J5: rebuild the index from the harvest store.
+    ///
+    /// The file the app walks was a snapshot: it carried one cpf per consumer
+    /// and it missed every consumer the harvest has found since. The rebuild
+    /// unions the store's pairs with the pairs the file already held, so
+    /// nothing reachable is lost and everything the harvest has learned is
+    /// added, and it writes the file fresh - which also clears the stale
+    /// index warning.
+    ///
+    /// The walk is then re-armed from the start of the NEW list: the cursor
+    /// is reset, so the harvester covers the new file from position 0.
+    /// </summary>
+    void RebuildIndex()
+    {
+        if (store == null) { Error = "The store is not available."; return; }
+        var path = IndexPath?.Trim() ?? "";
+        if (path.Length == 0) { Error = "Enter the path to index.tsv."; return; }
+        Error = "";
+        try
+        {
+            var result = InspectionIndexBuilder.Rebuild(store, path);
+            index?.Reload(path);
+            Changed(nameof(IndexLoaded));
+            Changed(nameof(IndexConsumers)); Changed(nameof(IndexPairs)); Changed(nameof(IndexCpfs));
+            // J5: the walk starts again at the beginning of the new list.
+            ResetHarvesterCursor();
+            StartHarvester();
+            RefreshIndexAge();
+            Status = $"Index rebuilt: {result.Pairs} pairs, {result.Consumers} consumers, {result.Cpfs} cpfs "
+                + $"(was {result.PairsBefore} pairs, {result.ConsumersBefore} consumers, {result.CpfsBefore} cpfs; "
+                + $"+{result.PairsAdded} pairs, +{result.ConsumersAdded} consumers, +{result.CpfsAdded} cpfs). "
+                + "The walk restarts from 0.";
+            if (page == "Diagnostics") NavigateTo("Diagnostics");
+        }
+        catch (Exception ex)
+        {
+            Error = "The index could not be rebuilt: " + ex.Message;
+        }
+    }
+
+    /// <summary>J5: drop the walk cursor so the harvester starts the new list at 0.</summary>
+    void ResetHarvesterCursor()
+    {
+        try { if (File.Exists(HarvesterCursorPath)) File.Delete(HarvesterCursorPath); }
+        catch { /* a cursor that cannot be cleared is not fatal */ }
+    }
+
+    /// <summary>
+    /// Where the harvester keeps its position in the walk. It sits next to the
+    /// index file, because the walk state belongs to the index being walked -
+    /// the live app's index is in %LOCALAPPDATA%\RenewableEnergyDesktop, so
+    /// this is the same file it has always used.
+    /// </summary>
+    string HarvesterCursorPath
+    {
+        get
+        {
+            var path = IndexPath?.Trim() ?? "";
+            var dir = path.Length == 0 ? "" : Path.GetDirectoryName(Path.GetFullPath(path));
+            if (string.IsNullOrEmpty(dir)) dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RenewableEnergyDesktop");
+            return Path.Combine(dir, "harvester-cursor.txt");
+        }
     }
 
     async Task OpenDetailForSearched(string consumer, string? cpf, CancellationToken ct = default)

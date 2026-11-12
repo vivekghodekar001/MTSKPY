@@ -455,6 +455,85 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// J5: the index rebuild. The file is a snapshot that carried one cpf per
+// consumer and missed every consumer the harvest has found since; the
+// rebuild unions the store's pairs with the pairs the file already held.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-index-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var indexFile = Path.Combine(dir, "index.tsv");
+    var dbFile = Path.Combine(dir, "index.db");
+
+    // The old file: one cpf per consumer, and one consumer the harvest has
+    // not reached yet - the store knows nothing about it.
+    File.WriteAllLines(indexFile, new[]
+    {
+        "MTOLD0000000001\t02781310",
+        "MTOLD0000000002\t02781311",
+        "MTOLD0000000003\t02861747",
+    });
+
+    using (var store = new Mskpy.Infrastructure.InspectionStore(dbFile))
+    {
+        try
+        {
+        // A consumer the harvest has seen under two officers.
+        using var two = JsonDocument.Parse("""
+        {"consumer_number":"MTNEW0000000001","cpf_no":"02660016","consumer_name":"Two officers","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01"}
+        """);
+        store.UpsertRows(new[] { two.RootElement }, "02660016");
+        store.UpsertRows(new[] { two.RootElement }, "02729563");
+        // A consumer the old file never had.
+        using var fresh = JsonDocument.Parse("""
+        {"consumer_number":"MTNEW0000000002","cpf_no":"02284251","consumer_name":"Fresh","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01"}
+        """);
+        store.UpsertRows(new[] { fresh.RootElement }, "02284251");
+
+        var pairs = store.GetIndexPairs();
+        Check(pairs.Count(p => p.ConsumerNumber == "MTNEW0000000001") == 2,
+            "the store knows a consumer listed under two officers");
+        Check(pairs.First(p => p.ConsumerNumber == "MTNEW0000000001").Primary,
+            "the row's own cpf is the primary pair");
+
+        var result = Mskpy.Infrastructure.InspectionIndexBuilder.Rebuild(store, indexFile);
+        Check(result.Consumers == 5, "the rebuilt index holds the old and the new consumers");
+        Check(result.Pairs == 6, "the rebuilt index holds both pairs of a two-officer consumer");
+        Check(result.Cpfs == 6, "the rebuilt index holds every cpf of either side");
+
+        var lines = File.ReadAllLines(indexFile);
+        Check(lines.Any(l => l == "MTOLD0000000003\t02861747"),
+            "the rebuild keeps a consumer the harvest has not reached");
+        Check(lines.Any(l => l == "MTNEW0000000002\t02284251"),
+            "the rebuild adds a consumer the old file never had");
+        Check(lines.Any(l => l == "MTNEW0000000001\t02660016") && lines.Any(l => l == "MTNEW0000000001\t02729563"),
+            "a consumer listed under two officers is written under both");
+        var firstForTwo = lines.First(l => l.StartsWith("MTNEW0000000001\t", StringComparison.Ordinal));
+        Check(firstForTwo == "MTNEW0000000001\t02660016",
+            "the row's own cpf is written first, so the index resolves to it");
+
+        // The file is written fresh, which is what clears the stale warning.
+        Check((DateTime.Now - File.GetLastWriteTime(indexFile)).TotalMinutes < 5,
+            "the rebuilt index file is fresh, so the stale-index warning clears");
+
+        // A second rebuild changes nothing.
+        var again = Mskpy.Infrastructure.InspectionIndexBuilder.Rebuild(store, indexFile);
+        Check(again.Pairs == result.Pairs && again.Consumers == result.Consumers && again.Cpfs == result.Cpfs,
+            "rebuilding twice changes nothing");
+        Check(File.ReadAllLines(indexFile).SequenceEqual(lines),
+            "rebuilding twice writes the same file");
+
+        var loaded = new Mskpy.Infrastructure.InspectionIndex(indexFile);
+        Check(loaded.Loaded && loaded.Entries.Count == 5 && loaded.PairCount == 6 && loaded.CpfCount == 6,
+            "the loaded index reports what it holds");
+        Check(loaded.ResolveCpf("MTNEW0000000001") == "02660016",
+            "a consumer listed under two officers resolves to the officer it was first seen under");
+        Check(loaded.ResolveCpf("MTOLD0000000003") == "02861747",
+            "a consumer only the old file knew still resolves");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+}
+
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {

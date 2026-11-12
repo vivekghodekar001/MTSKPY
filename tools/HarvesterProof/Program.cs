@@ -88,6 +88,11 @@ namespace HarvesterProof
             Console.WriteLine($"CURSOR  {cursorPath}");
             Console.WriteLine($"HOST    {host}");
             Console.WriteLine($"CPFS IN INDEX: {harvester.TotalCpfIds}");
+            // J5: the population the index can resolve. The walk list is the
+            // distinct cpfs; the population is every (consumer, cpf) pair.
+            var indexMap = Mskpy.Infrastructure.InspectionIndexBuilder.ReadPairs(indexPath);
+            Console.WriteLine($"INDEX ENTRIES: {indexMap.Values.Sum(v => v.Count)}");
+            Console.WriteLine($"INDEX CONSUMERS: {indexMap.Count}");
             var cursorAtStart = ReadCursor(cursorPath);
             Console.WriteLine($"CURSOR AT START: {(cursorAtStart ?? "(none)")}");
 
