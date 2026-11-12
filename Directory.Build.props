@@ -1,1 +1,17 @@
-<Project><PropertyGroup><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><Deterministic>true</Deterministic><LangVersion>latest</LangVersion></PropertyGroup></Project>
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <!-- L3: a published build must not carry the build machine's paths. The
+       referenced projects would otherwise embed the repository path in their
+       portable PDBs, and the published folder would then name a folder that
+       only exists on the machine that built it. A publish carries no debug
+       information at all; a plain Release build keeps its symbols. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' and '$(PublishProfile)' != ''">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+</Project>

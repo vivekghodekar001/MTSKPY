@@ -706,7 +706,13 @@ public sealed class InspectionWindow : Window
         foreach (var (suffix, canvas) in new[] { ("benSign", beneficiary), ("vendorRepSign", representative) })
         {
             if (canvas.Strokes.Count == 0) { signs.Remove(suffix); continue; }
-            var path = Path.Combine(Path.GetTempPath(), $"insp-sign-preview-{consumerNumber}-{suffix}.png");
+            // L3: the preview lives with the app's own data, not in the
+            // system temp folder.
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RenewableEnergyDesktop", "photos");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"insp-sign-preview-{consumerNumber}-{suffix}.png");
             if (RenderCanvasToPng(canvas, path) != null) signs[suffix] = path;
         }
         RefreshManifestPreview();
