@@ -34,6 +34,23 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public RelayCommand RebuildIndexCommand { get; }
     // J7: resume a harvest that gave up.
     public RelayCommand ResumeHarvestCommand { get; }
+    // K2: prospecting (looking for officers the app was never told about).
+    bool prospectingEnabled = true;
+    public bool ProspectingEnabled
+    {
+        get => prospectingEnabled;
+        set
+        {
+            if (!Set(ref prospectingEnabled, value)) return;
+            if (harvester?.Probe != null) harvester.Probe.Enabled = value;
+            Status = value
+                ? "Prospecting is on - one probe in every eight requests."
+                : "Prospecting is off - the walk has the whole request budget.";
+            Changed(nameof(ProspectingLabel));
+        }
+    }
+    public string ProspectingLabel => ProspectingEnabled ? "Prospecting: on" : "Prospecting: off";
+    public RelayCommand ToggleProspectingCommand { get; }
     // Edge 3: an explicit vendor escape hatch. Empty (the default) means the
     // record's own vendor_code. When set it replaces BOTH the header and the
     // body, so the two can never disagree.
@@ -126,6 +143,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
         RebuildIndexCommand = new RelayCommand(_ => RebuildIndex(), _ => !IsBusy && store != null);
         ResumeHarvestCommand = new RelayCommand(_ => ResumeHarvest(), _ => !IsBusy);
+        ToggleProspectingCommand = new RelayCommand(_ => ProspectingEnabled = !ProspectingEnabled, _ => !IsBusy);
         OpenInspection = new AsyncCommand((_, ct) => OpenInspectionAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && index != null && builder != null && location != null);
     }
 
@@ -596,6 +614,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
         var harvesterCursor = HarvesterCursorPath;
         harvester = new InspectionHarvester(store, IndexPath, inspectionHostOverride ?? "https://mobileappnj.mahadiscom.in", harvesterCursor);
+        // K2: the switch on the Diagnostics page owns the probe.
+        if (harvester.Probe != null) harvester.Probe.Enabled = prospectingEnabled;
         harvester.OnRecordsAdded += added =>
         {
             // The harvester calls this from its timer thread. Everything that

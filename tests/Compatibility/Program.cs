@@ -618,6 +618,98 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// K2: the request budget is shared. One probe in every eight requests, so
+// the walk keeps seven of every eight; and no probe at all in the last 100
+// cpfs of a pass, because the end of a pass belongs to the walk.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-budget-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var dbFile = Path.Combine(dir, "budget.db");
+
+    int port = 15771;
+    var listener = new System.Net.HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+    var asked = new List<string>();
+    var serving = Task.Run(() =>
+    {
+        while (listener.IsListening)
+        {
+            try
+            {
+                var ctx = listener.GetContext();
+                lock (asked) asked.Add(ctx.Request.QueryString["userName"] ?? "");
+                var bytes = System.Text.Encoding.UTF8.GetBytes("[]");
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+
+    try
+    {
+        // Phase A: a long index, so the last-100 rule never bites.
+        var indexA = Path.Combine(dir, "index-a.tsv");
+        var walkA = Enumerable.Range(1, 200).Select(i => "MTWALK" + i.ToString("D8") + "\t0210" + i.ToString("D4")).ToList();
+        File.WriteAllLines(indexA, walkA);
+        var walkCpfs = new HashSet<string>(walkA.Select(l => l.Split('\t')[1].Trim()));
+
+        using (var store = new Mskpy.Infrastructure.InspectionStore(dbFile))
+        using (var harvester = new Mskpy.Infrastructure.InspectionHarvester(
+            store, indexA, $"http://127.0.0.1:{port}", Path.Combine(dir, "cursor-a.txt"),
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false,
+            requestInterval: TimeSpan.FromMilliseconds(25)))
+        {
+            harvester.Start();
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline) { lock (asked) if (asked.Count >= 80) break; Thread.Sleep(50); }
+        }
+        List<string> first80;
+        lock (asked) first80 = asked.Take(80).ToList();
+        var walks = first80.Count(c => walkCpfs.Contains(c));
+        var probes = first80.Count - walks;
+        Check(first80.Count == 80, "the run made 80 requests");
+        Check(walks == 70, "the walk kept 70 of the 80 requests");
+        Check(probes == 10, "the probe took 10 of the 80 requests - one in eight");
+
+        // Phase B: a short index, so the walk enters its last 100 cpfs.
+        var indexB = Path.Combine(dir, "index-b.tsv");
+        var walkB = Enumerable.Range(1, 120).Select(i => "MTWALK" + i.ToString("D8") + "\t0220" + i.ToString("D4")).ToList();
+        File.WriteAllLines(indexB, walkB);
+        var walkCpfsB = new HashSet<string>(walkB.Select(l => l.Split('\t')[1].Trim()));
+
+        int askedBeforeB;
+        lock (asked) askedBeforeB = asked.Count;
+        using (var store2 = new Mskpy.Infrastructure.InspectionStore(Path.Combine(dir, "budget2.db")))
+        using (var harvester2 = new Mskpy.Infrastructure.InspectionHarvester(
+            store2, indexB, $"http://127.0.0.1:{port}", Path.Combine(dir, "cursor-b.txt"),
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false,
+            requestInterval: TimeSpan.FromMilliseconds(25)))
+        {
+            harvester2.Start();
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline) { lock (asked) if (asked.Count >= askedBeforeB + 120) break; Thread.Sleep(50); }
+        }
+        List<string> afterB;
+        lock (asked) afterB = asked.Skip(askedBeforeB).ToList();
+        // The walk reaches the last 100 cpfs of a 120 cpf index after 20 walks.
+        var walkOrder = afterB.Where(c => walkCpfsB.Contains(c)).ToList();
+        Check(walkOrder.Count >= 20, "the walk passed the start of the last 100 cpfs");
+        var afterTail = afterB.Skip(walkOrder.FindIndex(c => c == walkOrder[19]) + 1).ToList();
+        Check(afterTail.Count(c => !walkCpfsB.Contains(c)) == 0,
+            "no probe is made once the pass is inside its last 100 cpfs");
+    }
+    finally
+    {
+        listener.Stop();
+        listener.Close();
+        try { Directory.Delete(dir, true); } catch { }
+    }
+}
+
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
 // rebuild unions the store's pairs with the pairs the file already held.

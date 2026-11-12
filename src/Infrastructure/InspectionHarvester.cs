@@ -24,6 +24,10 @@ public sealed class InspectionHarvester : IDisposable
     private List<string> cpfIds = [];
     private bool disposed;
     private TimeSpan requestInterval = TimeSpan.FromSeconds(1);
+    // K2: the normal cadence. The request budget is shared: one probe in
+    // every eight requests, so the walk keeps seven of every eight slots.
+    private readonly TimeSpan baseInterval;
+    private int requestsSinceProbe;
     private int consecutiveErrors;
     private bool backoffMode;
     // D2: re-walk state. A completed pass idles, then re-arms from the start.
@@ -76,10 +80,12 @@ public sealed class InspectionHarvester : IDisposable
     public event Action<int>? OnRecordsAdded;   // count of newly added records
     public event Action<string>? OnStatusChanged; // human-readable status
 
-    public InspectionHarvester(InspectionStore store, string indexTsvPath, string inspectionHost, string? cursorPath = null, TimeSpan? reWalkIdle = null, bool vacuumOnCycleComplete = true, TimeSpan? giveUpAfter = null)
+    public InspectionHarvester(InspectionStore store, string indexTsvPath, string inspectionHost, string? cursorPath = null, TimeSpan? reWalkIdle = null, bool vacuumOnCycleComplete = true, TimeSpan? giveUpAfter = null, TimeSpan? requestInterval = null)
     {
         this.store = store;
         this.indexTsvPath = indexTsvPath;
+        this.baseInterval = requestInterval ?? TimeSpan.FromSeconds(1);
+        this.requestInterval = this.baseInterval;
         this.cursorPath = cursorPath ?? Path.Combine(Path.GetDirectoryName(indexTsvPath) ?? Environment.CurrentDirectory, "harvester-cursor.txt");
         this.logPath = Path.Combine(Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester.log");
         this.cyclePath = Path.Combine(Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester-cycle.txt");
@@ -296,6 +302,18 @@ public sealed class InspectionHarvester : IDisposable
         currentCpfIndex++;
         SaveCursor();
 
+        // K2: the probe takes one slot in every eight requests, so the walk
+        // keeps seven of every eight. The probe never runs in the last 100
+        // cpfs of a pass - that is the end of the pass, and it must not be
+        // delayed - and it stops entirely when the walk has given up.
+        if (ProbeDue())
+        {
+            requestsSinceProbe = 0;
+            await ProbeOnceAsync();
+            return;
+        }
+        requestsSinceProbe++;
+
         try
         {
             OnStatusChanged?.Invoke($"Harvesting cpf {cpf} ({currentCpfIndex}/{cpfIds.Count})…");
@@ -375,8 +393,8 @@ public sealed class InspectionHarvester : IDisposable
                 {
                     OnStatusChanged?.Invoke($"Harvester rate-limited ({response.StatusCode}), slowing to 1 req/2s…");
                     backoffMode = true;
-                    requestInterval = TimeSpan.FromSeconds(2);
-                    timer?.Change(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+                    requestInterval = baseInterval * 2;
+                    timer?.Change(requestInterval, requestInterval);
                 }
                 // J7: a 429 is the host asking for less traffic - it is alive.
                 // A 503 is the host failing, so it counts towards the give-up.
@@ -398,21 +416,21 @@ public sealed class InspectionHarvester : IDisposable
             }
 
             consecutiveErrors = 0;
-            if (backoffMode && requestInterval != TimeSpan.FromSeconds(1))
+            if (backoffMode && requestInterval != baseInterval)
             {
                 backoffMode = false;
-                requestInterval = TimeSpan.FromSeconds(1);
-                timer?.Change(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+                requestInterval = baseInterval;
+                timer?.Change(requestInterval, requestInterval);
             }
             // E2: a success clears the failure backoff too.
             consecutiveFailures = 0;
             // J7: a success breaks the failure streak - the give-up clock only
             // runs while the host keeps failing.
             failureStreakStartedAt = null;
-            if (requestInterval != TimeSpan.FromSeconds(1) && requestInterval != TimeSpan.FromSeconds(2))
+            if (requestInterval != baseInterval && requestInterval != baseInterval * 2)
             {
-                requestInterval = TimeSpan.FromSeconds(1);
-                timer?.Change(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+                requestInterval = baseInterval;
+                timer?.Change(requestInterval, requestInterval);
             }
 
             var body = await response.Content.ReadAsStringAsync();
@@ -462,12 +480,12 @@ public sealed class InspectionHarvester : IDisposable
     {
         consecutiveFailures++;
         failureStreakStartedAt ??= DateTime.Now;
-        if (consecutiveFailures >= FailureBackoffThreshold && requestInterval < FailureBackoffInterval)
+        if (consecutiveFailures >= FailureBackoffThreshold && requestInterval < baseInterval * 30)
         {
-            requestInterval = FailureBackoffInterval;
+            requestInterval = baseInterval * 30;
             timer?.Change(requestInterval, requestInterval);
-            LogEvent($"{consecutiveFailures} consecutive failures ({reason}) - slowing to 1 req/{(int)FailureBackoffInterval.TotalSeconds}s");
-            OnStatusChanged?.Invoke($"Harvester: {consecutiveFailures} consecutive failures - slowing to 1 req/{(int)FailureBackoffInterval.TotalSeconds}s.");
+            LogEvent($"{consecutiveFailures} consecutive failures ({reason}) - slowing to 1 req/{(int)requestInterval.TotalSeconds}s");
+            OnStatusChanged?.Invoke($"Harvester: {consecutiveFailures} consecutive failures - slowing to 1 req/{(int)requestInterval.TotalSeconds}s.");
         }
         if (!gaveUp && DateTime.Now - failureStreakStartedAt.Value >= giveUpAfter) GiveUp(reason);
     }
@@ -516,6 +534,24 @@ public sealed class InspectionHarvester : IDisposable
 
     /// <summary>J7: the walk gave up and is not asking the host anything.</summary>
     public bool GaveUp => gaveUp;
+
+    /// <summary>
+    /// K2: the request budget. One probe in every eight requests, so the
+    /// walk keeps seven of every eight slots; no probe at all in the last
+    /// 100 cpfs of a pass; and no probe at all while the walk has given up.
+    /// </summary>
+    public const int ProbeEvery = 8;
+
+    /// <summary>K2: the end of a pass belongs to the walk alone.</summary>
+    public const int NoProbeInLastCpfs = 100;
+
+    bool ProbeDue()
+    {
+        if (probe == null || !probe.Enabled) return false;
+        if (gaveUp) return false;
+        if (cpfIds.Count > 0 && currentCpfIndex >= cpfIds.Count - NoProbeInLastCpfs) return false;
+        return requestsSinceProbe >= ProbeEvery - 1;
+    }
 
     /// <summary>K1: the probe that looks for officers the app was never told about.</summary>
     public CpfProbe? Probe => probe;
