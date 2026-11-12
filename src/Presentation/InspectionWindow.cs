@@ -383,7 +383,44 @@ public sealed class InspectionWindow : Window
         clearName.Click += (_, _) => vendorPersonNameBox.Text = "";
         var clearMobile = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Mobile No" };
         clearMobile.Click += (_, _) => vendorPersonMobileBox.Text = "";
-        installerFields.Children.Add(CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName));
+
+        // C5: the officer's own book of installers. The boxes stay free text
+        // and stay empty; the book only offers what is already in it.
+        if (vendorPeople.LoadWarning != null) LogStartupNote(vendorPeople.LoadWarning);
+        var editBook = new Button
+        {
+            Content = "Edit",
+            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "Add, rename or remove the people in your installer list"
+        };
+        System.Windows.Automation.AutomationProperties.SetName(editBook, "Edit the installer list");
+        editBook.Click += (_, _) => EditVendorPeople(vendorPeople);
+        var nameRow = CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName);
+        nameRow.Children.Add(editBook);
+        installerFields.Children.Add(nameRow);
+
+        // The suggestions: what the officer has typed so far, matched against
+        // the book. Picking one fills the mobile - but never over a mobile the
+        // officer has already typed.
+        suggestionPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
+        installerFields.Children.Add(suggestionPanel);
+        vendorPersonNameBox.TextChanged += (_, _) => RefreshSuggestions();
+        RefreshSuggestions();
+
+        // The soft warning: the person was last used with another vendor.
+        vendorWarning = new TextBlock
+        {
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        installerFields.Children.Add(vendorWarning);
+
+
         installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
         rightPanel.Children.Add(installerFields);
 
@@ -919,6 +956,175 @@ public sealed class InspectionWindow : Window
         TextWrapping = TextWrapping.Wrap,
         Margin = new Thickness(0, 0, 0, 2)
     };
+
+    /// <summary>
+    /// C5: the officer's own book of installers - a small dialog with the
+    /// list, an add box, rename and delete.
+    /// </summary>
+    void EditVendorPeople(VendorPeople book)
+    {
+        var rows = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var nameBox = new TextBox { Width = 220, Margin = new Thickness(0, 0, 8, 0) };
+        var mobileBox = new TextBox { Width = 160, Margin = new Thickness(0, 0, 8, 0) };
+        System.Windows.Automation.AutomationProperties.SetName(nameBox, "New installer name");
+        System.Windows.Automation.AutomationProperties.SetName(mobileBox, "New installer mobile");
+
+        void Rebuild()
+        {
+            rows.Children.Clear();
+            foreach (var person in book.People.ToList())
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+                var name = new TextBox { Text = person.Name, Width = 220, Margin = new Thickness(0, 0, 8, 0) };
+                var mobile = new TextBox { Text = person.Mobile, Width = 160, Margin = new Thickness(0, 0, 8, 0) };
+                var delete = new Button { Content = "remove", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
+                System.Windows.Automation.AutomationProperties.SetName(delete, "Remove " + person.Name);
+                delete.Click += (_, _) =>
+                {
+                    book.Remove(person.Name);
+                    book.Save();
+                    Rebuild();
+                };
+                var save = new Button { Content = "save", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
+                System.Windows.Automation.AutomationProperties.SetName(save, "Save " + person.Name);
+                save.Click += (_, _) =>
+                {
+                    // C5: a rename keeps the mobile unless it is changed too.
+                    book.Rename(person.Name, name.Text, mobile.Text);
+                    book.Save();
+                    Rebuild();
+                };
+                row.Children.Add(name);
+                row.Children.Add(mobile);
+                row.Children.Add(save);
+                row.Children.Add(delete);
+                rows.Children.Add(row);
+            }
+        }
+        Rebuild();
+
+        var addButton = new Button { Content = "Add", Padding = new Thickness(14, 6, 14, 6) };
+        System.Windows.Automation.AutomationProperties.SetName(addButton, "Add to the installer list");
+        addButton.Click += (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(nameBox.Text)) return;
+            book.Add(nameBox.Text, mobileBox.Text);
+            book.Save();
+            nameBox.Text = "";
+            mobileBox.Text = "";
+            Rebuild();
+        };
+
+        var content = new StackPanel { Margin = new Thickness(16) };
+        content.Children.Add(new TextBlock { Text = "Your installer list", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) });
+        content.Children.Add(new TextBlock
+        {
+            Text = "Yours alone. It stays in this machine's app folder and is never sent anywhere.",
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            FontSize = 13,
+            Margin = new Thickness(0, 0, 0, 12)
+        });
+        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
+        addRow.Children.Add(nameBox);
+        addRow.Children.Add(mobileBox);
+        addRow.Children.Add(addButton);
+        content.Children.Add(addRow);
+        content.Children.Add(rows);
+
+        var window = new Window
+        {
+            Title = "Installer list",
+            Width = 580,
+            Height = 460,
+            Background = (Brush)System.Windows.Application.Current.FindResource("Bg"),
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            FontFamily = new FontFamily("Segoe UI"),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ShowInTaskbar = false
+        };
+        var closeButton = new Button { Content = "Close", HorizontalAlignment = HorizontalAlignment.Right, Padding = new Thickness(14, 6, 14, 6) };
+        closeButton.Click += (_, _) => window.Close();
+        content.Children.Add(closeButton);
+        window.Content = content;
+        window.ShowDialog();
+        RefreshSuggestions();
+    }
+
+    /// <summary>C5: the officer's own book of installers.</summary>
+    readonly VendorPeople vendorPeople = new();
+    TextBlock? vendorWarning;
+    StackPanel? suggestionPanel;
+
+    /// <summary>C5: take a person from the book.</summary>
+    void PickVendorPerson(VendorPeople.Person person)
+    {
+        // Picking never overwrites a mobile the officer has typed.
+        switch (VendorPeople.DecidePick(vendorPersonMobileBox.Text, person.Mobile))
+        {
+            case VendorPeople.Pick.Fill:
+                vendorPersonMobileBox.Text = person.Mobile;
+                break;
+            case VendorPeople.Pick.Ask:
+                var answer = MessageBox.Show(this,
+                    "The mobile you typed (" + vendorPersonMobileBox.Text + ") is not the one in your list (" + person.Mobile + ").\n\nUse the one in your list?",
+                    "Mobile", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (answer != MessageBoxResult.Yes) return;
+                vendorPersonMobileBox.Text = person.Mobile;
+                break;
+            case VendorPeople.Pick.Keep:
+                break;
+        }
+        // The vendor in the payload is the RECORD's vendor, untouched. If the
+        // person was last used with another vendor, say so - softly.
+        var recordVendor = record.VendorCode ?? "";
+        if (!string.IsNullOrWhiteSpace(person.Vendor) && !string.IsNullOrWhiteSpace(recordVendor)
+            && !string.Equals(person.Vendor, recordVendor, StringComparison.OrdinalIgnoreCase))
+        {
+            vendorWarning.Text = person.Name + " was last used with vendor " + person.Vendor
+                + "; this record's vendor is " + recordVendor + ". The submitted vendor is the record's.";
+            vendorWarning.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            vendorWarning.Visibility = Visibility.Collapsed;
+        }
+    }
+    /// <summary>C5: the entries that match what has been typed.</summary>
+    void RefreshSuggestions()
+    {
+        var panel = suggestionPanel;
+        if (panel == null) return;
+        panel.Children.Clear();
+        foreach (var person in vendorPeople.Suggest(vendorPersonNameBox.Text))
+        {
+            var button = new Button
+            {
+                Content = person.Mobile.Length > 0 ? person.Name + "  ·  " + person.Mobile : person.Name,
+                Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(0, 0, 0, 2)
+            };
+            System.Windows.Automation.AutomationProperties.SetName(button, "Use " + person.Name);
+            button.Click += (_, _) => PickVendorPerson(person);
+            panel.Children.Add(button);
+        }
+    }
+
+    /// <summary>C5: a note the app keeps beside its data.</summary>
+    void LogStartupNote(string message)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RenewableEnergyDesktop");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "app-start.log"),
+                $"{DateTime.Now:s} {message}{Environment.NewLine}");
+        }
+        catch { /* a note that cannot be written must never stop the form */ }
+    }
 
     static StackPanel CreateFieldRow(string label, TextBox box, Button clear)
     {

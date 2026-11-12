@@ -874,6 +874,63 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     Check(manual.Mocked == false, "a typed position is not mocked");
 }
 
+// C5: the officer's own book of installers.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-vendor-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var bookFile = Path.Combine(dir, "vendor-people.json");
+
+    var book = new Mskpy.Infrastructure.VendorPeople(bookFile);
+    Check(book.People.Count == 0, "a book that does not exist is empty");
+    Check(book.LoadWarning == null, "a book that does not exist is not a warning");
+
+    book.Add("Vishal thombare", "7397926761", vendor: "100036833");
+    book.Add("Sunil Patil", "9822011223");
+    book.Save();
+    Check(File.Exists(bookFile), "the book is written to its file");
+
+    // Read it back: the book is the officer's own and survives a restart.
+    var reloaded = new Mskpy.Infrastructure.VendorPeople(bookFile);
+    Check(reloaded.People.Count == 2, "the book survives a restart");
+    Check(reloaded.Find("vishal thombare")?.Mobile == "7397926761", "an entry keeps its mobile");
+    Check(reloaded.Find("Vishal thombare")?.Vendor == "100036833", "an entry keeps the vendor it was last used with");
+    Check(reloaded.Find("nobody") == null, "an unknown name is not in the book");
+
+    // Typing offers the matching entries.
+    Check(reloaded.Suggest("Vish").Count == 1, "typing offers the matching entry");
+    Check(reloaded.Suggest("VISH").Count == 1, "the offer does not care about the case");
+    Check(reloaded.Suggest("zz").Count == 0, "a name that matches nothing offers nothing");
+    Check(reloaded.Suggest("").Count == 0, "an empty name offers nothing");
+
+    // Picking fills the mobile, and never overwrites one that was typed.
+    Check(Mskpy.Infrastructure.VendorPeople.DecidePick("", "7397926761") == Mskpy.Infrastructure.VendorPeople.Pick.Fill,
+        "picking fills an empty mobile box");
+    Check(Mskpy.Infrastructure.VendorPeople.DecidePick("7397926761", "7397926761") == Mskpy.Infrastructure.VendorPeople.Pick.Keep,
+        "picking leaves a mobile that already matches alone");
+    Check(Mskpy.Infrastructure.VendorPeople.DecidePick("1111111111", "7397926761") == Mskpy.Infrastructure.VendorPeople.Pick.Ask,
+        "picking a different mobile has to be confirmed");
+
+    // A removed entry is never offered again.
+    Check(reloaded.Remove("Sunil Patil"), "an entry can be removed");
+    reloaded.Save();
+    var afterRemove = new Mskpy.Infrastructure.VendorPeople(bookFile);
+    Check(afterRemove.People.Count == 1, "the removed entry is gone from the file");
+    Check(afterRemove.Suggest("Sunil").Count == 0, "a removed entry is never offered again");
+
+    // A file that cannot be read falls back to an empty book, and says so
+    // once, rather than taking the app down.
+    File.WriteAllText(bookFile, "{ this is not json");
+    var corrupt = new Mskpy.Infrastructure.VendorPeople(bookFile);
+    Check(corrupt.People.Count == 0, "a corrupt file falls back to an empty book");
+    Check(corrupt.LoadWarning != null, "a corrupt file is reported once");
+    var recovered = new Mskpy.Infrastructure.VendorPeople(bookFile);
+    recovered.Add("Pavan", "9000000000");
+    recovered.Save();
+    Check(new Mskpy.Infrastructure.VendorPeople(bookFile).People.Count == 1, "the book works again after a corrupt file");
+
+    try { Directory.Delete(dir, true); } catch { }
+}
+
 // L2: the first run. A fresh machine has no index; the seed index that
 // travels with the folder is copied there once. An index that already
 // exists is never overwritten.
