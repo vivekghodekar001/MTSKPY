@@ -802,6 +802,34 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     try { Directory.Delete(dir, true); } catch { }
 }
 
+// K5: the sweep order. The probe must visit every number in the space
+// exactly once and it must sample the WHOLE space as it goes: a plain
+// ascending sweep starts in the emptiest band there is.
+{
+    Check(Mskpy.Infrastructure.CpfProbe.CandidateFor(0) == "02000000", "the sweep starts at 02000000");
+    var seen = new HashSet<string>();
+    var bands = new HashSet<string>();
+    for (long i = 0; i < 10000; i++)
+    {
+        var c = Mskpy.Infrastructure.CpfProbe.CandidateFor(i);
+        seen.Add(c);
+        bands.Add(c.Substring(0, 4));
+    }
+    Check(seen.Count == 10000, "the sweep visits no number twice");
+    Check(bands.Count >= 90, "the sweep samples the whole space, not one band");
+    // The stride is coprime with the space, so the whole sweep is a
+    // bijection: every number is visited exactly once.
+    var gcdA = Mskpy.Infrastructure.CpfProbe.SweepStride;
+    var gcdB = Mskpy.Infrastructure.CpfProbe.SpaceSize;
+    while (gcdB != 0) { var t = gcdA % gcdB; gcdA = gcdB; gcdB = t; }
+    Check(gcdA == 1, "the sweep stride is coprime with the space, so every number is visited once");
+}
+
+// L2: the first run. A fresh machine has no index; the seed index that
+// travels with the folder is copied there once. An index that already
+// exists is never overwritten.
+// (the L2 checks move to the L2 commit)
+
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
 // rebuild unions the store's pairs with the pairs the file already held.

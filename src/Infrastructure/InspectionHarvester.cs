@@ -458,10 +458,12 @@ public sealed class InspectionHarvester : IDisposable
         }
         catch (Exception ex)
         {
-            // A transport failure must not stop the walk, but it must not be
-            // silent either: a swallowed write once made the harvester look
-            // healthy while it persisted nothing at all.
-            StoreErrors++;
+            // A transport failure is a FAILED REQUEST, not a store failure:
+            // the store writes happen outside this method, and a store
+            // failure is counted as one. Counting a dropped connection as a
+            // store error made the K5 live run report 11 store errors when
+            // not one write had failed.
+            RequestErrors++;
             LastError = ex.Message;
             LogEvent($"ERROR at {what} {cpf}: {ex.Message}");
             NoteFailure(cpf, ex.Message);
