@@ -8,3 +8,7 @@
 # L1: the self-contained publish is a build artifact - it carries the whole
 # .NET runtime and is rebuilt from the profile, not kept in the repository.
 /artifacts/publish-portable/
+# L4: the folder's own setup and documentation travel with every publish.
+/artifacts/publish/Setup.cmd
+/artifacts/publish/README.txt
+/artifacts/publish/seed/

@@ -6,11 +6,16 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <!-- L3: a published build must not carry the build machine's paths. The
-       referenced projects would otherwise embed the repository path in their
-       portable PDBs, and the published folder would then name a folder that
-       only exists on the machine that built it. A publish carries no debug
-       information at all; a plain Release build keeps its symbols. -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Release' and '$(PublishProfile)' != ''">
+       portable PDB of a project records the absolute path of its source, and
+       that path is embedded in the DLL, so a published folder would name a
+       folder that only exists on the machine that built it.
+
+       A Release build therefore carries no debug information at all. The
+       condition is on the configuration alone and not on the publish: the
+       output folder is shared between a build and a publish, so a property
+       that only a publish sets would leave a stale DLL - built with the
+       paths - in the published folder. For symbol work, build Debug. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
