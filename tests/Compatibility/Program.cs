@@ -527,6 +527,97 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// K1: the probe classifies the answer. A cpf that answers with rows is an
+// officer with pending work: it goes into the index. One that answers with
+// nothing is only remembered as probed, so it is never asked twice and it
+// never pollutes the walk list.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-probe-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var indexFile = Path.Combine(dir, "index.tsv");
+    var cursorFile = Path.Combine(dir, "harvester-cursor.txt");
+    var probedFile = Path.Combine(dir, "harvester-probed-cpfs.txt");
+    var probeCursorFile = Path.Combine(dir, "harvester-probe-cursor.txt");
+    File.WriteAllLines(indexFile, new[] { "MTOLD0000000001\t02781310" });
+    var dbFile = Path.Combine(dir, "probe.db");
+
+    int port = 15761;
+    var listener = new System.Net.HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+    var asked = new List<string>();
+    var serving = Task.Run(() =>
+    {
+        while (listener.IsListening)
+        {
+            try
+            {
+                var ctx = listener.GetContext();
+                var user = ctx.Request.QueryString["userName"] ?? "";
+                lock (asked) asked.Add(user);
+                // 1 in 5 answers with a row.
+                var body = "[]";
+                if (asked.Count % 5 == 0)
+                    body = "[{\"consumer_number\":\"MTPROBE" + user + "\",\"cpf_no\":\"" + user +
+                           "\",\"consumer_name\":\"Probed\",\"vendor_code\":\"100038029\",\"latitude\":\"19.5\",\"longitude\":\"74.1\",\"inst_date\":\"2026-08-01\"}]";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+
+    try
+    {
+        using var store = new Mskpy.Infrastructure.InspectionStore(dbFile);
+        using var harvester = new Mskpy.Infrastructure.InspectionHarvester(
+            store, indexFile, $"http://127.0.0.1:{port}", cursorFile,
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false);
+
+        var results = new List<Mskpy.Infrastructure.ProbeResult>();
+        for (int i = 0; i < 5; i++)
+        {
+            var r = await harvester.ProbeOnceAsync();
+            if (r != null) results.Add(r);
+        }
+        Check(results.Count == 5, "five probes were issued");
+        Check(results.Count(r => r.Discovered) == 1, "only the cpf that answered with rows was discovered");
+        Check(results.Count(r => r.Rows > 0) == 1, "one probe in five answered with a row");
+        Check(results.Select(r => r.Cpf).Distinct().Count() == 5, "no cpf was probed twice");
+
+        var lines = File.ReadAllLines(indexFile);
+        var indexCpfs = lines.Select(l => l.Split('\t')[1].Trim()).Distinct().ToList();
+        Check(indexCpfs.Count == 2, "the index holds the old cpf and the one the probe found");
+        var found = results.First(r => r.Discovered).Cpf;
+        Check(indexCpfs.Contains(found), "the discovered cpf is in the index");
+        Check(!indexCpfs.Contains(results.First(r => !r.Discovered).Cpf), "a cpf with no rows does not go into the index");
+
+        Check(File.Exists(probedFile), "the probe keeps a probed set next to the cursor");
+        Check(File.ReadAllLines(probedFile).Length == 5, "the probed set records every probed cpf");
+        Check(File.Exists(probeCursorFile), "the probe keeps its own cursor");
+        Check(store.CountSeenUnder(found) == 1, "the probed rows are in the store under the probed cpf");
+
+        // Re-running must not probe any of them again.
+        var firstFive = results.Select(r => r.Cpf).ToList();
+        var askedBefore = asked.Count;
+        for (int i = 0; i < 3; i++) await harvester.ProbeOnceAsync();
+        Check(asked.Count == askedBefore + 3, "a re-run issues new probes");
+        lock (asked)
+            Check(!asked.Skip(askedBefore).Any(a => firstFive.Contains(a)),
+                "a re-run does not re-probe a cpf that was already probed");
+        Check(File.ReadAllLines(probedFile).Length == 8, "the probed set grows with every probe");
+    }
+    finally
+    {
+        listener.Stop();
+        listener.Close();
+        try { Directory.Delete(dir, true); } catch { }
+    }
+}
+
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
 // rebuild unions the store's pairs with the pairs the file already held.

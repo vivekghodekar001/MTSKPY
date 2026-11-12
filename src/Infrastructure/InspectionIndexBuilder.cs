@@ -82,6 +82,35 @@ public sealed class InspectionIndexBuilder
             CpfsAdded: distinctCpfs - beforeCpfs);
     }
 
+    /// <summary>
+    /// K1: add pairs to the index without rewriting it.
+    ///
+    /// A probe that finds an officer with pending work has to put that
+    /// officer into the walk list straight away, without waiting for the
+    /// next full rebuild. The pairs are appended to the file; the rebuild
+    /// unions the file with the store anyway, so nothing is lost either
+    /// way. Returns how many pairs were new.
+    /// </summary>
+    public static int AddPairs(string indexPath, IEnumerable<(string Consumer, string Cpf)> pairs)
+    {
+        var existing = ReadPairs(indexPath);
+        var missing = new List<(string Consumer, string Cpf)>();
+        foreach (var (consumer, cpf) in pairs)
+        {
+            if (consumer.Length == 0 || cpf.Length == 0) continue;
+            if (existing.TryGetValue(consumer, out var list) && list.Contains(cpf)) continue;
+            missing.Add((consumer, cpf));
+        }
+        if (missing.Count == 0) return 0;
+        var dir = Path.GetDirectoryName(Path.GetFullPath(indexPath));
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        using (var writer = new StreamWriter(indexPath, true, new UTF8Encoding(false)))
+        {
+            foreach (var (consumer, cpf) in missing) writer.Write(consumer + "\t" + cpf + "\n");
+        }
+        return missing.Count;
+    }
+
     /// <summary>Read the (consumer, cpf) pairs out of an index file.</summary>
     public static Dictionary<string, List<string>> ReadPairs(string indexPath)
     {

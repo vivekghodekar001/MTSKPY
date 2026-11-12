@@ -41,6 +41,10 @@ public sealed class InspectionHarvester : IDisposable
     private readonly TimeSpan giveUpAfter;
     private DateTime? failureStreakStartedAt;
     private bool gaveUp;
+    // K1: the probe looks for officers the app was never told about. It
+    // shares this class's request path, counters and give-up rule - it must
+    // not grow a second set of rules.
+    readonly CpfProbe? probe;
 
     /// <summary>E2: consecutive failed requests before the cadence drops.</summary>
     public const int FailureBackoffThreshold = 10;
@@ -86,6 +90,10 @@ public sealed class InspectionHarvester : IDisposable
         LoadCpfIds();
         LoadCursor();
         LoadCycleState();
+        // K1: the probe keeps its own cursor and its own probed set, next
+        // to the walk cursor.
+        probe = new CpfProbe(store, indexTsvPath, Path.Combine(
+            Path.GetDirectoryName(this.cursorPath) ?? Environment.CurrentDirectory, "harvester-probe-cursor.txt"));
     }
 
     private void LoadCpfIds()
@@ -292,6 +300,53 @@ public sealed class InspectionHarvester : IDisposable
         {
             OnStatusChanged?.Invoke($"Harvesting cpf {cpf} ({currentCpfIndex}/{cpfIds.Count})…");
 
+            var fetch = await FetchListAsync(cpf, "cpf");
+            if (fetch?.Rows == null) return;   // the failure is already counted
+
+            var rows = fetch.Rows;
+            // F1: the rows are recorded under the cpf they were FETCHED with, not
+            // under whichever cpf the row itself happens to carry.
+            var (added, duplicates) = store.UpsertRows(rows, cpf);
+
+            RecordsSeen += rows.Count;
+            RecordsAdded += added;
+            DuplicateRecords += duplicates;
+            if (added > 0) OnRecordsAdded?.Invoke(added);
+        }
+        catch (Exception ex)
+        {
+            // A store failure must not stop the walk, but it must not be
+            // silent either: a swallowed write once made the harvester look
+            // healthy while it persisted nothing at all.
+            StoreErrors++;
+            LastError = ex.Message;
+            LogEvent($"ERROR at cpf {cpf}: {ex.Message}");
+            NoteFailure(cpf, ex.Message);
+            OnStatusChanged?.Invoke($"Harvester error on cpf {cpf}: {ex.Message}");
+        }
+    }
+
+    /// <summary>K1: what one list request produced.</summary>
+    sealed class ListFetch
+    {
+        /// <summary>The rows, when the request worked.</summary>
+        public List<JsonElement>? Rows;
+        /// <summary>The host asked for less traffic.</summary>
+        public bool RateLimited;
+        /// <summary>The request failed; the reason is already counted.</summary>
+        public bool Failed;
+    }
+
+    /// <summary>
+    /// K1: the ONE request path. The walk and the probe share it - the same
+    /// headers, the same timeout, the same 429 handling, the same failure
+    /// counting and the same give-up - so prospecting cannot develop its own
+    /// rules and drift away from the walk's.
+    /// </summary>
+    async Task<ListFetch?> FetchListAsync(string cpf, string what)
+    {
+        try
+        {
             using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             http.DefaultRequestHeaders.TryAddWithoutValidation("client-loginid", cpf);
             http.DefaultRequestHeaders.TryAddWithoutValidation("client-app-name", "RE");
@@ -315,7 +370,7 @@ public sealed class InspectionHarvester : IDisposable
             {
                 consecutiveErrors++;
                 RateLimitHits++;
-                LogEvent($"rate-limited {(int)response.StatusCode} at cpf {cpf} ({currentCpfIndex}/{cpfIds.Count}); hits={RateLimitHits}");
+                LogEvent($"rate-limited {(int)response.StatusCode} at {what} {cpf}; hits={RateLimitHits}");
                 if (!backoffMode)
                 {
                     OnStatusChanged?.Invoke($"Harvester rate-limited ({response.StatusCode}), slowing to 1 req/2s…");
@@ -327,7 +382,7 @@ public sealed class InspectionHarvester : IDisposable
                 // A 503 is the host failing, so it counts towards the give-up.
                 if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
                     NoteFailure(cpf, "HTTP 503");
-                return;
+                return new ListFetch { RateLimited = true };
             }
 
             // J7/E2: a response that is not a success is a FAILURE, and it must
@@ -339,7 +394,7 @@ public sealed class InspectionHarvester : IDisposable
             {
                 RequestErrors++;
                 NoteFailure(cpf, $"HTTP {(int)response.StatusCode}");
-                return;
+                return new ListFetch { Failed = true };
             }
 
             consecutiveErrors = 0;
@@ -362,37 +417,34 @@ public sealed class InspectionHarvester : IDisposable
 
             var body = await response.Content.ReadAsStringAsync();
             JsonDocument? doc = null;
-            try { doc = JsonDocument.Parse(body); } catch { RequestErrors++; NoteFailure(cpf, "unparseable body"); return; }
-
-            var rows = InspectionResponseParser.ParseApplications(doc.RootElement);
-            // F1: the rows are recorded under the cpf they were FETCHED with, not
-            // under whichever cpf the row itself happens to carry.
-            var (added, duplicates) = store.UpsertRows(rows, cpf);
-
-            RecordsSeen += rows.Count;
-            RecordsAdded += added;
-            DuplicateRecords += duplicates;
-            if (added > 0) OnRecordsAdded?.Invoke(added);
+            try { doc = JsonDocument.Parse(body); }
+            catch { RequestErrors++; NoteFailure(cpf, "unparseable body"); return new ListFetch { Failed = true }; }
+            using (doc)
+            {
+                return new ListFetch { Rows = InspectionResponseParser.ParseApplications(doc.RootElement) };
+            }
         }
         catch (OperationCanceledException ex)
         {
             // A request timeout is a FAILED REQUEST, not a cancellation: the
             // harvester has no token of its own, so this can only be the
-            // HttpClient timeout. Count it and keep walking — re-throwing it
+            // HttpClient timeout. Count it and keep walking - re-throwing it
             // terminated the app when the host was slow.
             RequestErrors++;
             NoteFailure(cpf, "timeout: " + ex.Message);
+            return new ListFetch { Failed = true };
         }
         catch (Exception ex)
         {
-            // A store or transport failure must not stop the walk, but it must
-            // not be silent either: a swallowed write once made the harvester
-            // look healthy while it persisted nothing at all.
+            // A transport failure must not stop the walk, but it must not be
+            // silent either: a swallowed write once made the harvester look
+            // healthy while it persisted nothing at all.
             StoreErrors++;
             LastError = ex.Message;
-            LogEvent($"ERROR at cpf {cpf}: {ex.Message}");
+            LogEvent($"ERROR at {what} {cpf}: {ex.Message}");
             NoteFailure(cpf, ex.Message);
-            OnStatusChanged?.Invoke($"Harvester error on cpf {cpf}: {ex.Message}");
+            OnStatusChanged?.Invoke($"Harvester error on {what} {cpf}: {ex.Message}");
+            return new ListFetch { Failed = true };
         }
     }
 
@@ -464,6 +516,44 @@ public sealed class InspectionHarvester : IDisposable
 
     /// <summary>J7: the walk gave up and is not asking the host anything.</summary>
     public bool GaveUp => gaveUp;
+
+    /// <summary>K1: the probe that looks for officers the app was never told about.</summary>
+    public CpfProbe? Probe => probe;
+
+    /// <summary>K1: how many probes have been issued.</summary>
+    public int ProbesIssued { get; private set; }
+
+    /// <summary>K1: how many probed cpfs turned out to be officers with work.</summary>
+    public int ProbesDiscovered { get; private set; }
+
+    /// <summary>
+    /// K1: probe the next candidate cpf once.
+    ///
+    /// The request goes through the same path as the walk - the same
+    /// headers, the same 429 handling, the same failure counting and the
+    /// same give-up. A cpf that answers with rows is an officer with
+    /// pending work: its rows go into the store under that cpf, and it goes
+    /// into the index so the walk covers it from then on. A cpf that
+    /// answers with nothing is only remembered as probed.
+    /// </summary>
+    public async Task<ProbeResult?> ProbeOnceAsync()
+    {
+        if (probe == null) return null;
+        var candidate = probe.NextCandidate(c => cpfIds.Contains(c) || probe.IsKnownInStore(c));
+        if (candidate == null) return null;
+        ProbesIssued++;
+        var fetch = await FetchListAsync(candidate, "probe");
+        if (fetch?.Rows == null) return null;
+        var result = probe.Classify(candidate, fetch.Rows);
+        if (result.Discovered)
+        {
+            ProbesDiscovered++;
+            // The walk list grows: the officer is covered from now on.
+            if (!cpfIds.Contains(candidate)) cpfIds.Add(candidate);
+            LogEvent($"probe found cpf {candidate}: {result.Rows} rows ({result.Added} new), added to the index");
+        }
+        return result;
+    }
 
     /// <summary>J7: when the walk gave up (null while it is walking).</summary>
     public DateTime? GaveUpAt { get; private set; }
