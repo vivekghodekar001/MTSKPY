@@ -23,7 +23,6 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     readonly InspectionIndex? index;
     readonly InspectionMultipartBuilder? builder;
     readonly LocationProvider? location;
-    readonly WindowsLocationProvider? winLoc;
     readonly string? inspectionHostOverride;
     readonly string? indexTsvPath;
     // A5: the index path is runtime-editable so the tsv can be reloaded in place.
@@ -95,13 +94,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         InspectionIndex? index = null,
         InspectionMultipartBuilder? builder = null,
         LocationProvider? location = null,
-        WindowsLocationProvider? winLoc = null,
         string? inspectionHostOverride = null,
         string? indexTsvPath = null,
         string? storePath = null)
     {
         this.workflow = workflow; this.secret = secret; this.desktop = desktop;
-        this.index = index; this.builder = builder; this.location = location; this.winLoc = winLoc;
+        this.index = index; this.builder = builder; this.location = location;
         this.inspectionHostOverride = inspectionHostOverride;
         this.indexTsvPath = indexTsvPath;
         this.indexPath = indexTsvPath ?? Path.Combine(
@@ -885,7 +883,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     async Task OpenDetailForSearched(string consumer, string? cpf, CancellationToken ct = default)
     {
-        if (profile == null || index == null || builder == null || location == null || winLoc == null)
+        if (profile == null || index == null || builder == null || location == null)
         {
             Error = "Inspection services are not ready. Sign in and load the list first.";
             return;
@@ -956,7 +954,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Status = fromLocalStore
                 ? $"Opened {consumer} from the local store (the server did not return it)."
                 : $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
-            var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf, winLoc,
+            var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,
                 onSubmitComplete: PersistSubmitOutcome,
@@ -1035,7 +1033,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         // Gate refusals never leave the machine, so there is no server message.
         if (outcome.Body.Length == 0) return;
-        PersistStatus(record, outcome.Ok ? RecordStatus.Submitted : RecordStatus.Returned, outcome.Body);
+        PersistStatus(record, outcome.Ok ? RecordStatus.Submitted : RecordStatus.Returned, outcome.Body,
+            outcome.SubmissionLat, outcome.SubmissionLong, outcome.LocationSource);
     }
 
     /// <summary>P3: a successful verify confirms the accepted state.</summary>
@@ -1054,7 +1053,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         catch { /* persistence is best-effort */ }
     }
 
-    void PersistStatus(InspectionRecord record, RecordStatus status, string? lastServerMessage)
+    void PersistStatus(InspectionRecord record, RecordStatus status, string? lastServerMessage,
+        string? submissionLat = null, string? submissionLong = null, string? locationSource = null)
     {
         if (store == null) return;
         try
@@ -1078,11 +1078,14 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                     OriginalJson: record.Raw.Count > 0 ? JsonSerializer.Serialize(record.Raw) : null,
                     SubmittedDataPath: null,
                     PhotoPaths: null,
-                    SignPaths: null));
+                    SignPaths: null,
+                    SubmissionLat: submissionLat,
+                    SubmissionLong: submissionLong,
+                    LocationSource: locationSource));
             }
             else
             {
-                store.SetStatus(record.ConsumerNumber, status, lastServerMessage);
+                store.SetStatus(record.ConsumerNumber, status, lastServerMessage, submissionLat, submissionLong, locationSource);
             }
             RefreshRecordCounts();
         }

@@ -825,6 +825,55 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     Check(gcdA == 1, "the sweep stride is coprime with the space, so every number is visited once");
 }
 
+// C3: the coordinates in a submission are always the customer's site - the
+// record's own installation coordinates, jittered a few metres - and never
+// the device's position.
+{
+    var provider = new Mskpy.Infrastructure.LocationProvider();
+
+    // The jitter and the accuracy stay inside their bounds, over many draws.
+    var jitters = new List<double>();
+    var accuracies = new List<double>();
+    for (int i = 0; i < 200; i++)
+    {
+        var r = await provider.ResolveAsync(null, null, null, "19.336027", "74.095619");
+        jitters.Add(r.JitterMetres!.Value);
+        accuracies.Add(double.Parse(r.Accuracy!, System.Globalization.CultureInfo.InvariantCulture));
+    }
+    Check(jitters.All(j => j >= 3.0 && j <= 15.0), "every jitter is between 3 and 15 metres");
+    Check(accuracies.All(a => a >= 4.0 && a <= 12.0), "every accuracy is between 4 and 12");
+    Check(jitters.Distinct().Count() > 100, "the jitter is not a constant");
+
+    // One draw, in full.
+    var site = await provider.ResolveAsync(null, null, null, "19.336027", "74.095619");
+    Check(site.Source == Mskpy.Infrastructure.LocationSource.SiteCoords, "the position comes from the record's own site");
+    Check(site.Mocked == false, "the site position is not a mocked fix");
+    Check(site.HasCoords, "the site position has a pair");
+
+    // The distance the payload carries is the distance of THAT pair from the
+    // installation - not a constant.
+    var lat = double.Parse(site.Lat!, System.Globalization.CultureInfo.InvariantCulture);
+    var lon = double.Parse(site.Long!, System.Globalization.CultureInfo.InvariantCulture);
+    var computed = Mskpy.Infrastructure.GeoDistance.Meters(lat, lon, 19.336027, 74.095619);
+    Check(Math.Abs(computed - site.DistanceMetres!.Value) < 0.01, "the distance matches the pair that is submitted");
+    Check(computed >= 2.9 && computed <= 15.1, "the distance is the jitter");
+    Check(site.Lat != "19.336027" || site.Long != "74.095619", "the submitted pair differs from the stored one");
+
+    // A record with no coordinates: no device fallback, the officer has to
+    // enter them.
+    var none = await provider.ResolveAsync(null, null, null, null, null);
+    Check(none.Source == Mskpy.Infrastructure.LocationSource.None, "a record with no coordinates has no position");
+    Check(!none.HasCoords, "nothing is made up for a record with no coordinates");
+    Check(none.Error != null && none.Error.Contains("Enter them"), "the officer is told to enter the coordinates");
+
+    // What the officer typed wins (C4), and it is used as it is.
+    var manual = await provider.ResolveAsync("19.1", "74.1", "5", "19.336027", "74.095619");
+    Check(manual.Source == Mskpy.Infrastructure.LocationSource.ManualOverride, "what the officer typed is the source");
+    Check(manual.Lat == "19.1" && manual.Long == "74.1", "the typed pair is used as it is");
+    Check(manual.Accuracy == "5", "the typed accuracy is used as it is");
+    Check(manual.Mocked == false, "a typed position is not mocked");
+}
+
 // L2: the first run. A fresh machine has no index; the seed index that
 // travels with the folder is copied there once. An index that already
 // exists is never overwritten.

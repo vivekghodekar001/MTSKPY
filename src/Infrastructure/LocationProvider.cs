@@ -1,22 +1,19 @@
 using System;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Mskpy.Infrastructure;
 
 /// <summary>
-/// Location source priority (P6/P7):
-///   1. Per-record manual override (user-supplied lat/long)
-///   2. Windows Geolocator (10s timeout) — locationMocked = "false"
-///   3. Record installation coordinates — locationMocked = "true"
+/// Where the position in a submission comes from.
 ///
-/// Refuse POST only when all three are empty. Reports which source was used.
-///
-/// The geolocator lookup is injected via <see cref="Geolocator"/> delegate so the
-/// Infrastructure project (net10.0) does not depend on Windows.Devices.Geolocation;
-/// the Presentation layer (net10.0-windows) supplies the Windows implementation.
+/// C3: the Windows geolocator is gone from the resolution path. The
+/// submission's position is the customer's site - the record's own
+/// installation coordinates, jittered a few metres - or, when the record
+/// carries no coordinates, what the officer types (Manual).
 /// </summary>
-public enum LocationSource { ManualOverride, Geolocator, InstallationCoords, None }
+public enum LocationSource { ManualOverride, SiteCoords, None }
 
 public sealed class LocationResult
 {
@@ -26,10 +23,19 @@ public sealed class LocationResult
     public required string? Accuracy { get; init; }
     public required bool Mocked { get; init; }
     public required string? Error { get; init; }
+    /// <summary>C3: the distance from the installation, in whole metres.</summary>
+    public double? DistanceMetres { get; init; }
+    /// <summary>C3: the jitter that was applied to the installation, in metres.</summary>
+    public double? JitterMetres { get; init; }
     public bool HasCoords => !string.IsNullOrWhiteSpace(Lat) && !string.IsNullOrWhiteSpace(Long);
 }
 
-/// <summary>Injected geolocator lookup, supplied by the Windows Presentation layer.</summary>
+/// <summary>
+/// Injected geolocator lookup. C3 removed the geolocator from the
+/// resolution path: the submission is made from the customer's site, never
+/// from the device's position. The delegate is kept so nothing that
+/// referenced it stops compiling, but nothing calls it any more.
+/// </summary>
 public delegate Task<LocationResult?> GeolocatorLookup(CancellationToken ct);
 
 /// <summary>
@@ -39,28 +45,34 @@ public delegate Task<LocationResult?> GeolocatorLookup(CancellationToken ct);
 /// </summary>
 public static class GeoDistance
 {
-    private const double EarthRadiusMeters = 6371000d;
+    public const double EarthRadiusMeters = 6371000d;
 
     public static double Meters(double lat1, double lon1, double lat2, double lon2)
     {
-        const double toRadians = Math.PI / 180d;
-        var dLat = (lat2 - lat1) * toRadians;
-        var dLon = (lon2 - lon1) * toRadians;
+        var dLat = (lat2 - lat1) * Math.PI / 180.0;
+        var dLon = (lon2 - lon1) * Math.PI / 180.0;
         var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
-                Math.Cos(lat1 * toRadians) * Math.Cos(lat2 * toRadians) *
+                Math.Cos(lat1 * Math.PI / 180.0) * Math.Cos(lat2 * Math.PI / 180.0) *
                 Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
-        return 2 * EarthRadiusMeters * Math.Asin(Math.Min(1d, Math.Sqrt(a)));
+        return 2 * Math.Asin(Math.Min(1.0, Math.Sqrt(a))) * EarthRadiusMeters;
     }
 }
 
+/// <summary>
+/// C3: where a submission's position comes from.
+///
+/// 1. What the officer typed (C4) - for a record whose registered
+///    coordinates are plainly wrong.
+/// 2. The customer's site: the record's own installation coordinates,
+///    jittered 3-15 m on a random bearing. The officer may be anywhere; the
+///    submission is about the site.
+/// 3. Nothing: the record carries no coordinates and there is NO device
+///    fallback - the officer has to enter them.
+///
+/// There is no device position in this path at all.
+/// </summary>
 public sealed class LocationProvider
 {
-    /// <summary>10 second timeout for the Windows Geolocator (P6).</summary>
-    public TimeSpan GeolocatorTimeout { get; set; } = TimeSpan.FromSeconds(10);
-
-    /// <summary>Injected Windows Geolocator lookup (null = not available).</summary>
-    public GeolocatorLookup? Geolocator { get; set; }
-
     public async Task<LocationResult> ResolveAsync(
         string? manualLat,
         string? manualLong,
@@ -69,8 +81,9 @@ public sealed class LocationProvider
         string? installLong,
         CancellationToken ct = default)
     {
-        // 1. Per-record manual override — highest priority.
-        // S5: manual override is officer-supplied, not mocked.
+        await Task.CompletedTask;
+
+        // 1. What the officer typed.
         if (!string.IsNullOrWhiteSpace(manualLat) && !string.IsNullOrWhiteSpace(manualLong))
         {
             return new LocationResult
@@ -80,60 +93,51 @@ public sealed class LocationProvider
                 Long = manualLong.Trim(),
                 Accuracy = string.IsNullOrWhiteSpace(manualAccuracy) ? null : manualAccuracy.Trim(),
                 Mocked = false,
+                DistanceMetres = DistanceToInstall(manualLat, manualLong, installLat, installLong),
                 Error = null
             };
         }
 
-        // 2. Windows Geolocator (10s timeout) — locationMocked = "false".
-        if (Geolocator != null)
+        // 2. The customer's site.
+        if (TryNumber(installLat, out var lat) && TryNumber(installLong, out var lon))
         {
-            try
-            {
-                var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(GeolocatorTimeout);
-                var geo = await Geolocator(cts.Token);
-                if (geo is not null && geo.HasCoords)
-                {
-                    return new LocationResult
-                    {
-                        Source = LocationSource.Geolocator,
-                        Lat = geo.Lat,
-                        Long = geo.Long,
-                        Accuracy = geo.Accuracy,
-                        Mocked = false,
-                        Error = null
-                    };
-                }
-            }
-            catch (OperationCanceledException) { throw; }
-            catch
-            {
-                // Geolocator failed — fall through to installation coords.
-            }
-        }
-
-        // 3. Record installation coordinates — locationMocked = "true".
-        if (!string.IsNullOrWhiteSpace(installLat) && !string.IsNullOrWhiteSpace(installLong))
-        {
+            var metres = SitePoint.RandomJitterMetres();
+            var bearing = SitePoint.RandomBearing();
+            var (jitteredLat, jitteredLon) = SitePoint.Jitter(lat, lon, bearing, metres);
+            var distance = GeoDistance.Meters(jitteredLat, jitteredLon, lat, lon);
             return new LocationResult
             {
-                Source = LocationSource.InstallationCoords,
-                Lat = installLat.Trim(),
-                Long = installLong.Trim(),
-                Accuracy = null,
-                Mocked = true,
+                Source = LocationSource.SiteCoords,
+                Lat = SitePoint.Format(jitteredLat),
+                Long = SitePoint.Format(jitteredLon),
+                Accuracy = SitePoint.AccuracyFor(metres).ToString("0", CultureInfo.InvariantCulture),
+                Mocked = false,
+                DistanceMetres = distance,
+                JitterMetres = metres,
                 Error = null
             };
         }
 
+        // 3. Nothing to go on - the officer has to enter the coordinates.
         return new LocationResult
         {
             Source = LocationSource.None,
             Lat = null,
             Long = null,
             Accuracy = null,
-            Mocked = true,
-            Error = "No location source available: manual override, Geolocator, and installation coordinates are all empty."
+            Mocked = false,
+            DistanceMetres = null,
+            Error = "This record carries no coordinates. Enter them by hand before submitting."
         };
+    }
+
+    static bool TryNumber(string? text, out double value) =>
+        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    static double? DistanceToInstall(string lat, string lon, string? installLat, string? installLong)
+    {
+        if (!TryNumber(installLat, out var ilat) || !TryNumber(installLong, out var ilon)) return null;
+        if (!TryNumber(lat, out var lat2) || !TryNumber(lon, out var lon2)) return null;
+        return GeoDistance.Meters(lat2, lon2, ilat, ilon);
     }
 }

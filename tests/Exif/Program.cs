@@ -75,6 +75,17 @@ static int SelfTest()
     Check(Math.Abs((merged.GpsLongitude ?? 0) - 151.2093) < 1e-5, "re-stamp replaces GPS longitude (E)");
     Check(merged.DateTimeOriginal == "2026:11:10 07:00:00", "re-stamp replaces DateTimeOriginal");
 
+    // C3: the photo's EXIF carries the SAME pair the payload carries. A
+    // reviewer comparing the two must find the same numbers.
+    var siteProvider = new Mskpy.Infrastructure.LocationProvider();
+    var site = siteProvider.ResolveAsync(null, null, null, "19.336027", "74.095619").GetAwaiter().GetResult();
+    var siteLat = double.Parse(site.Lat!, System.Globalization.CultureInfo.InvariantCulture);
+    var siteLon = double.Parse(site.Long!, System.Globalization.CultureInfo.InvariantCulture);
+    var stampedSite = JpegExifStamper.StampJpeg(plain, siteLat, siteLon, new DateTime(2026, 11, 12, 6, 30, 0, DateTimeKind.Utc));
+    var siteExif = ExifReader.Read(stampedSite);
+    Check(Math.Abs((siteExif.GpsLatitude ?? 0) - siteLat) < 1e-5, "the EXIF latitude is the pair the payload carries");
+    Check(Math.Abs((siteExif.GpsLongitude ?? 0) - siteLon) < 1e-5, "the EXIF longitude is the pair the payload carries");
+
     Console.WriteLine(failures == 0 ? "RESULT=success" : $"RESULT=failure ({failures})");
     return failures == 0 ? 0 : 1;
 }

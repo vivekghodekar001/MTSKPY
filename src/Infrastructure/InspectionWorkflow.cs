@@ -16,7 +16,11 @@ public sealed record SubmitOutcome(
     string? Error,
     string? DataFilePath,
     IReadOnlyList<InspectionMultipartBuilder.ManifestEntry> Manifest,
-    string? LocationSummary = null
+    string? LocationSummary = null,
+    // C3: the position the survey was submitted from, so the row stays auditable.
+    string? SubmissionLat = null,
+    string? SubmissionLong = null,
+    string? LocationSource = null
 );
 
 /// <summary>
@@ -235,14 +239,15 @@ public sealed class InspectionWorkflow
             double.TryParse(record.Latitude, NumberStyles.Float, CultureInfo.InvariantCulture, out var instLat) &&
             double.TryParse(record.Longitude, NumberStyles.Float, CultureInfo.InvariantCulture, out var instLong))
         {
-            distanceFromInst = Math.Round(GeoDistance.Meters(usedLat, usedLong, instLat, instLong), 2);
+            // C3: whole metres, rounded - the distance is a small real number.
+            distanceFromInst = Math.Round(GeoDistance.Meters(usedLat, usedLong, instLat, instLong), 0);
         }
         // V1: locationAccuracy is 0 whenever the position is the record's
         // installation coordinates (every run on this machine). If a real
         // geolocator fix ever exists, use its own accuracy instead — one
         // condition, not a constant.
         object locationAccuracy = 0d;
-        if (!loc.Mocked && double.TryParse(loc.Accuracy, NumberStyles.Float, CultureInfo.InvariantCulture, out var accuracyValue))
+        if (double.TryParse(loc.Accuracy, NumberStyles.Float, CultureInfo.InvariantCulture, out var accuracyValue))
             locationAccuracy = accuracyValue;
 
         dataDict["distanceFromInst"] = distanceFromInst;
@@ -293,7 +298,7 @@ public sealed class InspectionWorkflow
             gateErrors.Add($"Distance {dist}m exceeds allowed {allowed}m (distanceRestricted).");
         }
         if (gateErrors.Count > 0)
-            return new SubmitOutcome(false, HttpStatusCode.BadRequest, "", string.Join("; ", gateErrors), built.DataFilePath, built.Manifest, locationSummary);
+            return new SubmitOutcome(false, HttpStatusCode.BadRequest, "", string.Join("; ", gateErrors), built.DataFilePath, built.Manifest, locationSummary, blobLat, blobLong, loc.Source.ToString());
 
         // --- Build the POST request ---
         var host = gateway.transport.InspectionHost;
@@ -336,7 +341,7 @@ public sealed class InspectionWorkflow
             $"vendor={vendorCode}, vendorSource={vendorSource}", ct);
 
         // R7: No retry on 2xx. Never infer success from a status code.
-        return new SubmitOutcome(status == HttpStatusCode.OK, status, body, null, built.DataFilePath, built.Manifest, locationSummary);
+        return new SubmitOutcome(status == HttpStatusCode.OK, status, body, null, built.DataFilePath, built.Manifest, locationSummary, blobLat, blobLong, loc.Source.ToString());
     }
 
     /// <summary>

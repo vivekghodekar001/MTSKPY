@@ -18,7 +18,7 @@ public partial class App : System.Windows.Application
     InspectionIndex? inspectionIndex;
     InspectionMultipartBuilder? inspectionBuilder;
     LocationProvider? inspectionLocation;
-    WindowsLocationProvider? winLoc;
+
 
     // Optional override for the inspection host (e.g. http://127.0.0.1:15100 for the P9 mock).
     readonly string? inspectionHostOverride;
@@ -60,11 +60,12 @@ public partial class App : System.Windows.Application
                 "RenewableEnergyDesktop", "index.tsv"));
 
             inspectionBuilder = new InspectionMultipartBuilder();
-            winLoc = new WindowsLocationProvider(TimeSpan.FromSeconds(10));
-            inspectionLocation = new LocationProvider { Geolocator = winLoc.GetLocationAsync, GeolocatorTimeout = TimeSpan.FromSeconds(10) };
+            // C3: the geolocator is not in the resolution path. The
+            // submission's position is the customer's site.
+            inspectionLocation = new LocationProvider();
 
             shell = new ShellViewModel(new ClientWorkflow(gateway), new PasswordBoxInput(null!),
-                new WpfDesktopActions(null!), inspectionIndex, inspectionBuilder, inspectionLocation, winLoc,
+                new WpfDesktopActions(null!), inspectionIndex, inspectionBuilder, inspectionLocation,
                 cliHostOverride ? inspectionHostOverride : null,
                 cliIndexPath ?? Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -126,12 +127,13 @@ public partial class App : System.Windows.Application
 
         // P5 builder + P6/P7 location (Windows geolocator injected from Presentation).
         inspectionBuilder = new InspectionMultipartBuilder();
-        winLoc = new WindowsLocationProvider(TimeSpan.FromSeconds(10));
-        inspectionLocation = new LocationProvider { Geolocator = winLoc.GetLocationAsync, GeolocatorTimeout = TimeSpan.FromSeconds(10) };
+        // C3: the geolocator is not in the resolution path. The
+        // submission's position is the customer's site.
+        inspectionLocation = new LocationProvider();
 
         var window = new MainWindow();
         shell = new ShellViewModel(new ClientWorkflow(gateway), window.SecretInput,
-            new WpfDesktopActions(window), inspectionIndex, inspectionBuilder, inspectionLocation, winLoc, inspectionHostOverride, tsvPath);
+            new WpfDesktopActions(window), inspectionIndex, inspectionBuilder, inspectionLocation, inspectionHostOverride, tsvPath);
         // Edge 4: --vendor= is honoured in GUI mode too (override for header and body).
         shell.VendorOverride = cliVendor ?? "";
         window.DataContext = shell;

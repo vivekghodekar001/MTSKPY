@@ -44,7 +44,12 @@ public sealed record StoredInspectionRecord(
     string? SubmittedDataPath,   // Path to data.json from last submit attempt
     string? PhotoPaths,          // JSON array of photo file paths
     string? SignPaths,           // JSON array of signature file paths
-    string? SeenCpfs = null      // F1: every cpf whose list has contained this row
+    string? SeenCpfs = null,      // F1: every cpf whose list has contained this row
+    // C3: the position the survey was submitted from, so a submission stays
+    // auditable: where the pair came from, and the pair itself.
+    string? SubmissionLat = null,
+    string? SubmissionLong = null,
+    string? LocationSource = null
 );
 
 /// <summary>
@@ -103,6 +108,10 @@ public sealed class InspectionStore : IDisposable
                 -- row. It is the record of truth; record_cpfs below is the index
                 -- the EXISTS/COUNT queries use and can always be rebuilt from it.
                 seen_cpfs TEXT,
+                -- C3: the position a submission was made from.
+                submission_lat TEXT,
+                submission_long TEXT,
+                location_source TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_records_status ON inspection_records(status);
@@ -142,6 +151,22 @@ public sealed class InspectionStore : IDisposable
                 using var alter = connection.CreateCommand();
                 alter.CommandText = "ALTER TABLE inspection_records ADD COLUMN seen_cpfs TEXT;";
                 alter.ExecuteNonQuery();
+            }
+            // C3: the same for a store written before the submission position
+            // was kept on the row.
+            using (var pragma2 = connection.CreateCommand())
+            {
+                pragma2.CommandText = "PRAGMA table_info(inspection_records);";
+                var have = new HashSet<string>(StringComparer.Ordinal);
+                using var reader2 = pragma2.ExecuteReader();
+                while (reader2.Read()) have.Add(reader2.GetString(1));
+                foreach (var column in new[] { "submission_lat", "submission_long", "location_source" })
+                {
+                    if (have.Contains(column)) continue;
+                    using var alter = connection.CreateCommand();
+                    alter.CommandText = $"ALTER TABLE inspection_records ADD COLUMN {column} TEXT;";
+                    alter.ExecuteNonQuery();
+                }
             }
         }
 
@@ -246,9 +271,9 @@ public sealed class InspectionStore : IDisposable
                 (consumer_number, cpf_no, vendor_code, consumer_name, latitude, longitude,
                  inst_date, reason_to_revert, survey_duration_minutes, is_first_time,
                  status, last_server_message, last_server_message_at, original_json, updated_at,
-                 submitted_data_path, photo_paths, sign_paths)
+                 submitted_data_path, photo_paths, sign_paths, submission_lat, submission_long, location_source)
                 VALUES (@cn, @cpf, @vc, @cnm, @lat, @lon, @inst, @rtv, @sdm, @ift, @st, @lsm, @lsma, @oj, @ua,
-                        @sdp, @pp, @sp)
+                        @sdp, @pp, @sp, @slat, @slon, @lsrc)
                 ON CONFLICT(consumer_number) DO UPDATE SET
                     -- F1: cpf_no is INSERT-ONLY. The list endpoint is per-cpf and
                     -- the same consumer appears under different cpfs in different
@@ -284,7 +309,10 @@ public sealed class InspectionStore : IDisposable
                         ELSE inspection_records.updated_at END,
                     submitted_data_path=excluded.submitted_data_path,
                     photo_paths=excluded.photo_paths,
-                    sign_paths=excluded.sign_paths
+                    sign_paths=excluded.sign_paths,
+                    submission_lat=excluded.submission_lat,
+                    submission_long=excluded.submission_long,
+                    location_source=excluded.location_source
                 ";
             cmd.Parameters.AddWithValue("@preserve", preserveStatus ? 1 : 0);
             cmd.Parameters.AddWithValue("@cn", record.ConsumerNumber);
@@ -304,6 +332,9 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@sdp", record.SubmittedDataPath ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@pp", record.PhotoPaths ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@sp", record.SignPaths ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@slat", record.SubmissionLat ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@slon", record.SubmissionLong ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@lsrc", record.LocationSource ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
             var result = cmd.ExecuteNonQuery();
 
@@ -529,7 +560,8 @@ public sealed class InspectionStore : IDisposable
     static string? TryGetString(JsonElement el, string key) =>
         el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    public void SetStatus(string consumerNumber, RecordStatus status, string? lastServerMessage = null)
+    public void SetStatus(string consumerNumber, RecordStatus status, string? lastServerMessage = null,
+        string? submissionLat = null, string? submissionLong = null, string? locationSource = null)
     {
         dbLock.Wait();
         try
@@ -540,7 +572,10 @@ public sealed class InspectionStore : IDisposable
                 SET status=@st,
                     last_server_message=@lsm,
                     last_server_message_at=@lsma,
-                    updated_at=@ua
+                    updated_at=@ua,
+                    submission_lat=COALESCE(@slat, submission_lat),
+                    submission_long=COALESCE(@slon, submission_long),
+                    location_source=COALESCE(@lsrc, location_source)
                 WHERE consumer_number=@cn;
             ";
             cmd.Parameters.AddWithValue("@cn", consumerNumber);
@@ -548,6 +583,9 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@lsm", lastServerMessage ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@lsma", DateTime.UtcNow.ToString("o"));
             cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
+            cmd.Parameters.AddWithValue("@slat", submissionLat ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@slon", submissionLong ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@lsrc", locationSource ?? (object)DBNull.Value);
             cmd.ExecuteNonQuery();
         }
         finally
@@ -596,7 +634,10 @@ public sealed class InspectionStore : IDisposable
                     SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
                     PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
                     SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
-                    SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs"))
+                    SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs")),
+                    SubmissionLat: reader.IsDBNull(reader.GetOrdinal("submission_lat")) ? null : reader.GetString(reader.GetOrdinal("submission_lat")),
+                    SubmissionLong: reader.IsDBNull(reader.GetOrdinal("submission_long")) ? null : reader.GetString(reader.GetOrdinal("submission_long")),
+                    LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source"))
                 ));
             }
             return results;

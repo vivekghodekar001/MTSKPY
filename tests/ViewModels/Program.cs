@@ -110,7 +110,7 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     var index = new Mskpy.Infrastructure.InspectionIndex(indexFile);
     // A dead host: the rebuild re-arms the walk, and the walk must not be
     // able to reach the production service from a test.
-    using var rebuilt = new ShellViewModel(workflow, secrets, desktop, index, null, null, null,
+    using var rebuilt = new ShellViewModel(workflow, secrets, desktop, index, null, null,
         "http://127.0.0.1:1", indexFile, storePath);
     Check(rebuilt.IndexConsumers == 1 && rebuilt.IndexPairs == 1 && rebuilt.IndexCpfs == 1,
         "the shell reports what the index file holds");

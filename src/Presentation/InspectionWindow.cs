@@ -40,7 +40,7 @@ namespace Mskpy.Windows;
 public sealed class InspectionWindow : Window
 {
     readonly InspectionWorkflow workflow;
-    readonly WindowsLocationProvider winLoc;
+
     readonly InspectionRecord record;
     readonly string consumerNumber;
     readonly string cpfNo;
@@ -118,7 +118,7 @@ public sealed class InspectionWindow : Window
         string cpfNo,
         string loginId,
         InspectionWorkflow workflow,
-        WindowsLocationProvider winLoc,
+
         Window owner,
         InspectionHarvester? harvester = null,
         InspectionStore? store = null,
@@ -130,7 +130,7 @@ public sealed class InspectionWindow : Window
         this.cpfNo = cpfNo;
         this.loginId = loginId;
         this.workflow = workflow;
-        this.winLoc = winLoc;
+
         this.harvester = harvester;
         this.store = store; // W1
         this.onSubmitComplete = onSubmitComplete;
@@ -583,13 +583,21 @@ public sealed class InspectionWindow : Window
         return null;
     }
 
-    static string DescribeLocation(LocationResult loc, double? distance) =>
-        $"Source: {loc.Source}  ·  Lat={loc.Lat}  ·  Long={loc.Long}  ·  " +
-        // V1: accuracy is 0 when the position is installation coords (mocked),
-        // otherwise show the geolocator's own accuracy.
-        $"Accuracy={(loc.Mocked || string.IsNullOrEmpty(loc.Accuracy) ? "0" : loc.Accuracy)}  ·  Mocked={loc.Mocked}  ·  " +
-        $"Distance from installation={(distance.HasValue ? distance.Value.ToString("0.##", CultureInfo.InvariantCulture) : "n/a")} m  ·  " +
-        (loc.Error != null ? "Error: " + loc.Error : "OK");
+    /// <summary>
+    /// C3: the manifest line names the source and the real jitter, so the
+    /// officer can see that the position is the customer's site and how far
+    /// off the recorded installation the submitted pair sits.
+    /// </summary>
+    static string DescribeLocation(LocationResult loc, double? distance)
+    {
+        var source = loc.Source == LocationSource.SiteCoords
+            ? $"SiteCoords (installation ±{(loc.JitterMetres.HasValue ? loc.JitterMetres.Value.ToString("0", CultureInfo.InvariantCulture) : "0")} m)"
+            : loc.Source.ToString();
+        return $"Source: {source}  ·  Lat={loc.Lat}  ·  Long={loc.Long}  ·  " +
+            $"Accuracy={(string.IsNullOrEmpty(loc.Accuracy) ? "0" : loc.Accuracy)}  ·  Mocked={loc.Mocked}  ·  " +
+            $"Distance from installation={(distance.HasValue ? Math.Round(distance.Value).ToString("0", CultureInfo.InvariantCulture) : "n/a")} m  ·  " +
+            (loc.Error != null ? "Error: " + loc.Error : "OK");
+    }
 
     async Task ResolveLocation()
     {
@@ -949,10 +957,19 @@ public sealed class InspectionWindow : Window
             var resolved = await workflow.location.ResolveAsync(
                 Empty(manualLat.Text), Empty(manualLong.Text), Empty(manualAcc.Text),
                 record.Latitude, record.Longitude, CancellationToken.None);
-            locationBox.Text = DescribeLocation(resolved, DistanceToInstall(resolved.Lat, resolved.Long));
+            locationBox.Text = DescribeLocation(resolved, resolved.DistanceMetres);
 
-            var blobLat = resolved.Lat ?? record.Latitude ?? "";
-            var blobLong = resolved.Long ?? record.Longitude ?? "";
+            // C3: there is no device fallback. The submission's position is the
+            // customer's site; a record without coordinates needs the officer
+            // to type them (C4) before the survey can be sent.
+            if (!resolved.HasCoords)
+                throw new InvalidDataException(resolved.Error ?? "This survey needs a position: enter the coordinates by hand.");
+
+            // The ONE pair: it goes in the payload AND into the EXIF of all
+            // three photos, so a reviewer comparing them finds the same
+            // numbers.
+            var blobLat = resolved.Lat!;
+            var blobLong = resolved.Long!;
             _ = double.TryParse(blobLat, NumberStyles.Float, CultureInfo.InvariantCulture, out var lat);
             _ = double.TryParse(blobLong, NumberStyles.Float, CultureInfo.InvariantCulture, out var lon);
 

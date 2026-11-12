@@ -142,11 +142,11 @@ internal static class Program
         var workflow = new Mskpy.Infrastructure.InspectionWorkflow(
             gateway,
             new Mskpy.Infrastructure.InspectionMultipartBuilder(),
-            new Mskpy.Infrastructure.LocationProvider { GeolocatorTimeout = TimeSpan.FromSeconds(1) });
+            new Mskpy.Infrastructure.LocationProvider());
         var owner = new Window();
         var inspection = new InspectionWindow(
             record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow,
-            new Mskpy.Presentation.Services.WindowsLocationProvider(TimeSpan.FromSeconds(1)), owner);
+            owner);
 
         var root = (FrameworkElement)inspection.Content;
         root.Measure(new Size(1000, 820));
