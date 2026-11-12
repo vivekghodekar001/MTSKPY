@@ -104,12 +104,20 @@ public sealed class LocationProvider
             var metres = SitePoint.RandomJitterMetres();
             var bearing = SitePoint.RandomBearing();
             var (jitteredLat, jitteredLon) = SitePoint.Jitter(lat, lon, bearing, metres);
-            var distance = GeoDistance.Meters(jitteredLat, jitteredLon, lat, lon);
+            // The pair is rounded to what the payload will carry, and the
+            // distance is measured on THAT pair - so the number in the payload
+            // and the number that says how far off the installation it is
+            // describe the same point.
+            var sentLat = SitePoint.Format(jitteredLat);
+            var sentLon = SitePoint.Format(jitteredLon);
+            var distance = GeoDistance.Meters(
+                double.Parse(sentLat, CultureInfo.InvariantCulture),
+                double.Parse(sentLon, CultureInfo.InvariantCulture), lat, lon);
             return new LocationResult
             {
                 Source = LocationSource.SiteCoords,
-                Lat = SitePoint.Format(jitteredLat),
-                Long = SitePoint.Format(jitteredLon),
+                Lat = sentLat,
+                Long = sentLon,
                 Accuracy = SitePoint.AccuracyFor(metres).ToString("0", CultureInfo.InvariantCulture),
                 Mocked = false,
                 DistanceMetres = distance,

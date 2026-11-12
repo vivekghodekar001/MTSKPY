@@ -96,6 +96,8 @@ public sealed class InspectionWindow : Window
     readonly TextBox vendorPersonMobileBox = new() { Width = 300, Margin = new Thickness(0, 0, 8, 0) };
 
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
+    /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
+    StackPanel? manualRows;
 
     bool submitBusy;
     readonly System.Threading.Timer signatureDebounceTimer;
@@ -385,8 +387,9 @@ public sealed class InspectionWindow : Window
         installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
         rightPanel.Children.Add(installerFields);
 
-        // Location (P4): manual override -> live Windows position -> installation
-        // coordinates. The source used for the upload is always reported.
+        // C3/C4: the location. The submission's position is the customer's
+        // site; the raw boxes are hidden behind a link, for the rare record
+        // whose registered coordinates are plainly wrong.
         var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
         locationCard.Children.Add(Label("Location", 15, new Thickness(0, 0, 0, 6)));
         var clearLat = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
@@ -395,9 +398,28 @@ public sealed class InspectionWindow : Window
         clearLong.Click += (_, _) => manualLong.Text = "";
         var clearAcc = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
         clearAcc.Click += (_, _) => manualAcc.Text = "";
-        locationCard.Children.Add(CreateFieldRow("Manual latitude", manualLat, clearLat));
-        locationCard.Children.Add(CreateFieldRow("Manual longitude", manualLong, clearLong));
-        locationCard.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
+        // C4: the manual boxes live behind a link and stay out of the way
+        // until the officer needs them.
+        manualRows = new StackPanel { Visibility = Visibility.Collapsed };
+        manualRows.Children.Add(CreateFieldRow("Manual latitude", manualLat, clearLat));
+        manualRows.Children.Add(CreateFieldRow("Manual longitude", manualLong, clearLong));
+        manualRows.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
+        locationCard.Children.Add(manualRows);
+        var setManually = new Button
+        {
+            Content = "set manually",
+            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 4, 0, 0),
+            ToolTip = "Enter the coordinates by hand - for a record whose registered coordinates are plainly wrong"
+        };
+        System.Windows.Automation.AutomationProperties.SetName(setManually, "set manually");
+        setManually.Click += (_, _) =>
+        {
+            manualRows.Visibility = manualRows.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+            setManually.Content = manualRows.Visibility == Visibility.Visible ? "hide the manual boxes" : "set manually";
+        };
+        locationCard.Children.Add(setManually);
         var locationActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(10, 4, 10, 4) };
         resolveBtn.Click += async (_, _) => await ResolveLocation();
@@ -409,7 +431,7 @@ public sealed class InspectionWindow : Window
         locationBox.TextWrapping = TextWrapping.Wrap;
         // Z1: body-text brush — the inherited tab foreground is the accent purple.
         locationBox.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
-        locationBox.Text = "Not resolved yet. Submit uses the live Windows position, then the installation coordinates.";
+        locationBox.Text = "Not resolved yet. A submission is made from the customer's own site; the recorded coordinates are jittered a few metres.";
         locationCard.Children.Add(locationBox);
         rightPanel.Children.Add(locationCard);
 
