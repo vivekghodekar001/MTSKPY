@@ -1,120 +1,38 @@
-# L5 - the portable folder, verified from a clean path and a fresh profile
+# The portable folder - the verification (0.9.1)
 
-## The zip
+The folder was zipped, extracted to a clean path and run from there with
+**DOTNET_ROOT unset and no dotnet on PATH**.
 
 ```
 C:\Users\vivek\AppData\Local\Temp\opencode\mskpy-portable.zip   58.5 MB
+C:\Temp\mskpy-portable                                          253 files
+  MSKPY-Windows.exe  seed\index.tsv  Setup.cmd  README.txt
+  hostfxr.dll  hostpolicy.dll  coreclr.dll  e_sqlite3.dll
 ```
 
-Extracted to a clean path:
-
-```
-C:\Temp\mskpy-portable     253 files
-  MSKPY-Windows.exe   yes
-  seed\index.tsv      yes
-  Setup.cmd           yes
-  README.txt          yes
-```
-
-## The fresh profile
+## A fresh profile
 
 The app's data folder was moved aside, so the app started with nothing:
 
 ```
-C:\Users\vivek\AppData\Local\RenewableEnergyDesktop
-  -> C:\Users\vivek\AppData\Local\RenewableEnergyDesktop.aside-130336
+moved ...\RenewableEnergyDesktop -> ...\RenewableEnergyDesktop.aside-...
 ```
 
-Then `Setup.cmd` was run from the extracted copy - **with DOTNET_ROOT
-unset and no dotnet on PATH**:
+and the app - run from the extracted copy, with no .NET on the machine -
+started, seeded its index, signed in and listed:
 
 ```
-  DOTNET_ROOT set? False   'dotnet' on PATH? False
+running from  : C:\Temp\mskpy-portable\MSKPY-Windows.exe
+My pending (42)
+All Maharashtra (193)
+42 shown of 193 loaded from the store.
+form: Pump Inspection - MT4420200467931
+header: Name: JIJABAI BHAUSAHEB GHULE | Application No: MT4420200467931 | Address: 236,236,SAWARGAON GHULE
+Windows · 0.9.1
 ```
 
-Setup.cmd reported:
-
-```
-  Setting up Renewable Energy (MTSKPY Inspection) from:
-    C:\temp\mskpy-portable
-
-  Desktop shortcut created.
-  Starting the app...
-```
-
-and the app started from the extracted copy, seeded the index and logged
-what it did:
-
-```
-2026-11-12T13:04:11 index seeded: seeded the index from index.tsv
-                (C:\Users\vivek\AppData\Local\RenewableEnergyDesktop\index.tsv)
-```
-
-The seeded index is the whole 71,870-pair index, and the store was
-created empty - a store is never seeded.
-
-### What the fresh profile showed
-
-```
-running from  : C:\temp\mskpy-portable\MSKPY-Windows.exe
-signed in
-My pending (41)
-All Maharashtra (45)
-41 shown of 45 loaded from the store.
-```
-
-All Maharashtra is 45 because the store was empty a minute earlier: 41
-rows come from the officer's own list at sign-in and 4 from the first
-steps of the harvest. The two scopes disagree, as they should.
-
-A record opens with its own header card:
-
-```
-Name: JIJABAI BHAUSAHEB GHULE | Application No: MT4420200467931 | Address: 236,236,SAWARGAON GHULE
-```
-
-and the Diagnostics page shows the walk and the prospecting state:
-
-```
-Build                       0.9.0 - .NET 10 linestaff-inspection reconstruction
-Index population (pairs)    71,870
-Index consumers             49,066
-Index cpfs (the walk list)  3,361
-Walk list size              3,361
-Cpfs probed                 1
-Cpfs discovered             0
-Entries imported            0
-Harvest state               walking
-Harvester                   Harvesting cpf 02623307 (21/3361).
-```
-
-## The import path, live
-
-The walk list grows by more than the probe can find in a month if
-somebody hands over a roster. A file was dropped in the app's data
-folder:
-
-```
-C:\Users\vivek\AppData\Local\RenewableEnergyDesktop\index-import.tsv
-  02030001
-  02030002
-  02030003
-  02030004
-  02030005
-```
-
-and at the next start:
-
-```
-2026-11-12T13:16:06 index import merged: 5 entries, 5 cpfs, 5 new pairs
-```
-
-The import file was renamed `index-import.done`, and the walk list grew:
-
-```
-before   index.tsv: 71,871 pairs, 3,362 distinct cpfs
-after    index.tsv: 71,876 pairs, 3,367 distinct cpfs
-```
+193 rows in a minute or two: the store started empty and the harvest filled
+it, from the seeded index, with the app doing nothing else.
 
 ## The real profile, from the same portable copy
 
@@ -123,26 +41,34 @@ started again:
 
 ```
 running from  : C:\Temp\mskpy-portable\MSKPY-Windows.exe
-signed in
-My pending (41)
-All Maharashtra (36632)
-41 shown of 36632 loaded from the store.
+My pending (42)
+All Maharashtra (37483)
+42 shown of 37483 loaded from the store.
+form: Pump Inspection - MT4420200467931
+header: Name: JIJABAI BHAUSAHEB GHULE | Application No: MT4420200467931 | Address: 236,236,SAWARGAON GHULE
+0.9.1 · .NET 10 linestaff-inspection reconstruction
+Harvesting cpf 02273748 (3274/3369).
 ```
 
-The two scopes disagree by four orders of magnitude, and the record
-opens with its own header card:
+The two scopes disagree by three orders of magnitude, a record opens with
+its own header card, and the Diagnostics page shows the walk running.
+
+## The folder itself
 
 ```
-Name: JIJABAI BHAUSAHEB GHULE | Application No: MT4420200467931 | Address: 236,236,SAWARGAON GHULE
+MSKPY-Windows.exe   162,816 bytes   2026-11-12 18:48:38
+version            0.9.1.0
+hostfxr.dll         379,728 bytes
+hostpolicy.dll      378,664 bytes
+coreclr.dll       4,613,456 bytes
+e_sqlite3.dll     1,978,880 bytes
+seed\index.tsv     1,791,447 bytes   (the 71,870-pair index)
+Setup.cmd             1,530 bytes
+README.txt           3,520 bytes
 ```
 
-## The screenshots
+## Screenshots
 
-| file | what |
-|---|---|
-| `l5-fresh-list.png` | the fresh profile: My pending 41, All Maharashtra 45 |
-| `l5-fresh-record.png` | a record open from the fresh profile, with its header card |
-| `l5-fresh-diagnostics.png` | the fresh profile's Diagnostics page |
-| `l5-list.png` | the restored profile: My pending 41, All Maharashtra 36,632 |
-| `l5-record.png` | a record open from the restored profile |
-| `l5-diagnostics.png` | the restored profile's Diagnostics page |
+`l5-fresh-list.png`, `l5-fresh-record.png`, `l5-fresh-diagnostics.png`
+(the fresh profile) and `l5-full-list.png`, `l5-full-record.png`,
+`l5-full-diagnostics.png` (the restored profile).

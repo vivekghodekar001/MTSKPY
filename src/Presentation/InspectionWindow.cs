@@ -1078,16 +1078,18 @@ public sealed class InspectionWindow : Window
         // The vendor in the payload is the RECORD's vendor, untouched. If the
         // person was last used with another vendor, say so - softly.
         var recordVendor = record.VendorCode ?? "";
+        var warning = vendorWarning;
+        if (warning == null) return;
         if (!string.IsNullOrWhiteSpace(person.Vendor) && !string.IsNullOrWhiteSpace(recordVendor)
             && !string.Equals(person.Vendor, recordVendor, StringComparison.OrdinalIgnoreCase))
         {
-            vendorWarning.Text = person.Name + " was last used with vendor " + person.Vendor
+            warning.Text = person.Name + " was last used with vendor " + person.Vendor
                 + "; this record's vendor is " + recordVendor + ". The submitted vendor is the record's.";
-            vendorWarning.Visibility = Visibility.Visible;
+            warning.Visibility = Visibility.Visible;
         }
         else
         {
-            vendorWarning.Visibility = Visibility.Collapsed;
+            warning.Visibility = Visibility.Collapsed;
         }
     }
     /// <summary>C5: the entries that match what has been typed.</summary>
