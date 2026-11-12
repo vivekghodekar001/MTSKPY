@@ -38,14 +38,23 @@ public sealed class CpfProbe
     readonly string indexPath;
     readonly string cursorPath;
     readonly string probedPath;
+    readonly string discoveredPath;
     readonly HashSet<string> probed = new HashSet<string>(StringComparer.Ordinal);
+    readonly HashSet<string> discovered = new HashSet<string>(StringComparer.Ordinal);
     int cursor = FirstCpf;
 
     /// <summary>How many cpfs have been probed (the size of the probed set).</summary>
     public int ProbedCount => probed.Count;
 
-    /// <summary>How many probed cpfs answered with at least one row.</summary>
-    public int DiscoveredCount { get; private set; }
+    /// <summary>
+    /// How many probed cpfs answered with at least one row. This is the
+    /// durable list of officers the app found for itself: a cpf found once
+    /// stays in the walk list, even after its rows are accepted and gone.
+    /// </summary>
+    public int DiscoveredCount => discovered.Count;
+
+    /// <summary>Where the discovered cpfs are kept.</summary>
+    public string DiscoveredPath => discoveredPath;
 
     /// <summary>How many pairs the probe has added to the index.</summary>
     public int IndexPairsAdded { get; private set; }
@@ -61,7 +70,9 @@ public sealed class CpfProbe
         this.store = store;
         this.indexPath = indexPath;
         this.cursorPath = cursorPath;
-        this.probedPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(cursorPath)) ?? ".", "harvester-probed-cpfs.txt");
+        var dir = Path.GetDirectoryName(Path.GetFullPath(cursorPath)) ?? ".";
+        this.probedPath = Path.Combine(dir, "harvester-probed-cpfs.txt");
+        this.discoveredPath = Path.Combine(dir, "harvester-discovered-cpfs.txt");
         Load();
     }
 
@@ -105,7 +116,7 @@ public sealed class CpfProbe
             return new ProbeResult(cpf, 0, false, 0, 0, 0);
 
         var (added, duplicates) = store.UpsertRows(rows, cpf);
-        DiscoveredCount++;
+        if (discovered.Add(cpf)) SaveDiscovered();
         var pairs = new List<(string Consumer, string Cpf)>();
         foreach (var row in rows)
         {
@@ -140,7 +151,7 @@ public sealed class CpfProbe
         catch { /* an unreadable cursor restarts the sweep */ }
         try
         {
-            if (!File.Exists(probedPath)) return;
+            if (!File.Exists(probedPath)) { }
             foreach (var line in File.ReadAllLines(probedPath))
             {
                 var t = line.Trim();
@@ -148,11 +159,36 @@ public sealed class CpfProbe
             }
         }
         catch { /* an unreadable probed set is an empty one */ }
+        try
+        {
+            if (!File.Exists(discoveredPath)) return;
+            foreach (var line in File.ReadAllLines(discoveredPath))
+            {
+                var t = line.Trim();
+                if (t.Length == 8) discovered.Add(t);
+            }
+        }
+        catch { /* an unreadable discovered list is an empty one */ }
     }
 
     void SaveCursor()
     {
         try { File.WriteAllText(cursorPath, cursor.ToString()); } catch { }
+    }
+
+    /// <summary>
+    /// The durable list of officers the probe found. It is append-only: a
+    /// cpf found once is a cpf for ever, so the walk list can never shrink
+    /// below what the app has already discovered.
+    /// </summary>
+    void SaveDiscovered()
+    {
+        try
+        {
+            using var writer = new StreamWriter(discoveredPath, true, new UTF8Encoding(false));
+            foreach (var cpf in discovered) writer.Write(cpf + "\n");
+        }
+        catch { }
     }
 
     void SaveProbed()

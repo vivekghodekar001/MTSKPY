@@ -710,6 +710,53 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// K3: the index must not shrink. A rebuild is a union: every pair the file
+// had, every pair the store knows, and every cpf the probe has discovered.
+// Discovery is monotonic - a cpf found once stays in the walk list even
+// after its rows are accepted and gone.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-shrink-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var indexFile = Path.Combine(dir, "index.tsv");
+    var discoveredFile = Path.Combine(dir, "harvester-discovered-cpfs.txt");
+    var dbFile = Path.Combine(dir, "shrink.db");
+
+    // A file with two cpfs: one the store knows and one the probe found.
+    File.WriteAllLines(indexFile, new[]
+    {
+        "MTOLD0000000001\t02781310",
+        "MTPROBED00000001\t02222222",
+    });
+    File.WriteAllLines(discoveredFile, new[] { "02222222" });
+
+    using var store = new Mskpy.Infrastructure.InspectionStore(dbFile);
+    // The store knows one consumer under a cpf of its own.
+    using (var row = JsonDocument.Parse("""
+    {"consumer_number":"MTNEW0000000001","cpf_no":"02660016","consumer_name":"Fresh","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01"}
+    """))
+        store.UpsertRows(new[] { row.RootElement }, "02660016");
+
+    var result = Mskpy.Infrastructure.InspectionIndexBuilder.Rebuild(store, indexFile, discoveredFile);
+    var lines = File.ReadAllLines(indexFile);
+    var cpfs = lines.Select(l => l.Split('\t')[1].Trim()).Distinct().ToList();
+
+    Check(cpfs.Contains("02781310"), "the rebuild keeps a cpf only the old file had");
+    Check(cpfs.Contains("02222222"), "the rebuild keeps a cpf the probe discovered");
+    Check(cpfs.Contains("02660016"), "the rebuild adds a cpf the store knows");
+    Check(result.Cpfs >= result.CpfsBefore, "the rebuild never loses a cpf");
+    Check(result.Pairs >= result.PairsBefore, "the rebuild never loses a pair");
+    Check(result.Consumers >= result.ConsumersBefore, "the rebuild never loses a consumer");
+
+    // The discovered cpf stays even when the store has nothing for it any
+    // more - its rows are accepted and dropped.
+    store.DeleteByConsumerNumbers(new[] { "MTNEW0000000001" });
+    var again = Mskpy.Infrastructure.InspectionIndexBuilder.Rebuild(store, indexFile, discoveredFile);
+    var after = File.ReadAllLines(indexFile).Select(l => l.Split('\t')[1].Trim()).Distinct().ToList();
+    Check(after.Contains("02222222"), "a discovered cpf stays in the walk list after its rows are gone");
+    Check(again.Cpfs >= again.CpfsBefore, "the second rebuild still never loses a cpf");
+    try { Directory.Delete(dir, true); } catch { }
+}
+
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
 // rebuild unions the store's pairs with the pairs the file already held.

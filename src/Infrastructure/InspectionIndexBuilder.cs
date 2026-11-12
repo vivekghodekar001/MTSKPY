@@ -39,7 +39,7 @@ public sealed class InspectionIndexBuilder
     /// Rebuild the index at <paramref name="indexPath"/> from the store and
     /// from the pairs the file already holds. Returns what changed.
     /// </summary>
-    public static Result Rebuild(InspectionStore store, string indexPath)
+    public static Result Rebuild(InspectionStore store, string indexPath, string? discoveredPath = null)
     {
         if (store == null) throw new ArgumentNullException(nameof(store));
         if (string.IsNullOrWhiteSpace(indexPath)) throw new ArgumentException("The index path is empty.", nameof(indexPath));
@@ -54,6 +54,15 @@ public sealed class InspectionIndexBuilder
         // Then the store: the row's own cpf first, so the file resolves the
         // consumer to the officer the record was first seen under.
         foreach (var pair in store.GetIndexPairs()) Add(after, pair.ConsumerNumber, pair.CpfNo, pair.Primary);
+
+        // And every cpf the probe has discovered. If the union has no pair
+        // for it - the officer's rows have been accepted and dropped - the
+        // cpf is kept on a line of its own, so it stays in the walk list.
+        foreach (var cpf in ReadDiscovered(discoveredPath))
+        {
+            if (after.Values.Any(list => list.Contains(cpf))) continue;
+            after[cpf] = new List<string> { cpf };
+        }
 
         var dir = Path.GetDirectoryName(Path.GetFullPath(indexPath));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -80,6 +89,23 @@ public sealed class InspectionIndexBuilder
             PairsAdded: pairs - before.Values.Sum(v => v.Count),
             ConsumersAdded: after.Count - beforeConsumers,
             CpfsAdded: distinctCpfs - beforeCpfs);
+    }
+
+    /// <summary>The cpfs the probe has discovered (an append-only file).</summary>
+    public static IReadOnlyList<string> ReadDiscovered(string? discoveredPath)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(discoveredPath) || !File.Exists(discoveredPath)) return list;
+        try
+        {
+            foreach (var line in File.ReadAllLines(discoveredPath))
+            {
+                var t = line.Trim();
+                if (t.Length == 8 && !list.Contains(t)) list.Add(t);
+            }
+        }
+        catch { }
+        return list;
     }
 
     /// <summary>

@@ -700,7 +700,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Error = "";
         try
         {
-            var result = InspectionIndexBuilder.Rebuild(store, path);
+            var result = InspectionIndexBuilder.Rebuild(store, path, harvester?.Probe?.DiscoveredPath ?? DiscoveredCpfsPath);
             index?.Reload(path);
             Changed(nameof(IndexLoaded));
             Changed(nameof(IndexConsumers)); Changed(nameof(IndexPairs)); Changed(nameof(IndexCpfs));
@@ -719,6 +719,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Error = "The index could not be rebuilt: " + ex.Message;
         }
     }
+
+    /// <summary>
+    /// K3: where the probe keeps the cpfs it has discovered. It lives next
+    /// to the walk cursor, so a rebuild can union them in and the walk list
+    /// can never shrink below what the app has already found.
+    /// </summary>
+    string DiscoveredCpfsPath => Path.Combine(
+        Path.GetDirectoryName(Path.GetFullPath(IndexPath)) ?? ".",
+        "harvester-discovered-cpfs.txt");
 
     /// <summary>J5: drop the walk cursor so the harvester starts the new list at 0.</summary>
     void ResetHarvesterCursor()
