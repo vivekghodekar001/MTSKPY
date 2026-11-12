@@ -1,10 +1,10 @@
 <Window x:Class="Mskpy.Windows.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
- Title="Renewable Energy — Windows preview 0.5" Width="1100" Height="850" MinWidth="740" MinHeight="620"
+ Title="{Binding WindowTitle}" Width="1100" Height="850" MinWidth="740" MinHeight="620"
  Background="{StaticResource Bg}" Foreground="{StaticResource Text}" FontFamily="Segoe UI" WindowStartupLocation="CenterScreen">
    <Window.InputBindings><KeyBinding Key="Escape" Command="{Binding Cancel}"/><KeyBinding Key="F5" Command="{Binding Refresh}"/></Window.InputBindings>
  <DockPanel Background="{StaticResource Bg}">
   <Border DockPanel.Dock="Top" Background="#1C1B1F" Padding="26,20"><DockPanel>
-   <TextBlock DockPanel.Dock="Right" Text="Windows · Preview 0.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+   <TextBlock DockPanel.Dock="Right" Text="{Binding BuildLabel}" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
    <TextBlock Text="Renewable Energy" FontSize="26" FontWeight="SemiBold"/>
   </DockPanel></Border>
   <Border DockPanel.Dock="Bottom" Background="#2B2832" Padding="24,12"><DockPanel>
@@ -40,14 +40,6 @@
     </StackPanel></Border>
     <Grid Margin="28,24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
      <TextBlock Text="{Binding PageTitle}" FontSize="26" Margin="0,0,0,22"/>
-     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Visibility="{Binding IsHome,Converter={StaticResource BoolVisibility}}"><StackPanel>
-      <ItemsControl ItemsSource="{Binding Modules}"><ItemsControl.ItemTemplate><DataTemplate>
-       <Button Command="{Binding DataContext.OpenModule,RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Margin="0,0,0,16" Padding="26" HorizontalContentAlignment="Stretch" MinHeight="120"><StackPanel>
-        <TextBlock Text="{Binding Name}" FontSize="24" FontWeight="Bold"/><TextBlock Text="{Binding Description}" FontSize="18" Margin="0,8,0,0"/>
-       </StackPanel></Button>
-      </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
-      <TextBlock Text="Screen inventory reflects the reference account. Role availability and full feature parity remain under verification." Foreground="{StaticResource Muted}" FontSize="13" Margin="0,12,0,0"/>
-     </StackPanel></ScrollViewer>
      <Grid Grid.Row="1" Visibility="{Binding IsList,Converter={StaticResource BoolVisibility}}"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <DockPanel><Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding Refresh}" Margin="12,0,0,0"/><RadioButton GroupName="listscope" Content="{Binding MyPendingChip}" IsChecked="{Binding ListScope, Converter={StaticResource EqualsValue}, ConverterParameter=MyPending}" FontSize="13" Margin="0,0,10,0" Padding="12,6" AutomationProperties.Name="Show my pending records" ToolTip="Your own pending inspections — the records whose cpf is your login id and that have not been accepted"/><RadioButton GroupName="listscope" Content="{Binding AllChip}" IsChecked="{Binding ListScope, Converter={StaticResource EqualsValue}, ConverterParameter=All}" FontSize="13" Margin="0,0,10,0" Padding="12,6" AutomationProperties.Name="Show all records" ToolTip="Every record in the store"/><StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0" Visibility="{Binding IsIndexStale,Converter={StaticResource BoolVisibility}}"><TextBlock Text="{Binding StaleIndexWarning}" Foreground="#FFB4AB" FontSize="13" VerticalAlignment="Center"/><Button Content="Reload index" Command="{Binding ReloadIndexCommand}" Margin="10,0,0,0" Padding="10,3" FontSize="12" ToolTip="Re-read index.tsv and restart the harvester without restarting the app"/></StackPanel><TextBox Text="{Binding Search,UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Search loaded applications" ToolTip="Search loaded applications"/></DockPanel>
       <TextBlock Grid.Row="1" Text="{Binding ModuleDescription}" Margin="0,14,0,14"/>

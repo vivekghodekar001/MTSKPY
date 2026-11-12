@@ -300,11 +300,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // D1: the officer lands on their own pending queue, not the statewide dump.
             listScope = ListScopeMyPending;
             Changed(nameof(ListScope));
-            NavigateTo("Home"); Status = "Signed in.";
             // B1: one GET for the session's own pending list, written into the
             // store, so the officer sees their rows within seconds instead of
             // waiting for the harvester. Failure is non-fatal.
             await SeedSessionListAsync(account.LoginId);
+            // C1: ONE WAY IN. The list is where the officer lands after a
+            // sign-in; the Home page's module card (which opened this same
+            // place) is gone, and the sidebar's Inspection entry is the way
+            // back from the details.
+            await OpenInspectionListAsync(ct);
+            Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; } }
         finally { if (version == generation) IsBusy = false; }
@@ -537,16 +542,25 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     async Task OpenInspectionAsync(CancellationToken ct)
     {
-        if (index == null || builder == null || location == null) { Error = "Inspection services not initialized."; return; }
         if (profile == null) { Error = "Please sign in first."; return; }
+        await OpenInspectionListAsync(ct);
+        if (index == null || builder == null || location == null) { Error = "Inspection services not initialized."; return; }
+        // R3: Start background harvester (iterate cpf ids from index.tsv, one request/sec, SQLite store)
+        StartHarvester();
+    }
 
-        currentModule = VerifiedNavigation.Modules.First(x => x.Key == "inspection");
+    /// <summary>
+    /// C1: the list - the store-backed records of the inspection module. This
+    /// is where the officer lands after a sign-in and where the sidebar's
+    /// Inspection entry goes, so there is only one way in.
+    /// </summary>
+    async Task OpenInspectionListAsync(CancellationToken ct)
+    {
+        currentModule = VerifiedNavigation.Modules.FirstOrDefault(x => x.Key == "inspection");
+        if (currentModule == null) return;
         Changed(nameof(ModuleDescription));
         SetPage("Applications");
         await LoadAsync(ct);
-
-        // R3: Start background harvester (iterate cpf ids from index.tsv, one request/sec, SQLite store)
-        StartHarvester();
     }
 
     /// <summary>
@@ -592,6 +606,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>F3: the running build's version, stamped from the assembly.</summary>
     public static string AppVersion =>
         System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+
+    /// <summary>C1: the window title carries the build it is, not a preview number.</summary>
+    public string WindowTitle => $"Renewable Energy — {AppVersion}";
+
+    /// <summary>C1: the same version in the header.</summary>
+    public string BuildLabel => $"Windows · {AppVersion}";
 
     /// <summary>
     /// D3: the index file's age. A stale index means new consumers are missing

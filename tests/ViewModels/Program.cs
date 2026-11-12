@@ -38,8 +38,9 @@ Check(shell.HasError && gateway.LoginCalls == 0, "empty username fails before co
 shell.Username = "sample"; await shell.Login.ExecuteAsync();
 Check(shell.IsSignedIn && secrets.Reads == 2, "successful login clears view input at action time");
 Check(!shell.GetType().GetProperties().Any(x => x.Name.Contains("Password")), "password is not a bindable view-model property");
+Check(shell.IsList && shell.Applications.Count == 3, "C1: the sign-in lands on the officer's own list, with no way in before it");
 await shell.OpenModule.ExecuteAsync(VerifiedNavigation.Modules[0]);
-Check(shell.IsList && shell.Applications.Count == 3 && gateway.LoadCalls == 1, "list comes from the store with no display cap and no live fallback");
+Check(shell.IsList && shell.Applications.Count == 3 && gateway.LoadCalls == 2, "list comes from the store with no display cap and no live fallback");
 Check(shell.ListScope == "MyPending" && shell.Applications.All(x => x.Fields.Any(f => f.Label == "Cpf" && f.Value == "sample")),
     "the officer lands on their own pending queue by default");
 Check(shell.MyPendingCount == 3 && shell.MyPendingChip.Contains("3") && shell.AllChip.Contains("5"),

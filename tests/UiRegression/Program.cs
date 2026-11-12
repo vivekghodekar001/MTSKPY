@@ -72,7 +72,8 @@ internal static class Program
         var home = new RenderTargetBitmap(1100, 780, 96, 96, PixelFormats.Pbgra32); home.Render(shellRoot);
         var homeEncoder = new PngBitmapEncoder(); homeEncoder.Frames.Add(BitmapFrame.Create(home));
         using (var stream = File.Create(Path.Combine(args[0], "shell-home.png"))) homeEncoder.Save(stream);
-        Assert(shell.IsHome && shell.Modules.Count == 1 && shell.Modules[0].Key == "inspection", "verified home inventory is bound to the shell view model");
+        Assert(shell.IsList && shell.Modules.Count == 1 && shell.Modules[0].Key == "inspection", "C1: a sign-in lands on the list, and the module inventory is still bound to the shell view model");
+        Assert(shell.WindowTitle.Contains(ShellViewModel.AppVersion) && shell.BuildLabel.Contains(ShellViewModel.AppVersion), "C1: the window title and the header carry the running build's version");
         const string jsrSource = """{"consumer_number":"SAMPLE-JSR-ONLY","consumer_name":"Synthetic demonstration record","wf_action_id":122,"land_ownername":"Synthetic owner","land_survey_no":"SAMPLE-SURVEY","land_area":"10","land_village_name_c":"Synthetic village"}""";
         var jsrService = new Mskpy.Infrastructure.JsrDocuments();
         var jsrDocument = jsrService.FromRecord(jsrSource);
