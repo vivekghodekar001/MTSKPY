@@ -126,6 +126,22 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     try { Directory.Delete(indexDir, true); } catch { }
 }
 
+// C6: the saved sign-in is used once, and a rejected password is not retried.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    credentials.Save("sample", "a-wrong-password");
+    gateway.FailSignIn = true;
+    var loginCallsBefore = gateway.LoginCalls;
+    using var saved = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    await saved.AutoSignInAsync();
+    Check(!saved.IsSignedIn, "a rejected saved sign-in does not sign in");
+    Check(saved.Username == "sample", "the username is still filled in for the officer");
+    Check(saved.Error.Contains("did not work"), "the message is a plain one");
+    Check(gateway.LoginCalls == loginCallsBefore + 1, "the rejected password is tried once and not again");
+    Check(credentials.Load() == null, "the saved sign-in is forgotten");
+    gateway.FailSignIn = false;
+}
 Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
 
 sealed class FakeSecrets : ISecretInput { public int Reads; public string ReadAndClear() { Reads++; return "synthetic-password"; } }
@@ -142,7 +158,8 @@ sealed class FakeGateway : IClientGateway
     public string Diagnostics => "Response fields only";
     public TaskCompletionSource<IReadOnlyList<ApplicationDocument>>? Pending;
     public IReadOnlyList<ApplicationDocument> Records = Enumerable.Range(0, 120).Select(i => new ApplicationDocument("sample-" + i, "Record " + i, [new DisplayField("Name", "Record " + i)], "{}")).ToArray();
-    public Task<AccountProfile> LoginAsync(LoginRequest request, CancellationToken ct) { LoginCalls++; Profile = new(request.Username, request.Role, request.Scheme, []); return Task.FromResult(Profile); }
+    public bool FailSignIn;
+    public Task<AccountProfile> LoginAsync(LoginRequest request, CancellationToken ct) { LoginCalls++; if (FailSignIn) throw new InvalidOperationException("The service rejected the sign-in."); Profile = new(request.Username, request.Role, request.Scheme, []); return Task.FromResult(Profile); }
     public Task<IReadOnlyList<ApplicationDocument>> GetApplicationsAsync(string module, CancellationToken ct) { LoadCalls++; if (Expire) { SignOut(); throw new SessionExpiredException(); } return Pending?.Task ?? Task.FromResult(Records); }
     public void SignOut() => Profile = null;
 }

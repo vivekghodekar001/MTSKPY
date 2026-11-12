@@ -23,6 +23,7 @@
       <Label Content="Username" Foreground="{StaticResource Text}" Padding="0,18,0,8"/><TextBox Text="{Binding Username,UpdateSourceTrigger=PropertyChanged}" MaxLength="50" AutomationProperties.Name="Username"/>
       <Label Content="Password" Foreground="{StaticResource Text}" Padding="0,18,0,8"/><PasswordBox x:Name="Password" AutomationProperties.Name="Password"><PasswordBox.InputBindings><KeyBinding Key="Return" Command="{Binding Login}"/></PasswordBox.InputBindings></PasswordBox>
      </StackPanel>
+      <CheckBox Content="Stay signed in" IsChecked="{Binding StaySignedIn}" Foreground="{StaticResource Text}" Margin="0,18,0,0" AutomationProperties.Name="Stay signed in" ToolTip="Keep the sign-in on this machine, encrypted for your Windows account. Signing out forgets it."/>
      <Button Content="Login" Command="{Binding Login}" HorizontalContentAlignment="Center" Margin="0,22,0,0"/>
      <TextBlock Text="Your password is cleared from the input when login starts and is never saved." FontSize="13" Foreground="{StaticResource Muted}" TextAlignment="Center" Margin="0,18,0,0"/>
     </StackPanel>

@@ -96,10 +96,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         LocationProvider? location = null,
         string? inspectionHostOverride = null,
         string? indexTsvPath = null,
-        string? storePath = null)
+        string? storePath = null,
+        CredentialStore? credentials = null)
     {
         this.workflow = workflow; this.secret = secret; this.desktop = desktop;
         this.index = index; this.builder = builder; this.location = location;
+        Credentials = credentials ?? new CredentialStore();
         this.inspectionHostOverride = inspectionHostOverride;
         this.indexTsvPath = indexTsvPath;
         this.indexPath = indexTsvPath ?? Path.Combine(
@@ -351,16 +353,49 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>H1: opens the live inspection form for the selected record.</summary>
     public RelayCommand OpenLiveInspectionCommand { get; }
 
-    async Task LoginAsync(object? _, CancellationToken ct)
+    async Task LoginAsync(object? _, CancellationToken ct) => await SignInAsync(null, false, ct);
+
+    /// <summary>C6: the saved sign-in. The box is on by default.</summary>
+    bool staySignedIn = true;
+    public bool StaySignedIn
+    {
+        get => staySignedIn;
+        set { if (Set(ref staySignedIn, value)) Changed(nameof(StaySignedIn)); }
+    }
+
+    /// <summary>C6: where the encrypted sign-in lives.</summary>
+    public CredentialStore Credentials { get; }
+
+    /// <summary>
+    /// C6: sign in at launch from the saved credentials. A rejected password
+    /// is never retried: the officer is asked once, with the username still
+    /// filled in and a neutral message.
+    /// </summary>
+    public async Task AutoSignInAsync()
+    {
+        if (!StaySignedIn) return;
+        var saved = Credentials.Load();
+        if (saved == null) return;
+        Username = saved.Value.Login;
+        await SignInAsync(saved.Value.Password, true, CancellationToken.None);
+    }
+
+    async Task SignInAsync(string? passwordOverride, bool automatic, CancellationToken ct)
     {
         Error = ""; IsBusy = true; Status = "Connecting securely to the account service…"; var version = ++generation;
         try
         {
-            var password = secret.ReadAndClear();
+            var password = passwordOverride ?? secret.ReadAndClear();
             var account = await workflow.SignInAsync(new LoginRequest(Username, password, SelectedRole, SelectedScheme.Value), ct);
             ct.ThrowIfCancellationRequested();
             if (version != generation) return;
             profile = account; Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut));
+            // C6: keep the sign-in so the next launch does not need it typed.
+            if (StaySignedIn)
+            {
+                try { Credentials.Save(Username, password); }
+                catch { /* a sign-in that cannot be saved is not a failed sign-in */ }
+            }
             // D1: the officer lands on their own pending queue, not the statewide dump.
             listScope = ListScopeMyPending;
             Changed(nameof(ListScope));
@@ -376,6 +411,18 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; } }
+        catch (Exception ex)
+        {
+            if (version != generation) return;
+            workflow.SignOut();
+            // C6: a saved sign-in that no longer works is said plainly, and
+            // never retried.
+            Error = automatic
+                ? "The saved sign-in did not work. Please sign in again."
+                : (ex.Message.Length > 0 ? ex.Message : "The sign-in did not work.");
+            Status = automatic ? "Signed out." : "Sign-in failed.";
+            if (automatic) Credentials.Clear();
+        }
         finally { if (version == generation) IsBusy = false; }
     }
     async Task OpenModuleAsync(object? value, CancellationToken ct)
@@ -599,6 +646,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         _refreshTimer?.Dispose(); _refreshTimer = null;
         CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Home"); IsBusy = false;
         harvester?.Dispose(); harvester = null;
+        // C6: signing out forgets the saved sign-in, so the button finally
+        // means something.
+        Credentials.Clear();
         // The store is NOT session state: it is the local cache of the statewide
         // harvest. Disposing it on sign-out left the app with a dead store after
         // the next sign-in — the list came up empty and the harvest could not

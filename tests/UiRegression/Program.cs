@@ -105,6 +105,27 @@ internal static class Program
         var selectedPhoto = new WpfJsrInteractions(() => null).RestorePhotoAsync(new PhotoReference(jpegPath, new FileInfo(jpegPath).Length, hash), CancellationToken.None).GetAwaiter().GetResult();
         Assert(selectedPhoto.Preview is BitmapImage preview && preview.IsFrozen && selectedPhoto.Reference.Sha256 == hash, "JSR restores a genuine JPEG into a frozen thumbnail with a verified file hash");
         SignatureTimerRegression();
+        // C6: the saved sign-in - encrypted for the Windows user, and gone
+        // when the officer signs out.
+        var credDir = Path.Combine(Path.GetTempPath(), "mskpy-cred-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(credDir);
+        var credFile = Path.Combine(credDir, "credentials.bin");
+        var store = new Mskpy.Presentation.Services.CredentialStore(credFile);
+        Assert(store.Load() is null, "there is no saved sign-in to start with");
+        store.Save("02284251", "02284201");
+        Assert(File.Exists(credFile), "the sign-in is written to its file");
+        var raw = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(credFile));
+        Assert(!raw.Contains("02284201"), "the file does not hold the password in clear");
+        Assert(!raw.Contains("02284251"), "the file does not hold the login in clear");
+        var loaded = store.Load();
+        Assert(loaded is not null && loaded.Value.Login == "02284251" && loaded.Value.Password == "02284201",
+            "the sign-in comes back from the encrypted file");
+        store.Clear();
+        Assert(store.Load() is null, "signing out forgets the sign-in");
+        File.WriteAllBytes(credFile, new byte[] { 1, 2, 3, 4, 5 });
+        Assert(store.Load() is null, "a file that cannot be decrypted is no saved sign-in");
+        Directory.Delete(credDir, true);
+
         Console.WriteLine("In-process WPF render and control checks completed using synthetic data. No windows were shown and no production requests were sent.");
     }
 

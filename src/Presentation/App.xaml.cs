@@ -139,6 +139,14 @@ public partial class App : System.Windows.Application
         window.DataContext = shell;
         MainWindow = window;
         window.Show();
+
+        // C6: sign in at launch from the saved credentials. A rejected
+        // password is never retried - the officer is asked once.
+        if (shell.StaySignedIn)
+        {
+            try { await shell.AutoSignInAsync(); }
+            catch (Exception ex) { LogStartup("the saved sign-in could not be used: " + ex.Message); }
+        }
     }
 
     protected override void OnExit(ExitEventArgs e) { shell?.Dispose(); gateway?.Dispose(); base.OnExit(e); }
