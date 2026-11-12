@@ -18,4 +18,12 @@
     <PublishProfile Include="FolderProfile"/>
     <PublishProfile Include="FolderSelfContained"/>
   </ItemGroup>
+  <!-- L2: the seed index travels with the published folder - it is what the
+       app starts with on a fresh machine. -->
+  <ItemGroup>
+    <Content Include="seed\index.tsv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

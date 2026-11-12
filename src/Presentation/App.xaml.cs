@@ -90,6 +90,20 @@ public partial class App : System.Windows.Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RenewableEnergyDesktop", "index.tsv");
 
+        // L2: the first run. If there is no index at the path this run uses,
+        // the seed index that travels with the folder is copied there once.
+        // An index that already exists is never overwritten.
+        try
+        {
+            var seedPath = InspectionIndexSeeder.SeedPathFor(AppContext.BaseDirectory);
+            if (InspectionIndexSeeder.Seed(tsvPath, seedPath, out var seedMessage))
+                LogStartup("index seeded: " + seedMessage + " (" + tsvPath + ")");
+        }
+        catch (Exception ex)
+        {
+            LogStartup("the seed index could not be used: " + ex.Message);
+        }
+
         // K4: an import file dropped in the app's data folder is merged into
         // the index at start, and then renamed so it is merged exactly once.
         // This is the escape hatch: a real MSEDCL employee roster lands as a
@@ -101,11 +115,11 @@ public partial class App : System.Windows.Application
                 "RenewableEnergyDesktop", InspectionIndexImporter.ImportFileName);
             var imported = InspectionIndexImporter.MergeIfPresent(importPath, tsvPath);
             if (imported.Merged)
-                Console.Error.WriteLine($"Index import merged: {imported.Entries} entries, {imported.Cpfs} cpfs, {imported.PairsAdded} new pairs.");
+                LogStartup($"index import merged: {imported.Entries} entries, {imported.Cpfs} cpfs, {imported.PairsAdded} new pairs");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine("The index import failed: " + ex.Message);
+            LogStartup("the index import failed: " + ex.Message);
         }
 
         inspectionIndex = new InspectionIndex(tsvPath);
@@ -131,6 +145,23 @@ public partial class App : System.Windows.Application
     internal static string ErrorLogPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RenewableEnergyDesktop", "app-errors.log");
+
+    /// <summary>Where the start-up notes are kept (seeding, imports).</summary>
+    internal static string StartupLogPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RenewableEnergyDesktop", "app-start.log");
+
+    /// <summary>A start-up note, kept beside the app's data. Never throws.</summary>
+    static void LogStartup(string message)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(StartupLogPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.AppendAllText(StartupLogPath, $"{DateTime.Now:s} {message}{Environment.NewLine}");
+        }
+        catch { /* a note that cannot be written must never stop the app */ }
+    }
 
     static void LogCrash(string kind, Exception ex)
     {

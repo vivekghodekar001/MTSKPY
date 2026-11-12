@@ -828,7 +828,32 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
 // L2: the first run. A fresh machine has no index; the seed index that
 // travels with the folder is copied there once. An index that already
 // exists is never overwritten.
-// (the L2 checks move to the L2 commit)
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-seed-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var indexFile = Path.Combine(dir, "index.tsv");
+    var seedFile = Path.Combine(dir, "seed-index.tsv");
+    File.WriteAllLines(seedFile, new[] { "MTSEED00000001\t02781310", "MTSEED00000002\t02781311" });
+
+    var seeded = Mskpy.Infrastructure.InspectionIndexSeeder.Seed(indexFile, seedFile, out var message);
+    Check(seeded, "the seed index is copied when there is no index");
+    Check(File.Exists(indexFile), "the index is in place after the seed");
+    Check(File.ReadAllLines(indexFile).Length == 2, "the seeded index is the seed");
+    Check(message.Contains("seeded"), "the seed says what it did");
+
+    // An index that is already there is never overwritten.
+    File.AppendAllText(indexFile, "MTOWN0000000001\t09999999\n");
+    var again = Mskpy.Infrastructure.InspectionIndexSeeder.Seed(indexFile, seedFile, out var secondMessage);
+    Check(!again, "an existing index is not seeded over");
+    Check(File.ReadAllLines(indexFile).Length == 3, "the officer's own index is untouched");
+    Check(secondMessage.Contains("already there"), "the second seed says why it did nothing");
+
+    // No seed in the folder is not an error.
+    var missing = Path.Combine(dir, "nothing-here.tsv");
+    var third = Mskpy.Infrastructure.InspectionIndexSeeder.Seed(Path.Combine(dir, "other.tsv"), missing, out var thirdMessage);
+    Check(!third && thirdMessage.Contains("no seed index"), "a folder without a seed index is not an error");
+    try { Directory.Delete(dir, true); } catch { }
+}
 
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
