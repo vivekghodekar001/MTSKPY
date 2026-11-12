@@ -86,6 +86,22 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     int _newCount;
     DateTime _lastListRefresh = DateTime.MinValue;
     public string NewCountBadge => _newCount > 0 ? $"+{_newCount} new" : "";
+    /// <summary>C7: are there arrivals to look at?</summary>
+    public bool HasArrivals => _newCount > 0;
+
+    /// <summary>C7: is the walk running?</summary>
+    public bool IsWalking => harvester != null;
+
+    /// <summary>C7: how many records the harvest has brought in.</summary>
+    public int ArrivalsCount => _newCount;
+
+    /// <summary>C7: the harvest brought in some records.</summary>
+    internal void RecordArrivals(int count)
+    {
+        _newCount += count;
+        Changed(nameof(NewCountBadge));
+        Changed(nameof(HasArrivals));
+    }
 
     public ShellViewModel(
         ClientWorkflow workflow,
@@ -408,6 +424,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // place) is gone, and the sidebar's Inspection entry is the way
             // back from the details.
             await OpenInspectionListAsync(ct);
+            // C7: the walk starts by itself, on the sign-in. It is not tied to
+            // a page and it keeps running while the officer works.
+            StartHarvester();
             Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; } }
@@ -665,8 +684,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (profile == null) { Error = "Please sign in first."; return; }
         await OpenInspectionListAsync(ct);
         if (index == null || builder == null || location == null) { Error = "Inspection services not initialized."; return; }
-        // R3: Start background harvester (iterate cpf ids from index.tsv, one request/sec, SQLite store)
-        StartHarvester();
+        // C7: the walk already started at the sign-in, so opening the list
+        // does not restart it - the officer would lose the place the walk
+        // had reached.
     }
 
     /// <summary>

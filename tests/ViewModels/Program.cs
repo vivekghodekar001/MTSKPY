@@ -11,6 +11,10 @@ var workflow = new ClientWorkflow(gateway);
 // A3: the list is served from the store, so the test gets its own seeded store
 // instead of whatever the live app happens to hold.
 var storePath = Path.Combine(Path.GetTempPath(), $"vm-store-{Guid.NewGuid():N}.db");
+// C7: the walk starts at the sign-in, so the test's index is its own - a test
+// must never walk the live one.
+var uiIndexPath = Path.Combine(Path.GetTempPath(), $"vm-index-{Guid.NewGuid():N}.tsv");
+File.WriteAllLines(uiIndexPath, new[] { "MTWALK00000001\t02781310" });
 using (var seed = new Mskpy.Infrastructure.InspectionStore(storePath))
 {
     // Three rows on the session's own cpf ("sample") and two on another cpf, so
@@ -32,7 +36,7 @@ using (var seed = new Mskpy.Infrastructure.InspectionStore(storePath))
             LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
             SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
 }
-using var shell = new ShellViewModel(workflow, secrets, desktop, storePath: storePath);
+using var shell = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath);
 await shell.Login.ExecuteAsync();
 Check(shell.HasError && gateway.LoginCalls == 0, "empty username fails before contacting backend");
 shell.Username = "sample"; await shell.Login.ExecuteAsync();

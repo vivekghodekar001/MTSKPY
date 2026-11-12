@@ -56,7 +56,10 @@ internal static class Program
         var desktop = new RenderDesktop(); var gateway = new RenderGateway();
         // An isolated store: the sign-in seed must never touch the live app's data.
         var uiStorePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"ui-store-{Guid.NewGuid():N}.db");
-        using var shell = new ShellViewModel(new ClientWorkflow(gateway), new RenderSecret(), desktop, storePath: uiStorePath) { Username = "sample" };
+        // C7: the walk starts at the sign-in, so the test walks its own index.
+        var uiIndexPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"ui-index-{Guid.NewGuid():N}.tsv");
+        File.WriteAllLines(uiIndexPath, new[] { "MTWALK00000001\t02781310" });
+        using var shell = new ShellViewModel(new ClientWorkflow(gateway), new RenderSecret(), desktop, indexTsvPath: uiIndexPath, storePath: uiStorePath) { Username = "sample" };
         var main = new MainWindow { DataContext = shell };
         var shellRoot = (FrameworkElement)main.Content;
         foreach (var width in new[] { 740, 1100, 1500 })
@@ -74,6 +77,16 @@ internal static class Program
         using (var stream = File.Create(Path.Combine(args[0], "shell-home.png"))) homeEncoder.Save(stream);
         Assert(shell.IsList && shell.Modules.Count == 1 && shell.Modules[0].Key == "inspection", "C1: a sign-in lands on the list, and the module inventory is still bound to the shell view model");
         Assert(shell.WindowTitle.Contains(ShellViewModel.AppVersion) && shell.BuildLabel.Contains(ShellViewModel.AppVersion), "C1: the window title and the header carry the running build's version");
+        // C7: the walk starts by itself, and the arrivals badge counts what
+        // the harvest brings in.
+        Assert(shell.IsSignedIn, "C7: the shell is signed in");
+        Assert(shell.IsWalking, "C7: the walk started by itself, on the sign-in");
+        Assert(shell.ArrivalsCount == 0 && shell.NewCountBadge.Length == 0, "C7: the badge shows nothing at zero");
+        Assert(!shell.HasArrivals, "C7: there are no arrivals to show yet");
+        shell.RecordArrivals(3);
+        Assert(shell.ArrivalsCount == 3 && shell.HasArrivals && shell.NewCountBadge.Contains("3"),
+            "C7: the badge counts the arrivals");
+
         const string jsrSource = """{"consumer_number":"SAMPLE-JSR-ONLY","consumer_name":"Synthetic demonstration record","wf_action_id":122,"land_ownername":"Synthetic owner","land_survey_no":"SAMPLE-SURVEY","land_area":"10","land_village_name_c":"Synthetic village"}""";
         var jsrService = new Mskpy.Infrastructure.JsrDocuments();
         var jsrDocument = jsrService.FromRecord(jsrSource);
