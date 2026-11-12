@@ -215,6 +215,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public int IndexConsumers => index?.Entries.Count ?? 0;
     public int IndexPairs => index?.PairCount ?? 0;
     public int IndexCpfs => index?.CpfCount ?? 0;
+
+    // K4: the walk list, the prospecting counters and the imported count.
+    public int WalkListSize => IndexCpfs;
+    public int ProbedCount => harvester?.Probe?.ProbedCount ?? 0;
+    public int DiscoveredCount => harvester?.Probe?.DiscoveredCount ?? 0;
+    public int ImportedCount => InspectionIndexImporter.ReadCount(ImportedCountPath);
+
+    /// <summary>Where the cumulative count of imported entries is kept.</summary>
+    string ImportedCountPath => Path.Combine(
+        Path.GetDirectoryName(Path.GetFullPath(IndexPath)) ?? ".",
+        InspectionIndexImporter.CountFileName);
     public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page;
     public string ModuleDescription => currentModule?.Description ?? "";
     public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
@@ -482,6 +493,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Fields.Add(new("Index population (pairs)", IndexPairs.ToString("N0")));
             Fields.Add(new("Index consumers", IndexConsumers.ToString("N0")));
             Fields.Add(new("Index cpfs (the walk list)", IndexCpfs.ToString("N0")));
+            // K4: the walk list, the prospecting counters and the imported count.
+            Fields.Add(new("Walk list size", WalkListSize.ToString("N0")));
+            Fields.Add(new("Cpfs probed", ProbedCount.ToString("N0")));
+            Fields.Add(new("Cpfs discovered", DiscoveredCount.ToString("N0")));
+            Fields.Add(new("Entries imported", ImportedCount.ToString("N0")));
             // J7: the walk's own state - a stopped walk must be visible.
             Fields.Add(new("Harvest state", HarvesterState));
             Fields.Add(new("Manual login id", manualLoginId));
@@ -656,6 +672,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 // has to follow the harvester.
                 Changed(nameof(HarvesterGaveUp));
                 Changed(nameof(HarvesterState));
+                // K4: the prospecting counters move with the walk.
+                Changed(nameof(ProbedCount));
+                Changed(nameof(DiscoveredCount));
             }));
         };
         harvester.Start();

@@ -89,6 +89,25 @@ public partial class App : System.Windows.Application
         tsvPath ??= Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RenewableEnergyDesktop", "index.tsv");
+
+        // K4: an import file dropped in the app's data folder is merged into
+        // the index at start, and then renamed so it is merged exactly once.
+        // This is the escape hatch: a real MSEDCL employee roster lands as a
+        // file, with no new build and no code change.
+        try
+        {
+            var importPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RenewableEnergyDesktop", InspectionIndexImporter.ImportFileName);
+            var imported = InspectionIndexImporter.MergeIfPresent(importPath, tsvPath);
+            if (imported.Merged)
+                Console.Error.WriteLine($"Index import merged: {imported.Entries} entries, {imported.Cpfs} cpfs, {imported.PairsAdded} new pairs.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("The index import failed: " + ex.Message);
+        }
+
         inspectionIndex = new InspectionIndex(tsvPath);
 
         // P5 builder + P6/P7 location (Windows geolocator injected from Presentation).

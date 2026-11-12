@@ -757,6 +757,49 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     try { Directory.Delete(dir, true); } catch { }
 }
 
+// K4: the import path. A file dropped in the app's data folder is merged
+// into the index at start - one column per line is a cpf on its own, two
+// columns are a consumer and a cpf - and it is renamed afterwards, so it
+// is merged exactly once.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"mskpy-import-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    var indexFile = Path.Combine(dir, "index.tsv");
+    var importFile = Path.Combine(dir, "index-import.tsv");
+    var doneFile = Path.Combine(dir, "index-import.done");
+    var countFile = Path.Combine(dir, "index-import.count");
+    File.WriteAllLines(indexFile, new[] { "MTOLD0000000001\t02781310" });
+
+    // Five cpfs, one column per line, and one consumer+cpf pair.
+    File.WriteAllLines(importFile, new[]
+    {
+        "02011111", "02022222", "02033333", "02044444", "02055555",
+        "MTIMPORTED0001\t02066666",
+    });
+
+    var result = Mskpy.Infrastructure.InspectionIndexImporter.MergeIfPresent(importFile, indexFile);
+    Check(result.Merged, "the import file was merged");
+    Check(result.Entries == 6, "every entry in the import file was read");
+    Check(result.Cpfs == 6, "every entry carried a cpf");
+
+    var lines = File.ReadAllLines(indexFile);
+    var cpfs = lines.Select(l => l.Split('\t')[1].Trim()).Distinct().ToList();
+    Check(cpfs.Count == 7, "the imported cpfs joined the walk list");
+    Check(cpfs.Contains("02011111") && cpfs.Contains("02066666"), "a cpf-only entry and a pair both landed");
+    Check(cpfs.Contains("02781310"), "the index kept what it had");
+    Check(lines.Any(l => l == "MTIMPORTED0001\t02066666"), "a consumer+cpf entry is merged as a pair");
+    Check(File.Exists(doneFile), "the import file is renamed after it is merged");
+    Check(!File.Exists(importFile), "the import file is not left behind");
+    Check(Mskpy.Infrastructure.InspectionIndexImporter.ReadCount(countFile) == 6, "the imported count is kept");
+
+    // A second start must not merge it again.
+    var again = Mskpy.Infrastructure.InspectionIndexImporter.MergeIfPresent(importFile, indexFile);
+    Check(!again.Merged, "a renamed import is not merged again");
+    var after = File.ReadAllLines(indexFile).Select(l => l.Split('\t')[1].Trim()).Distinct().ToList();
+    Check(after.Count == cpfs.Count, "a second start does not change the index");
+    try { Directory.Delete(dir, true); } catch { }
+}
+
 // J5: the index rebuild. The file is a snapshot that carried one cpf per
 // consumer and missed every consumer the harvest has found since; the
 // rebuild unions the store's pairs with the pairs the file already held.
