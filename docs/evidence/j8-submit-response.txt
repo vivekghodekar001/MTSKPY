@@ -1,0 +1,21 @@
+THE SUBMIT (2026-11-12 09:36:53, from the running app)
+
+  Submit complete (HTTP 2xx). Body shown above.
+  data.json written: C:\Users\vivek\AppData\Local\RenewableEnergyDesktop\inspection-data\data-MT4420200404278.json
+
+  HTTP 200 OK
+
+  {"message":"Survey uploaded successfully."}
+
+THE VERIFY (re-read with userName=cpf_no)
+
+  Verify complete.
+  HTTP 200 OK
+
+  {"message":"Survey uploaded successfully."}
+
+  --- VERIFY ---
+  Verify: count=0
+
+count=0 is the accepted state: the record is no longer in the officer's
+pending list, so a re-read does not find it there any more.
