@@ -144,7 +144,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         OpenModule = new AsyncCommand(OpenModuleAsync, ShowError, p => !IsBusy && IsSignedIn && p is ModuleDefinition);
         Refresh = new AsyncCommand((_, ct) => LoadAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && currentModule != null);
         Cancel = new RelayCommand(_ => CancelPending(), _ => IsBusy);
-        Navigate = new RelayCommand(p => NavigateTo(p as string ?? "Home"), _ => !IsBusy && IsSignedIn);
+        Navigate = new RelayCommand(p => NavigateTo(p as string ?? "Applications"), _ => !IsBusy && IsSignedIn);
         SignOut = new RelayCommand(_ => EndSession(), _ => IsSignedIn || IsBusy);
         ViewDetails = new RelayCommand(_ => ShowDetails(null), _ => !IsBusy);
         ShowReturned = new RelayCommand(_ => NavigateTo("Returned"), _ => !IsBusy && IsSignedIn && store != null);
@@ -215,7 +215,6 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool IsIdle => !IsBusy;
     public bool IsSignedIn => profile != null;
     public bool IsSignedOut => !IsSignedIn;
-    public bool IsHome => page == "Home";
     public bool IsList => page == "Applications";
     public bool IsReturned => page == "Returned";
     public bool IsNeedsRedo => page == "NeedsRedo";
@@ -779,7 +778,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             SetPage("NeedsRedo");
             return;
         }
-        SetPage(destination is "Home" or "Profile" or "Settings" or "Diagnostics" or "Returned" ? destination : "Home");
+        SetPage(destination is "Profile" or "Settings" or "Diagnostics" ? destination : "Applications");
         if (destination == "Profile" && profile != null)
         {
             Fields.Add(new("Username", profile.LoginId)); Fields.Add(new("Account type", profile.Role));
@@ -820,7 +819,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void SetPage(string name)
     {
-        page = name; foreach (var property in new[] { nameof(PageTitle), nameof(IsHome), nameof(IsList), nameof(IsReturned), nameof(IsNeedsRedo), nameof(IsFieldPage), nameof(IsDiagnostics), nameof(IsDetails), nameof(IsJsrDetails), nameof(IsInspectionDetails), nameof(IsInspectionSection), nameof(IsProfilePage), nameof(IsSettingsPage) }) Changed(property); RefreshCommands();
+        page = name; foreach (var property in new[] { nameof(PageTitle), nameof(IsList), nameof(IsReturned), nameof(IsNeedsRedo), nameof(IsFieldPage), nameof(IsDiagnostics), nameof(IsDetails), nameof(IsJsrDetails), nameof(IsInspectionDetails), nameof(IsInspectionSection), nameof(IsProfilePage), nameof(IsSettingsPage) }) Changed(property); RefreshCommands();
     }
     void ShowError(Exception ex)
     {
@@ -833,7 +832,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         _refreshTimer?.Dispose(); _refreshTimer = null;
         CancelAutoSignIn();
-        CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Home"); IsBusy = false;
+        CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Applications"); IsBusy = false;
         harvester?.Dispose(); harvester = null;
         // C6: signing out forgets the saved sign-in, so the button finally
         // means something.
