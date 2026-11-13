@@ -77,6 +77,10 @@ public sealed class InspectionIndexBuilder
             }
         }
         File.Move(tmp, indexPath, overwrite: true);
+        // D3: the rebuild writes the file, so the stale warning must clear. Set
+        // the stamp explicitly - a move preserves the temp file's creation time
+        // on some file systems and would otherwise look untouched.
+        try { File.SetLastWriteTimeUtc(indexPath, DateTime.UtcNow); } catch { }
 
         var beforeConsumers = before.Count;
         var beforeCpfs = before.Values.SelectMany(v => v).Distinct(StringComparer.Ordinal).Count();
@@ -134,6 +138,11 @@ public sealed class InspectionIndexBuilder
         {
             foreach (var (consumer, cpf) in missing) writer.Write(consumer + "\t" + cpf + "\n");
         }
+        // D3: an append must refresh the file's write time, so the stale-index
+        // warning clears for a file the app itself touched. A call that adds
+        // nothing leaves the file untouched, so a genuinely stale file still
+        // warns.
+        try { File.SetLastWriteTimeUtc(indexPath, DateTime.UtcNow); } catch { }
         return missing.Count;
     }
 

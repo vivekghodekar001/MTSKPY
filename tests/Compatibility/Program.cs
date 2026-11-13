@@ -1095,6 +1095,46 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// D3: an append to the index refreshes its write time, so the stale warning
+// clears; a file that is genuinely untouched keeps its old stamp and still warns.
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"d3-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var indexFile = Path.Combine(dir, "index.tsv");
+        File.WriteAllText(indexFile, "MTA\t12345678\n");
+
+        // A genuinely untouched file stays stale: freeze the stamp 25 h back.
+        var oldStamp = DateTime.Now.AddHours(-25);
+        File.SetLastWriteTime(indexFile, oldStamp);
+        Check(Mskpy.Infrastructure.InspectionIndexBuilder.AddPairs(indexFile, new[] { ("MTA", "12345678") }) == 0,
+            "D3: re-adding an existing pair appends nothing");
+        Check(Math.Abs((File.GetLastWriteTime(indexFile) - oldStamp).TotalMinutes) < 1,
+            "D3: a no-op append does not touch the file, so a stale file stays stale");
+
+        var before = File.GetLastWriteTime(indexFile);
+        var added = Mskpy.Infrastructure.InspectionIndexBuilder.AddPairs(indexFile, new[] { ("MTB", "87654321") });
+        Check(added == 1, "D3: a new pair is appended");
+        Check(File.ReadAllLines(indexFile).Any(l => l == "MTB\t87654321"), "D3: the appended pair is on disk");
+        Check((File.GetLastWriteTime(indexFile) - before).TotalSeconds >= 0
+            && (DateTime.Now - File.GetLastWriteTime(indexFile)).TotalSeconds < 5,
+            "D3: the append refreshes the file's write time");
+
+        // Rebuild also refreshes it, even when the content is unchanged.
+        var dbPath = Path.Combine(dir, "store.db");
+        using (var store = new Mskpy.Infrastructure.InspectionStore(dbPath))
+        {
+            var old = File.GetLastWriteTime(indexFile);
+            Thread.Sleep(20);
+            Mskpy.Infrastructure.InspectionIndexBuilder.Rebuild(store, indexFile);
+            Check((File.GetLastWriteTime(indexFile) - old).TotalMilliseconds >= 0
+                && (DateTime.Now - File.GetLastWriteTime(indexFile)).TotalSeconds < 5,
+                "D3: a rebuild refreshes the write time");
+        }
+    }
+    finally { try { Directory.Delete(dir, true); } catch { } }
+}
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {

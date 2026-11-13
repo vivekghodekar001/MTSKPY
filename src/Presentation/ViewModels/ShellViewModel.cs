@@ -999,7 +999,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 _newCount += added;
                 Changed(nameof(NewCountBadge));
                 RefreshRecordCounts();
-                // The list shows the store, so it must follow the store.
+                // D3: the probe may have appended to the index; refresh the
+                // cached stamp so the stale warning clears without a reload.
+                RefreshIndexAge();
                 // Rebuilding it on every batch is too heavy with thousands of
                 // rows, so the refresh is throttled.
                 if (page == "Applications" && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 10)
@@ -1007,6 +1009,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                     _lastListRefresh = DateTime.UtcNow;
                     try
                     {
+                        // D3: an append that happened out of band (the probe) must
+                        // refresh the cached stamp, so the stale warning clears
+                        // without a reload.
+                        RefreshIndexAge();
                         // D2: the statewide view is refreshed the same way it is
                         // first filled - on demand - not by blocking the timer.
                         if (listScope == ListScopeAll) BeginAllScopeLoad(force: true);
