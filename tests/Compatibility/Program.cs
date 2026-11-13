@@ -1178,6 +1178,31 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
     finally { try { Directory.Delete(dir, true); } catch { } }
 }
+// M2: the pre-submit score is a pure function of the signals.
+{
+    var clean = Mskpy.Infrastructure.ReturnRiskScorer.Score(new Mskpy.Infrastructure.ReturnRiskScorer.RiskInput(
+        false, false, 0, false, false, false, false, false, false, false));
+    Check(clean.Band == Mskpy.Infrastructure.ReturnRiskScorer.Band.LikelyAccepted,
+        "M2: a clean record is likely accepted");
+    Check(clean.Reasons.Length == 0, "M2: a clean record has no warnings");
+
+    var twiceUnfixable = Mskpy.Infrastructure.ReturnRiskScorer.Score(new Mskpy.Infrastructure.ReturnRiskScorer.RiskInput(
+        false, true, 2, false, false, false, false, false, false, false));
+    Check(twiceUnfixable.Band == Mskpy.Infrastructure.ReturnRiskScorer.Band.LikelyReturned,
+        "M2: a record returned twice with an unfixable reason scores the lowest band");
+
+    var risky = Mskpy.Infrastructure.ReturnRiskScorer.Score(new Mskpy.Infrastructure.ReturnRiskScorer.RiskInput(
+        false, false, 0, false, true, false, false, false, false, false));
+    Check(risky.Band == Mskpy.Infrastructure.ReturnRiskScorer.Band.Risky,
+        "M2: one medium signal makes a record risky");
+    Check(risky.Reasons.Length == 1 && risky.Reasons[0].Contains("Installer"),
+        "M2: the reasons name the signal");
+
+    var veryHigh = Mskpy.Infrastructure.ReturnRiskScorer.Score(new Mskpy.Infrastructure.ReturnRiskScorer.RiskInput(
+        true, false, 0, false, false, false, false, false, false, false));
+    Check(veryHigh.Band == Mskpy.Infrastructure.ReturnRiskScorer.Band.LikelyReturned,
+        "M2: returned before unchanged is very high");
+}
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {

@@ -99,9 +99,11 @@ public sealed class InspectionWindow : Window
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
     StackPanel? manualRows;
 
+    TextBlock? riskHeader;
+    TextBlock? riskFooter;
+    bool locationResolved;
     bool submitBusy;
     Button? submitBtn;
-    bool locationResolved;
     readonly System.Threading.Timer signatureDebounceTimer;
 
     static readonly (string Suffix, string Label)[] PhotoSlots =
@@ -209,6 +211,17 @@ public sealed class InspectionWindow : Window
         };
         line2.Children.Add(navBtn);
         headerCard.Children.Add(line2);
+
+        // M2: the pre-submit risk band and its reasons, shown before the form
+        // is filled.
+        riskHeader = new TextBlock
+        {
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        headerCard.Children.Add(riskHeader);
 
         Grid.SetRow(headerCard, 0);
         grid.Children.Add(headerCard);
@@ -409,6 +422,8 @@ public sealed class InspectionWindow : Window
         suggestionPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
         installerFields.Children.Add(suggestionPanel);
         vendorPersonNameBox.TextChanged += (_, _) => RefreshSuggestions();
+        vendorPersonNameBox.TextChanged += (_, _) => UpdateRisk();
+        vendorPersonMobileBox.TextChanged += (_, _) => UpdateRisk();
         RefreshSuggestions();
 
         // The soft warning: the person was last used with another vendor.
@@ -511,6 +526,16 @@ public sealed class InspectionWindow : Window
         footer.Children.Add(manifestScroll);
         SetManifest(Array.Empty<InspectionMultipartBuilder.ManifestEntry>());
 
+        // M2: the risk warnings, in the fixed footer.
+        riskFooter = new TextBlock
+        {
+            FontSize = 13,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        footer.Children.Add(riskFooter);
+
         // Actions — left-aligned buttons row
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
         submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6), IsEnabled = false };
@@ -545,6 +570,8 @@ public sealed class InspectionWindow : Window
         grid.Children.Add(tabControl);
         Grid.SetRow(footer, 2);
         grid.Children.Add(footer);
+
+        UpdateRisk();
 
         Content = grid;
         allowedDist.Text = "";
@@ -686,6 +713,57 @@ public sealed class InspectionWindow : Window
     /// D6: Submit stays disabled until a position is resolved - either the
     /// record's own coordinates (SiteCoords) or coordinates typed by hand.
     /// </summary>
+    /// <summary>
+    /// M2: gather the signals that exist and paint the band + reasons in the
+    /// header card and the warnings in the fixed footer.
+    /// </summary>
+    void UpdateRisk()
+    {
+        var stored = store?.GetByConsumerNumber(consumerNumber);
+        var category = stored?.ReasonCategory ?? ReasonCategoriser.Categorise(stored?.ReasonToRevert);
+        var returnedCount = stored?.Status == RecordStatus.Returned ? 1 : 0;
+
+        var installerBlank = string.IsNullOrWhiteSpace(vendorPersonNameBox.Text)
+            || string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text);
+
+        var allDefaultNoRemark = checkAnswers.Count > 0
+            && checkAnswers.Values.All(c => string.IsNullOrWhiteSpace(c.remark.Text));
+
+        var accuracyOutlier = false;
+        if (double.TryParse(manualAcc.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var acc))
+            accuracyOutlier = acc < 4 || acc > 12;
+
+        var input = new ReturnRiskScorer.RiskInput(
+            ReturnedBeforeSameReasonUnchanged: false,
+            UnfixableCategory: category == ReasonCategoriser.Unfixable,
+            ReturnedCount: returnedCount,
+            SmallOrNearIdenticalPhotos: false,
+            InstallerBlank: installerBlank,
+            InstallerCopied: false,
+            SignaturesIdentical: false,
+            AllChecksDefaultNoRemark: allDefaultNoRemark,
+            DistanceOutlier: false,
+            AccuracyOutlier: accuracyOutlier);
+
+        var result = ReturnRiskScorer.Score(input);
+        var label = ReturnRiskScorer.BandLabel(result.Band);
+        if (riskHeader != null)
+        {
+            riskHeader.Text = $"Risk: {label}" + (result.Reasons.Length > 0 ? " - " + string.Join("; ", result.Reasons) : "");
+            riskHeader.Foreground = result.Band == ReturnRiskScorer.Band.LikelyReturned
+                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
+                : result.Band == ReturnRiskScorer.Band.Risky
+                    ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80))
+                    : (Brush)System.Windows.Application.Current.FindResource("Muted");
+        }
+        if (riskFooter != null)
+        {
+            riskFooter.Text = result.Reasons.Length > 0
+                ? "Warnings: " + string.Join("; ", result.Reasons)
+                : "";
+        }
+    }
+
     void UpdateSubmitEnabled()
     {
         if (submitBtn == null) return;
