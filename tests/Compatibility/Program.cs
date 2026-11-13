@@ -1272,6 +1272,23 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
     finally { try { Directory.Delete(dir, true); } catch { } }
 }
+// M5: stale detection compares the record as opened with the fresh one.
+{
+    var raw = new Dictionary<string, JsonElement>();
+    using (var d = JsonDocument.Parse("{\"consumer_number\":\"C1\",\"consumer_name\":\"A\"}"))
+        foreach (var p in d.RootElement.EnumerateObject()) raw[p.Name] = p.Value.Clone();
+    var r1 = new Mskpy.Domain.InspectionRecord("C1", "0", "V", "A", "1", "2", "2026-08-01",
+        null, null, null, "addr", raw);
+    var raw2 = new Dictionary<string, JsonElement>();
+    using (var d = JsonDocument.Parse("{\"consumer_number\":\"C1\",\"consumer_name\":\"B\"}"))
+        foreach (var p in d.RootElement.EnumerateObject()) raw2[p.Name] = p.Value.Clone();
+    var r2 = new Mskpy.Domain.InspectionRecord("C1", "0", "V", "B", "1", "2", "2026-08-01",
+        null, null, null, "addr", raw2);
+    Check(Mskpy.Infrastructure.RecordChangeDetector.Changed(r1, r2),
+        "M5: a changed record is detected as stale");
+    Check(!Mskpy.Infrastructure.RecordChangeDetector.Changed(r1, r1),
+        "M5: an unchanged record is not stale");
+}
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {

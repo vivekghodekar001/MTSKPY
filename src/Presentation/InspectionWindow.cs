@@ -104,6 +104,9 @@ public sealed class InspectionWindow : Window
     bool locationResolved;
     bool submitBusy;
     Button? submitBtn;
+    Button? acknowledgeBtn;
+    bool riskAcknowledged;
+    bool isBlockedOrLikelyReturned;
     readonly System.Threading.Timer signatureDebounceTimer;
 
     static readonly (string Suffix, string Label)[] PhotoSlots =
@@ -536,6 +539,10 @@ public sealed class InspectionWindow : Window
         };
         footer.Children.Add(riskFooter);
 
+        acknowledgeBtn = new Button { Content = "Acknowledge", Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(14, 6, 14, 6), Visibility = Visibility.Collapsed };
+        acknowledgeBtn.Click += (_, _) => { riskAcknowledged = true; UpdateSubmitEnabled(); acknowledgeBtn.Visibility = Visibility.Collapsed; };
+        footer.Children.Add(acknowledgeBtn);
+
         // Actions — left-aligned buttons row
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
         submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6), IsEnabled = false };
@@ -747,21 +754,46 @@ public sealed class InspectionWindow : Window
 
         var result = ReturnRiskScorer.Score(input);
         var label = ReturnRiskScorer.BandLabel(result.Band);
-        if (riskHeader != null)
+        var blocked = stored?.Status == RecordStatus.Blocked;
+        isBlockedOrLikelyReturned = blocked || result.Band == ReturnRiskScorer.Band.LikelyReturned;
+
+        if (blocked)
         {
-            riskHeader.Text = $"Risk: {label}" + (result.Reasons.Length > 0 ? " - " + string.Join("; ", result.Reasons) : "");
-            riskHeader.Foreground = result.Band == ReturnRiskScorer.Band.LikelyReturned
-                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
-                : result.Band == ReturnRiskScorer.Band.Risky
-                    ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80))
-                    : (Brush)System.Windows.Application.Current.FindResource("Muted");
+            if (riskHeader != null)
+            {
+                riskHeader.Text = "Blocked: " + (stored?.BlockedReason ?? "waiting on SDO") + " - Waiting on SDO";
+                riskHeader.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB));
+            }
+            if (riskFooter != null)
+                riskFooter.Text = "Waiting on SDO: " + (stored?.BlockedReason ?? "");
         }
-        if (riskFooter != null)
+        else
         {
-            riskFooter.Text = result.Reasons.Length > 0
-                ? "Warnings: " + string.Join("; ", result.Reasons)
-                : "";
+            if (riskHeader != null)
+            {
+                riskHeader.Text = $"Risk: {label}" + (result.Reasons.Length > 0 ? " - " + string.Join("; ", result.Reasons) : "");
+                riskHeader.Foreground = result.Band == ReturnRiskScorer.Band.LikelyReturned
+                    ? new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
+                    : result.Band == ReturnRiskScorer.Band.Risky
+                        ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80))
+                        : (Brush)System.Windows.Application.Current.FindResource("Muted");
+            }
+            if (riskFooter != null)
+            {
+                riskFooter.Text = result.Reasons.Length > 0
+                    ? "Warnings: " + string.Join("; ", result.Reasons)
+                    : "";
+            }
         }
+
+        if (acknowledgeBtn != null)
+        {
+            acknowledgeBtn.Visibility = isBlockedOrLikelyReturned && !riskAcknowledged
+                ? Visibility.Visible : Visibility.Collapsed;
+            acknowledgeBtn.IsEnabled = !blocked; // blocked records cannot be acknowledged into submitting
+        }
+
+        UpdateSubmitEnabled();
     }
 
     void UpdateSubmitEnabled()
@@ -771,7 +803,7 @@ public sealed class InspectionWindow : Window
             && !string.IsNullOrWhiteSpace(manualLong.Text)
             && double.TryParse(manualLat.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
             && double.TryParse(manualLong.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-        submitBtn.IsEnabled = locationResolved || manualOk;
+        submitBtn.IsEnabled = (locationResolved || manualOk) && (!isBlockedOrLikelyReturned || riskAcknowledged);
     }
 
     /// <summary>
@@ -1270,8 +1302,24 @@ public sealed class InspectionWindow : Window
     async Task Submit()
     {
         if (submitBusy) return;
+        // M5: immediately before sending, re-fetch the detail. If the record
+        // changed on the server, do not send last week's version.
+        try
+        {
+            var fresh = await workflow.DetailAsync(consumerNumber, cpfNo, CancellationToken.None);
+            if (fresh.Ok && fresh.Record != null)
+            {
+                if (RecordChangeDetector.Changed(record, fresh.Record))
+                {
+                    MessageBox.Show(this, "This record changed on the server since you opened it. The form will reload with the latest version.",
+                        "Stale record", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+            }
+        }
+        catch { /* a failed re-fetch must not block a legitimate submit */ }
         // D6: a record with no resolved position cannot be sent.
-        if (submitBtn != null && !submitBtn.IsEnabled)
+        if (submitBtn != null && !locationResolved && string.IsNullOrWhiteSpace(manualLat.Text))
         {
             MessageBox.Show(this, "This survey needs a position: enter the coordinates by hand before submitting.",
                 "Submit", MessageBoxButton.OK, MessageBoxImage.Warning);
