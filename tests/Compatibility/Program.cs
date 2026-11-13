@@ -51,6 +51,61 @@ handler.Body = "{\"status\":\"SUCCESS\",\"token\":\"example-token\",\"vendorId\"
 await client.LoginAsync("sample", "example", "Agency", "SCHEME_MSKVY_2_TOD");
 Check(handler.Url == "https://nvp.mahadiscom.in/vendor-meter-api-1.0-SNAPSHOT/api/v1/login" && handler.SentBody.Contains("\"vendorId\":\"sample\""), "TOD uses its separate recovered login contract");
 client.SignOut(); Check(client.Session == null, "sign out clears session");
+
+// D1: the sign-in names the step it stopped at, and keeps a saved sign-in when
+// the failure was the service rather than the password.
+{
+    static async Task<T?> Capture<T>(Func<Task> action) where T : Exception
+    { try { await action(); return null; } catch (T ex) { return ex; } }
+
+    var trace = new List<string>();
+    Mskpy.Infrastructure.SignInLog.Sink = trace.Add;
+    try
+    {
+        using (var slow = new ApiClient(new SilentHandler(), TimeSpan.FromMilliseconds(150)))
+        {
+            var timeout = await Capture<Mskpy.Infrastructure.SignInException>(() => slow.LoginAsync("sample", "example", "Employee", "SCHEME_MTSKPY"));
+            Check(timeout != null && timeout.Step == "waiting for the reply", "a saved sign-in that gets no answer names the step it stopped at");
+            Check(timeout!.Message.Contains("did not answer within") && !timeout.Message.Contains("task was canceled", StringComparison.OrdinalIgnoreCase),
+                "a sign-in timeout is said in plain words, not as a cancelled task");
+            Check(!timeout.Rejected, "a timeout is not a rejected password, so the saved sign-in is kept");
+            Check(trace.Any(x => x.Contains("POST issued")) && trace.Any(x => x.Contains("no answer within")),
+                "the sign-in log records the POST and then the timeout, by name");
+        }
+
+        trace.Clear();
+        using (var dead = new ApiClient(new DeadHandler()))
+        {
+            var unsent = await Capture<Mskpy.Infrastructure.SignInException>(() => dead.LoginAsync("sample", "example", "Employee", "SCHEME_MTSKPY"));
+            Check(unsent != null && unsent.Step == "sending the sign-in", "a sign-in that cannot be sent names that step");
+            Check(!unsent!.Rejected && trace.Any(x => x.Contains("failed before a reply")), "an unreachable service is logged and is not a refusal");
+        }
+
+        trace.Clear();
+        handler.Status = HttpStatusCode.OK;
+        handler.Body = "{\"hasErrors\":false,\"data\":{\"success\":true,\"user\":{\"loginId\":\"sample\"}}}";
+        using (var ok = new ApiClient(handler))
+        {
+            await ok.LoginAsync("sample", "example", "Employee", "SCHEME_MTSKPY");
+            Check(trace.Any(x => x.Contains("sign-in reply: HTTP 200")), "the reply status is logged with the sign-in");
+
+            trace.Clear();
+            handler.Body = "{\"hasErrors\":false,\"data\":{\"success\":false}}";
+            var refused = await Capture<Mskpy.Infrastructure.SignInException>(() => ok.LoginAsync("sample", "example", "Employee", "SCHEME_MTSKPY"));
+            Check(refused != null && refused.Rejected && refused.Step == "the reply",
+                "a refused password is a rejection, so the saved copy may be forgotten");
+
+            handler.Status = HttpStatusCode.InternalServerError;
+            handler.Body = "{\"message\":\"down\"}";
+            var serverError = await Capture<Mskpy.Infrastructure.SignInException>(() => ok.LoginAsync("sample", "example", "Employee", "SCHEME_MTSKPY"));
+            Check(serverError != null && !serverError.Rejected && serverError.Message.Contains("HTTP 500"),
+                "a service error names the status and is not treated as a refused password");
+        }
+        handler.Status = HttpStatusCode.OK;
+        handler.Body = "{\"hasErrors\":false,\"data\":{\"success\":true,\"user\":{\"loginId\":\"sample\",\"jwt\":\"test-token\"}}}";
+    }
+    finally { Mskpy.Infrastructure.SignInLog.Sink = null; }
+}
 var allCorrect = SurveyRules.InspectionChecks.ToDictionary(x => x.Field, _ => new CheckAnswer("Y", ""));
 Check(SurveyRules.ValidateInspection(new Dictionary<string, CheckAnswer>()).Count == 23, "all 23 unreviewed inspection checks fail validation");
 Check(SurveyRules.ValidateInspection(allCorrect).Count == 0, "individually completed correct checks pass validation");
@@ -1050,6 +1105,23 @@ sealed class FakeHandler : HttpMessageHandler
         Url = request.RequestUri!.ToString(); SentBody = request.Content == null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
         return new HttpResponseMessage(Status) { Content = new StringContent(Body, Encoding.UTF8, "application/json") };
     }
+}
+
+/// <summary>D1: a service that never answers, so the sign-in budget is what ends it.</summary>
+sealed class SilentHandler : HttpMessageHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+        throw new InvalidOperationException("the silent handler should never return");
+    }
+}
+
+/// <summary>D1: a service that cannot be reached at all.</summary>
+sealed class DeadHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        => throw new HttpRequestException("synthetic network failure");
 }
 
 /// <summary>Captures the client-vendorCode header and the body's vendorCode.</summary>

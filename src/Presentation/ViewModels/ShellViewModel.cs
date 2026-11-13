@@ -369,7 +369,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>H1: opens the live inspection form for the selected record.</summary>
     public RelayCommand OpenLiveInspectionCommand { get; }
 
-    async Task LoginAsync(object? _, CancellationToken ct) => await SignInAsync(null, false, ct);
+    async Task LoginAsync(object? _, CancellationToken ct)
+    {
+        // D1: a typed sign-in takes over from the saved one rather than
+        // racing it. There is still only one attempt in flight.
+        CancelAutoSignIn();
+        await SignInAsync(null, false, ct);
+    }
 
     /// <summary>C6: the saved sign-in. The box is on by default.</summary>
     bool staySignedIn = true;
@@ -382,30 +388,81 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>C6: where the encrypted sign-in lives.</summary>
     public CredentialStore Credentials { get; }
 
+    /// <summary>D1: the saved sign-in that is still in flight, so a typed
+    /// sign-in can take over instead of racing it.</summary>
+    CancellationTokenSource? autoSignIn;
+
+    void CancelAutoSignIn()
+    {
+        var running = autoSignIn;
+        if (running == null) return;
+        try { running.Cancel(); } catch (ObjectDisposedException) { /* already finished */ }
+    }
+
     /// <summary>
-    /// C6: sign in at launch from the saved credentials. A rejected password
-    /// is never retried: the officer is asked once, with the username still
-    /// filled in and a neutral message.
+    /// C6/D1: sign in at launch from the saved credentials.
+    ///
+    /// D1 measured the failure: the account service can take over seventy
+    /// seconds to answer a good sign-in, while the app abandoned the request
+    /// after thirty-five - and then said one generic sentence. The saved
+    /// sign-in itself was never the broken part. So this attempt (a) has its
+    /// own longer budget, (b) does not lock the form while it waits, so the
+    /// officer can type the same credentials and take over, (c) says which step
+    /// failed, and (d) keeps the saved sign-in when the failure was the network
+    /// rather than the password. A rejected password is never retried.
     /// </summary>
     public async Task AutoSignInAsync()
     {
-        if (!StaySignedIn) return;
-        var saved = Credentials.Load();
-        if (saved == null) return;
-        Username = saved.Value.Login;
-        await SignInAsync(saved.Value.Password, true, CancellationToken.None);
+        SignInLog.Write("auto sign-in: requested");
+        if (!StaySignedIn) { SignInLog.Write("auto sign-in: skipped (stay signed in is off)"); return; }
+        var loaded = Credentials.LoadWithStep();
+        SignInLog.Write("credential: " + Credentials.Describe(loaded));
+        if (!loaded.Found) return;
+        if (!loaded.Ok)
+        {
+            // The file is present but this Windows account cannot open it:
+            // that is the unprotect step, and it is not recoverable - forget it
+            // and ask once.
+            Credentials.Clear();
+            Username = "";
+            Error = loaded.Step == "unprotect"
+                ? "The saved sign-in could not be decrypted for this Windows account (step: unprotect). Please sign in again."
+                : "The saved sign-in could not be read (step: " + loaded.Step + "). Please sign in again.";
+            Status = "Signed out.";
+            SignInLog.Write("auto sign-in: failed at " + loaded.Step);
+            return;
+        }
+        Username = loaded.Login!;
+        // D1: client ready means the account client and the window that owns
+        // the password input both exist. The POST is only issued after this.
+        SignInLog.Write("client ready (window shown, account client built)");
+        var mine = new CancellationTokenSource();
+        autoSignIn = mine;
+        try { await SignInAsync(loaded.Password, true, mine.Token); }
+        finally
+        {
+            if (ReferenceEquals(autoSignIn, mine)) autoSignIn = null;
+            mine.Dispose();
+        }
     }
 
     async Task SignInAsync(string? passwordOverride, bool automatic, CancellationToken ct)
     {
-        Error = ""; IsBusy = true; Status = "Connecting securely to the account service…"; var version = ++generation;
+        Error = "";
+        // D1: the automatic attempt must not grey out the form - a slow saved
+        // sign-in used to leave the officer with a dead login screen.
+        if (!automatic) IsBusy = true;
+        Status = automatic ? "Using the saved sign-in…" : "Connecting securely to the account service… (this can take a minute)";
+        var version = ++generation;
         try
         {
             var password = passwordOverride ?? secret.ReadAndClear();
+            if (!automatic) SignInLog.Write("sign-in: client ready (typed)");
             var account = await workflow.SignInAsync(new LoginRequest(Username, password, SelectedRole, SelectedScheme.Value), ct);
             ct.ThrowIfCancellationRequested();
             if (version != generation) return;
             profile = account; Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut));
+            SignInLog.Write("sign-in: signed in as " + account.LoginId);
             // C6: keep the sign-in so the next launch does not need it typed.
             if (StaySignedIn)
             {
@@ -429,20 +486,33 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             StartHarvester();
             Status = "Signed in.";
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; } }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            SignInLog.Write("sign-in: cancelled");
+            if (version == generation) { workflow.SignOut(); Status = "Sign-in cancelled."; }
+        }
         catch (Exception ex)
         {
             if (version != generation) return;
             workflow.SignOut();
-            // C6: a saved sign-in that no longer works is said plainly, and
-            // never retried.
-            Error = automatic
-                ? "The saved sign-in did not work. Please sign in again."
-                : (ex.Message.Length > 0 ? ex.Message : "The sign-in did not work.");
+            // D1: every failure names the step it stopped at and says the same
+            // thing every time it happens. There is no single generic line.
+            var step = (ex as SignInException)?.Step ?? "sign-in";
+            var reason = ex switch
+            {
+                SignInException => ex.Message,
+                HttpRequestException => "The account service could not be reached (step: the connection): " + ex.Message,
+                _ => ex.Message.Length > 0 ? ex.Message : "The sign-in did not complete (step: " + step + ")."
+            };
+            SignInLog.Write($"sign-in: failed at {step} - {ex.GetType().Name}: {ex.Message}");
+            Error = automatic ? "The saved sign-in did not complete (" + step + "). " + reason : reason;
             Status = automatic ? "Signed out." : "Sign-in failed.";
-            if (automatic) Credentials.Clear();
+            // A refusal is about these credentials, so the saved copy is no
+            // use and is forgotten. A timeout or an unreachable host is not:
+            // keeping the file is what makes the next launch work.
+            if (automatic && (ex as SignInException)?.Rejected == true) Credentials.Clear();
         }
-        finally { if (version == generation) IsBusy = false; }
+        finally { if (!automatic && version == generation) IsBusy = false; }
     }
     async Task OpenModuleAsync(object? value, CancellationToken ct)
     {
@@ -663,6 +733,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     void EndSession()
     {
         _refreshTimer?.Dispose(); _refreshTimer = null;
+        CancelAutoSignIn();
         CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Home"); IsBusy = false;
         harvester?.Dispose(); harvester = null;
         // C6: signing out forgets the saved sign-in, so the button finally

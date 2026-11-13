@@ -6,6 +6,10 @@ using Mskpy.Presentation.ViewModels;
 
 var passes = 0;
 void Check(bool ok, string label) { if (!ok) throw new Exception(label); passes++; Console.WriteLine("PASS " + label); }
+// D1: the sign-in log is captured in memory, so a suite never writes into the
+// live profile and can assert the step names it produced.
+var signInSteps = new List<string>();
+Mskpy.Infrastructure.SignInLog.Sink = signInSteps.Add;
 var gateway = new FakeGateway(); var secrets = new FakeSecrets(); var desktop = new FakeDesktop();
 var workflow = new ClientWorkflow(gateway);
 // A3: the list is served from the store, so the test gets its own seeded store
@@ -130,21 +134,82 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     try { Directory.Delete(indexDir, true); } catch { }
 }
 
-// C6: the saved sign-in is used once, and a rejected password is not retried.
+// C6/D1: the saved sign-in is used once, and a rejected password is not retried.
+// D1 measured the real failure on this machine: the credential file decrypts,
+// the account service accepts it, but a sign-in can take over seventy seconds
+// while the app gave up at thirty-five - in both the saved and the typed path.
+// So the tests now pin the steps, the messages, and what survives a failure.
 {
     var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
     var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
     credentials.Save("sample", "a-wrong-password");
-    gateway.FailSignIn = true;
+    gateway.SignInFailure = new Mskpy.Infrastructure.SignInException("the reply",
+        "The service declined the sign-in (step: the reply).", rejected: true);
     var loginCallsBefore = gateway.LoginCalls;
     using var saved = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
     await saved.AutoSignInAsync();
-    Check(!saved.IsSignedIn, "a rejected saved sign-in does not sign in");
-    Check(saved.Username == "sample", "the username is still filled in for the officer");
-    Check(saved.Error.Contains("did not work"), "the message is a plain one");
-    Check(gateway.LoginCalls == loginCallsBefore + 1, "the rejected password is tried once and not again");
-    Check(credentials.Load() == null, "the saved sign-in is forgotten");
-    gateway.FailSignIn = false;
+    Check(!saved.IsSignedIn, "D1: a rejected saved sign-in does not sign in");
+    Check(saved.Username == "sample", "D1: the username is still filled in for the officer");
+    Check(saved.Error.Contains("the reply") && saved.Error.Contains("declined"), "D1: the saved failure names the step, not one generic sentence");
+    Check(gateway.LoginCalls == loginCallsBefore + 1, "D1: the rejected password is tried once and not again");
+    Check(credentials.Load() == null, "D1: a rejected saved sign-in is forgotten");
+    gateway.SignInFailure = null;
+}
+
+// D1: a timeout is not a rejection. The file stays, the officer is told which
+// step stopped, and the same credentials typed by hand sign in.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    credentials.Save("sample", "synthetic-password");
+    gateway.SignInFailure = new Mskpy.Infrastructure.SignInException("waiting for the reply",
+        "The account service did not answer within 120 seconds (step: waiting for the reply). Please try again.");
+    using var slow = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    await slow.AutoSignInAsync();
+    Check(!slow.IsSignedIn && slow.Error.Contains("waiting for the reply"), "D1: a saved sign-in that timed out says which step stopped");
+    Check(slow.Username == "sample", "D1: the username survives a timeout");
+    Check(credentials.Load() is not null, "D1: a timeout keeps the saved sign-in for the next launch");
+    Check(!slow.IsBusy && slow.Login.CanExecute(null), "D1: the form is ready for the same credentials after a timeout");
+    Check(signInSteps.Any(l => l.Contains("client ready")) && signInSteps.Any(l => l.Contains("failed at waiting for the reply")),
+        "D1: login.log names each step and the step that stopped");
+    gateway.SignInFailure = null;
+    await slow.Login.ExecuteAsync();
+    Check(slow.IsSignedIn, "D1: the same credentials typed by hand sign in - the saved sign-in was not the broken part");
+}
+
+// D1: a saved file this Windows account cannot open is named at the unprotect
+// step and forgotten; it cannot be retried into working.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    File.WriteAllBytes(credFile, [1, 2, 3, 4, 5, 6, 7, 8]);
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    var loaded = credentials.LoadWithStep();
+    Check(loaded.Found && !loaded.Ok && loaded.Step == "unprotect", "D1: an unreadable saved sign-in reports the unprotect step");
+    using var broken = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    await broken.AutoSignInAsync();
+    Check(!broken.IsSignedIn && broken.Error.Contains("unprotect"), "D1: the officer is told the file could not be decrypted, not that the password is wrong");
+    Check(!File.Exists(credFile), "D1: an unreadable saved sign-in is forgotten");
+}
+
+// D1: the saved sign-in waits beside the form, not in front of it. A typed
+// sign-in takes over, and only one attempt ends up signed in.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    credentials.Save("sample", "synthetic-password");
+    var before = gateway.LoginCalls;
+    gateway.PendingLogin = new TaskCompletionSource<AccountProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var open = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    var automatic = open.AutoSignInAsync();
+    Check(!open.IsBusy && open.Login.CanExecute(null), "D1: the form stays usable while the saved sign-in is waiting");
+    open.Username = "sample";
+    var typed = open.Login.ExecuteAsync();
+    Check(open.IsBusy, "D1: a typed sign-in owns the busy state");
+    gateway.PendingLogin.TrySetResult(new AccountProfile("sample", "Employee", "ALL", []));
+    gateway.PendingLogin = null;
+    await typed;
+    await automatic;
+    Check(open.IsSignedIn && gateway.LoginCalls == before + 2, "D1: the typed sign-in takes over and signs in");
 }
 Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
 
@@ -161,9 +226,17 @@ sealed class FakeGateway : IClientGateway
     public AccountProfile? Profile { get; private set; }
     public string Diagnostics => "Response fields only";
     public TaskCompletionSource<IReadOnlyList<ApplicationDocument>>? Pending;
+    public TaskCompletionSource<AccountProfile>? PendingLogin;
     public IReadOnlyList<ApplicationDocument> Records = Enumerable.Range(0, 120).Select(i => new ApplicationDocument("sample-" + i, "Record " + i, [new DisplayField("Name", "Record " + i)], "{}")).ToArray();
-    public bool FailSignIn;
-    public Task<AccountProfile> LoginAsync(LoginRequest request, CancellationToken ct) { LoginCalls++; if (FailSignIn) throw new InvalidOperationException("The service rejected the sign-in."); Profile = new(request.Username, request.Role, request.Scheme, []); return Task.FromResult(Profile); }
+    public Exception? SignInFailure;
+    public Task<AccountProfile> LoginAsync(LoginRequest request, CancellationToken ct)
+    {
+        LoginCalls++;
+        if (PendingLogin != null) return PendingLogin.Task;
+        if (SignInFailure != null) return Task.FromException<AccountProfile>(SignInFailure);
+        Profile = new(request.Username, request.Role, request.Scheme, []);
+        return Task.FromResult(Profile);
+    }
     public Task<IReadOnlyList<ApplicationDocument>> GetApplicationsAsync(string module, CancellationToken ct) { LoadCalls++; if (Expire) { SignOut(); throw new SessionExpiredException(); } return Pending?.Task ?? Task.FromResult(Records); }
     public void SignOut() => Profile = null;
 }

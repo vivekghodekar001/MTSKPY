@@ -140,13 +140,19 @@ public partial class App : System.Windows.Application
         MainWindow = window;
         window.Show();
 
-        // C6: sign in at launch from the saved credentials. A rejected
-        // password is never retried - the officer is asked once.
+        // C6/D1: sign in at launch from the saved credentials, in the
+        // background. The window is already usable: the automatic attempt must
+        // not hold the process (or the login form) hostage while the account
+        // service takes its time. A rejected password is never retried.
         if (shell.StaySignedIn)
-        {
-            try { await shell.AutoSignInAsync(); }
-            catch (Exception ex) { LogStartup("the saved sign-in could not be used: " + ex.Message); }
-        }
+            _ = AutoSignInInBackgroundAsync(shell);
+    }
+
+    /// <summary>D1: the saved sign-in runs beside the window, not in front of it.</summary>
+    static async Task AutoSignInInBackgroundAsync(ShellViewModel shell)
+    {
+        try { await shell.AutoSignInAsync(); }
+        catch (Exception ex) { LogStartup("the saved sign-in could not be used: " + ex.Message); }
     }
 
     protected override void OnExit(ExitEventArgs e) { shell?.Dispose(); gateway?.Dispose(); base.OnExit(e); }

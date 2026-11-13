@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Mskpy.Infrastructure;
 
 namespace Mskpy.Windows;
 
@@ -18,10 +19,25 @@ public sealed class ApiClient : IDisposable
     public UserSession? Session { get; private set; }
     public string LoginResponseShape { get; private set; } = "No login response received.";
     public string ServiceTokenLocation { get; private set; } = "Not supplied";
-    public ApiClient(HttpMessageHandler? handler = null)
+
+    /// <summary>
+    /// D1: the account service has been measured at over seventy seconds for a
+    /// perfectly good sign-in. Thirty-five seconds - the read budget - turned
+    /// that into a cancelled task and one generic message. The sign-in gets its
+    /// own, longer budget, and every read keeps the old one.
+    /// </summary>
+    public static readonly TimeSpan DefaultLoginBudget = TimeSpan.FromSeconds(120);
+    public static readonly TimeSpan ReadBudget = TimeSpan.FromSeconds(35);
+
+    readonly TimeSpan loginBudget;
+
+    public ApiClient(HttpMessageHandler? handler = null, TimeSpan? loginTimeout = null)
     {
+        loginBudget = loginTimeout ?? DefaultLoginBudget;
+        // The per-call budgets below are the only timeouts: the client itself
+        // must not fire first, or a long sign-in is still a cancelled task.
         http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
-        { Timeout = TimeSpan.FromSeconds(35), MaxResponseContentBufferSize = 32 * 1024 * 1024 };
+        { Timeout = Timeout.InfiniteTimeSpan, MaxResponseContentBufferSize = 32 * 1024 * 1024 };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("MSKPY-Windows-Reconstruction/0.1");
     }
 
@@ -42,22 +58,38 @@ public sealed class ApiClient : IDisposable
             if (role == "Agency") fields["scheme"] = scheme;
             request.Content = new FormUrlEncodedContent(fields);
         }
-        var root = await SendAsync(request, cancellationToken);
+        // D1: the password is never logged; the login id and the endpoint are,
+        // so two attempts can be compared line by line.
+        SignInLog.Write($"POST issued: {request.RequestUri!.PathAndQuery} (role {role}{(tod ? ", scheme " + scheme : "")}) loginId {username}");
+        var root = await SendAsync(request, cancellationToken, loginBudget, "sign-in reply");
         LoginResponseShape = "Response fields: " + Keys(root);
         if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var shapeData))
             LoginResponseShape += "\nData fields: " + Keys(shapeData);
         if (tod)
         {
             if (String(root, "status") != "SUCCESS" || string.IsNullOrWhiteSpace(String(root, "token")))
-                throw new InvalidOperationException("Login was not accepted. Check your account type, scheme, username and password.");
+            {
+                SignInLog.Write("sign-in reply: the vendor sign-in was not accepted");
+                throw new SignInException("the reply",
+                    "The service declined the sign-in (step: the reply). Check the account type, scheme, username and password.", rejected: true);
+            }
             ServiceTokenLocation = "response.token";
             Session = new UserSession(username, role, scheme, root.Clone(), root.TryGetProperty("meterData", out var meters) ? meters.Clone() : null, String(root, "token"));
             return;
         }
         if (root.ValueKind != JsonValueKind.Object || IsTrue(root, "hasErrors") || String(root, "status") == "FAIL"
-            || !root.TryGetProperty("data", out var data) || !IsTrue(data, "success")
-            || !data.TryGetProperty("user", out var user) || user.ValueKind != JsonValueKind.Object)
-            throw new InvalidOperationException("Login was not accepted. Check your account type, scheme, username and password.");
+            || !root.TryGetProperty("data", out var data) || !IsTrue(data, "success"))
+        {
+            SignInLog.Write("sign-in reply: the service did not accept the credentials");
+            throw new SignInException("the reply",
+                "The service declined the sign-in (step: the reply). Check the account type, scheme, username and password.", rejected: true);
+        }
+        if (!data.TryGetProperty("user", out var user) || user.ValueKind != JsonValueKind.Object)
+        {
+            SignInLog.Write("sign-in reply: no user object in the reply");
+            throw new SignInException("the reply",
+                "The reply did not carry the signed-in user (step: reading the reply). Please try again.");
+        }
         LoginResponseShape += "\nUser fields: " + Keys(user);
         var issuedToken = "";
         foreach (var candidate in new[] { (Value: user, Path: "data.user"), (Value: data, Path: "data"), (Value: root, Path: "response") })
@@ -119,7 +151,7 @@ public sealed class ApiClient : IDisposable
             if (!string.IsNullOrWhiteSpace(vendor)) request.Headers.Add("client-vendorCode", vendor);
             request.Headers.Add("client-device", "Windows Desktop");
         }
-        var root = await SendAsync(request, cancellationToken);
+        var root = await SendAsync(request, cancellationToken, ReadBudget);
         if (IsTrue(root, "hasErrors") || String(root, "status") == "FAIL") throw new InvalidOperationException("The service could not load these applications.");
         JsonElement records;
         if (module == "milestones")
@@ -136,9 +168,32 @@ public sealed class ApiClient : IDisposable
         return records.EnumerateArray().Select(x => x.Clone()).ToArray();
     }
 
-    private async Task<JsonElement> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    private async Task<JsonElement> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken, TimeSpan budget, string? phase = null)
     {
-        var response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+        // D1: a per-call budget, so the sign-in can wait several times longer
+        // than a list read without weakening either.
+        using var budgetSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budgetSource.CancelAfter(budget);
+        HttpResponseMessage response;
+        try
+        {
+            response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, budgetSource.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A read keeps the old shape (the shell says "timed out"); the
+            // sign-in says which step it stopped at, in plain words.
+            if (phase == null) throw;
+            SignInLog.Write($"{phase}: no answer within {budget.TotalSeconds:0} s (timeout)");
+            throw new SignInException("waiting for the reply",
+                $"The account service did not answer within {budget.TotalSeconds:0} seconds (step: waiting for the reply). Please try again.");
+        }
+        catch (HttpRequestException ex) when (phase != null)
+        {
+            SignInLog.Write($"{phase}: the request failed before a reply ({ex.Message})");
+            throw new SignInException("sending the sign-in",
+                "The sign-in could not be sent to the account service (step: sending the POST): " + ex.Message);
+        }
         // At most one bounded retry for an idempotent read. Never replay login or submissions.
         if (request.Method == HttpMethod.Get && response.StatusCode is HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout)
         {
@@ -146,20 +201,41 @@ public sealed class ApiClient : IDisposable
             if (delay <= TimeSpan.FromSeconds(3))
             {
                 response.Dispose();
-                await Task.Delay(delay < TimeSpan.Zero ? TimeSpan.Zero : delay, cancellationToken);
+                await Task.Delay(delay < TimeSpan.Zero ? TimeSpan.Zero : delay, budgetSource.Token);
                 using var retry = new HttpRequestMessage(HttpMethod.Get, request.RequestUri) { Version = request.Version, VersionPolicy = request.VersionPolicy };
                 foreach (var header in request.Headers) retry.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                response = await http.SendAsync(retry, HttpCompletionOption.ResponseContentRead, cancellationToken);
+                response = await http.SendAsync(retry, HttpCompletionOption.ResponseContentRead, budgetSource.Token);
             }
         }
         using var ownedResponse = response;
+        if (phase != null) SignInLog.Write($"{phase}: HTTP {(int)response.StatusCode}");
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if ((int)response.StatusCode is >= 300 and < 400) throw new InvalidOperationException($"The service redirected this request. Body: {body}");
+        if ((int)response.StatusCode is >= 300 and < 400)
+        {
+            if (phase != null)
+                throw new SignInException("the reply", $"The account service redirected the sign-in (step: the reply, HTTP {(int)response.StatusCode}).");
+            throw new InvalidOperationException($"The service redirected this request. Body: {body}");
+        }
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            if (phase != null)
+                throw new SignInException("the reply",
+                    $"The account service refused the sign-in (step: the reply, HTTP {(int)response.StatusCode}). Check the account and its access permissions.", rejected: true);
             throw new ApiAuthorizationException(response.StatusCode);
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"The service returned HTTP {(int)response.StatusCode}. Body: {body}");
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            if (phase != null)
+                throw new SignInException("the reply", $"The account service answered HTTP {(int)response.StatusCode} (step: the reply). Please try again.");
+            throw new InvalidOperationException($"The service returned HTTP {(int)response.StatusCode}. Body: {body}");
+        }
         try { using var doc = JsonDocument.Parse(body); return doc.RootElement.Clone(); }
-        catch (JsonException) { throw new InvalidOperationException("The service response was not in the expected format. Windows compatibility remains unverified."); }
+        catch (JsonException)
+        {
+            if (phase != null)
+                throw new SignInException("the reply", "The account service answered with something that was not JSON (step: reading the reply).");
+            throw new InvalidOperationException("The service response was not in the expected format. Windows compatibility remains unverified.");
+        }
     }
 
     public static string String(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var field)

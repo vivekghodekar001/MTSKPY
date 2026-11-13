@@ -32,25 +32,50 @@ public sealed class CredentialStore
 
     public string FilePath => path;
 
+    /// <summary>
+    /// D1: what was found when the saved sign-in was read, and at which step it
+    /// stopped. <see cref="Step"/> is one of "file read", "unprotect" or
+    /// "format"; the caller can say that word to the officer instead of one
+    /// generic sentence.
+    /// </summary>
+    public sealed record CredentialLoad(string? Login, string? Password, bool Found, string Step, string? Detail)
+    {
+        public bool Ok => Login != null && Password != null;
+    }
+
+    /// <summary>Read the saved sign-in, with the step named either way.</summary>
+    public CredentialLoad LoadWithStep()
+    {
+        string blobText;
+        if (!File.Exists(path)) return new(null, null, false, "file read", "no saved sign-in");
+        byte[] blob;
+        try { blob = File.ReadAllBytes(path); }
+        catch (Exception ex) { return new(null, null, true, "file read", ex.Message); }
+        var plain = Unprotect(blob, out var win32);
+        if (plain == null)
+            return new(null, null, true, "unprotect", win32 == 0 ? "the cipher could not be opened" : "Windows error " + win32);
+        try { blobText = Encoding.UTF8.GetString(plain); }
+        catch (Exception ex) { return new(null, null, true, "format", ex.Message); }
+        var split = blobText.IndexOf('\n');
+        if (split <= 0) return new(null, null, true, "format", "the stored text has no separator");
+        return new(blobText.Substring(0, split), blobText.Substring(split + 1), true, "read", null);
+    }
+
     /// <summary>Read the saved sign-in, or null when there is none to read.</summary>
     public (string Login, string Password)? Load()
     {
-        try
-        {
-            if (!File.Exists(path)) return null;
-            var blob = File.ReadAllBytes(path);
-            var plain = Unprotect(blob);
-            if (plain == null) return null;
-            var text = Encoding.UTF8.GetString(plain);
-            var split = text.IndexOf('\n');
-            if (split <= 0) return null;
-            return (text.Substring(0, split), text.Substring(split + 1));
-        }
-        catch
-        {
-            // A file that cannot be read is no saved sign-in.
-            return null;
-        }
+        var loaded = LoadWithStep();
+        return loaded.Ok ? (loaded.Login!, loaded.Password!) : null;
+    }
+
+    /// <summary>Why the last read failed, for a diagnostic line. Never the password.</summary>
+    public string Describe(CredentialLoad loaded)
+    {
+        if (!loaded.Found) return "no saved sign-in (" + loaded.Detail + ")";
+        string size;
+        try { size = new FileInfo(path).Length + " bytes"; } catch { size = "unknown size"; }
+        var step = loaded.Step == "read" ? "file read and unprotect ok" : loaded.Step;
+        return $"file {path} ({size}), {step}" + (loaded.Detail == null ? "" : " - " + loaded.Detail);
     }
 
     /// <summary>Save the sign-in, encrypted for this Windows user.</summary>
@@ -110,14 +135,18 @@ public sealed class CredentialStore
         finally { if (input.pbData != IntPtr.Zero) Marshal.FreeHGlobal(input.pbData); }
     }
 
-    static byte[]? Unprotect(byte[] encrypted)
+    static byte[]? Unprotect(byte[] encrypted, out int win32)
     {
+        win32 = 0;
         var input = new DataBlob { cbData = encrypted.Length, pbData = Marshal.AllocHGlobal(encrypted.Length) };
         try
         {
             Marshal.Copy(encrypted, 0, input.pbData, encrypted.Length);
             if (!CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptprotectUiForbidden, out var output))
+            {
+                win32 = Marshal.GetLastWin32Error();
                 return null;
+            }
             try
             {
                 var result = new byte[output.cbData];
