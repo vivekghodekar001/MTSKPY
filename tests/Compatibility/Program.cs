@@ -1238,6 +1238,40 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
     finally { try { Directory.Delete(dir, true); } catch { } }
 }
+// M4: a blocked row is re-probed; when the probe says it is actionable it
+// returns to pending marked "now actionable".
+{
+    var dir = Path.Combine(Path.GetTempPath(), $"m4-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var db = Path.Combine(dir, "store.db");
+        var indexFile = Path.Combine(dir, "index.tsv");
+        File.WriteAllText(indexFile, "MTX\t12345678\n");
+        using (var seed = new Mskpy.Infrastructure.InspectionStore(db))
+        {
+            seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+                ConsumerNumber: "MBLK2", CpfNo: "12345678", VendorCode: "V", ConsumerName: "x",
+                Latitude: "1", Longitude: "2", InstallDate: "2026-08-01",
+                ReasonToRevert: null, SurveyDurationMinutes: null,
+                IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.Blocked,
+                LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+                SubmittedDataPath: null, PhotoPaths: null, SignPaths: null,
+                BlockedReason: "state", BlockedAt: DateTime.UtcNow));
+        }
+        using (var store = new Mskpy.Infrastructure.InspectionStore(db))
+        using (var harvester = new Mskpy.Infrastructure.InspectionHarvester(
+            store, indexFile, "http://127.0.0.1:1"))
+        {
+            await harvester.ReprobeBlockedAsync(
+                (rec, ct) => Task.FromResult(true), CancellationToken.None);
+            var rows = store.GetAll(status: Mskpy.Infrastructure.RecordStatus.New);
+            Check(rows.Count == 1 && rows[0].LastServerMessage == "now actionable",
+                "M4: an actionable re-probe returns the row to pending marked now actionable");
+        }
+    }
+    finally { try { Directory.Delete(dir, true); } catch { } }
+}
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {

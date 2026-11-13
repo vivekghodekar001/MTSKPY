@@ -272,6 +272,8 @@ public sealed class InspectionHarvester : IDisposable
                 var took = lastCycleCompletedAt.Value - cycleStartedAt;
                 LogEvent($"cycle {cycleNumber} complete: walked {currentCpfIndex} cpfs, seen={RecordsSeen}, added={RecordsAdded}, duplicates={DuplicateRecords}, rateLimits={RateLimitHits}, storeErrors={StoreErrors} in {FormatDuration(took)}");
                 OnStatusChanged?.Invoke($"Harvester cycle {cycleNumber} complete - next cycle in {ReWalkIdle.TotalMinutes:F0} min.");
+            // M4: re-probe blocked records once per pass.
+            _ = ReprobeBlockedAsync();
                 if (VacuumOnCycleComplete)
                 {
                     // E2: the vacuum runs on a background thread, off the store
@@ -617,6 +619,49 @@ public sealed class InspectionHarvester : IDisposable
 
     private static string? TryGetString(JsonElement el, string key) =>
         el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>
+    /// M4: re-probe blocked records with a detail GET. When the survey has
+    /// closed (the record no longer appears in the officer's pending list),
+    /// the row returns to pending marked "now actionable". Auto-submit stays
+    /// off; the officer decides.
+    /// </summary>
+    public async Task ReprobeBlockedAsync(CancellationToken ct = default) =>
+        await ReprobeBlockedAsync(DefaultProbe, ct);
+
+    public async Task ReprobeBlockedAsync(Func<StoredInspectionRecord, CancellationToken, Task<bool>> probe, CancellationToken ct = default)
+    {
+        if (store == null) return;
+        List<StoredInspectionRecord> blocked;
+        try { blocked = store.GetAll(status: RecordStatus.Blocked); }
+        catch { return; }
+        foreach (var rec in blocked)
+        {
+            if (ct.IsCancellationRequested) return;
+            try
+            {
+                bool actionable = await probe(rec, ct);
+                if (actionable)
+                {
+                    store.SetStatus(rec.ConsumerNumber, RecordStatus.New,
+                        lastServerMessage: "now actionable");
+                }
+            }
+            catch { /* a failed re-probe leaves the row blocked */ }
+        }
+    }
+
+    async Task<bool> DefaultProbe(StoredInspectionRecord rec, CancellationToken ct)
+    {
+        var fetch = await FetchListAsync(rec.CpfNo, "reprobe");
+        if (fetch == null || fetch.RateLimited) return false;
+        bool stillPending = (fetch.Rows ?? new List<JsonElement>()).Any(r =>
+            r.ValueKind == JsonValueKind.Object &&
+            r.TryGetProperty("consumer_number", out var cn) &&
+            cn.ValueKind == JsonValueKind.String &&
+            string.Equals(cn.GetString(), rec.ConsumerNumber, StringComparison.Ordinal));
+        return !stillPending;
+    }
 
     public void Dispose()
     {
