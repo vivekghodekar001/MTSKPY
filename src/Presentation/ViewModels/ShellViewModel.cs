@@ -294,6 +294,21 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>H3: every record the store holds, for the statewide chip.</summary>
     public int AllRecordCount => store?.Count() ?? loaded.Count;
 
+    /// <summary>M6: return rate across the whole store, for the list header.</summary>
+    public string ReturnRateHeader
+    {
+        get
+        {
+            if (store == null) return "";
+            var rates = store.ReturnRatesByOfficer();
+            if (rates.Count == 0) return "";
+            var total = rates.Values.Sum(v => v.Total);
+            var returned = rates.Values.Sum(v => v.Returned);
+            if (total == 0) return "";
+            return $"Return rate: {100.0 * returned / total:F1}% ({returned}/{total})";
+        }
+    }
+
     /// <summary>H5: the stale-index warning shown in the list header.</summary>
     public string StaleIndexWarning =>
         $"Index is stale ({IndexAge}) - new consumers may be missing";
@@ -814,6 +829,21 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Fields.Add(new("Cpfs probed", ProbedCount.ToString("N0")));
             Fields.Add(new("Cpfs discovered", DiscoveredCount.ToString("N0")));
             Fields.Add(new("Entries imported", ImportedCount.ToString("N0")));
+            // M6: return rates from the store.
+            if (store != null)
+            {
+                var byOfficer = store.ReturnRatesByOfficer();
+                var byCategory = store.ReturnRatesByCategory();
+                var totalOfficer = byOfficer.Values.Sum(v => v.Total);
+                var returnedOfficer = byOfficer.Values.Sum(v => v.Returned);
+                Fields.Add(new("Return rate (all officers)",
+                    totalOfficer == 0 ? "n/a" : $"{100.0 * returnedOfficer / totalOfficer:F1}% ({returnedOfficer}/{totalOfficer})"));
+                foreach (var kv in byCategory.OrderByDescending(x => x.Value.Returned))
+                {
+                    var (t, r) = kv.Value;
+                    Fields.Add(new($"Return rate - {kv.Key}", t == 0 ? "n/a" : $"{100.0 * r / t:F1}% ({r}/{t})"));
+                }
+            }
             // J7: the walk's own state - a stopped walk must be visible.
             Fields.Add(new("Harvest state", HarvesterState));
             Fields.Add(new("Manual login id", manualLoginId));

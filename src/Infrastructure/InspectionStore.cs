@@ -298,6 +298,62 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
+    public Dictionary<string, (int Total, int Returned)> ReturnRatesByOfficer()
+    {
+        var result = new Dictionary<string, (int, int)>(StringComparer.Ordinal);
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT cc.cpf_no,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN r.status = 4 THEN 1 ELSE 0 END) AS returned
+                FROM record_cpfs cc
+                JOIN inspection_records r ON r.consumer_number = cc.consumer_number
+                GROUP BY cc.cpf_no;
+            ";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var cpf = r.GetString(0);
+                var total = r.GetInt32(1);
+                var returned = r.IsDBNull(2) ? 0 : r.GetInt32(2);
+                result[cpf] = (total, returned);
+            }
+            return result;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    public Dictionary<string, (int Total, int Returned)> ReturnRatesByCategory()
+    {
+        var result = new Dictionary<string, (int, int)>(StringComparer.Ordinal);
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT COALESCE(reason_category, 'other'),
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN status = 4 THEN 1 ELSE 0 END) AS returned
+                FROM inspection_records
+                WHERE reason_to_revert IS NOT NULL AND TRIM(reason_to_revert) <> ''
+                GROUP BY COALESCE(reason_category, 'other');
+            ";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var cat = r.GetString(0);
+                var total = r.GetInt32(1);
+                var returned = r.IsDBNull(2) ? 0 : r.GetInt32(2);
+                result[cat] = (total, returned);
+            }
+            return result;
+        }
+        finally { dbLock.Release(); }
+    }
+
     public int Upsert(StoredInspectionRecord record, bool preserveStatus = false)
     {
         dbLock.Wait();
