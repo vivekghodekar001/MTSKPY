@@ -100,6 +100,8 @@ public sealed class InspectionWindow : Window
     StackPanel? manualRows;
 
     bool submitBusy;
+    Button? submitBtn;
+    bool locationResolved;
     readonly System.Threading.Timer signatureDebounceTimer;
 
     static readonly (string Suffix, string Label)[] PhotoSlots =
@@ -438,6 +440,9 @@ public sealed class InspectionWindow : Window
         // C4: the manual boxes live behind a link and stay out of the way
         // until the officer needs them.
         manualRows = new StackPanel { Visibility = Visibility.Collapsed };
+        manualLat.TextChanged += (_, _) => UpdateSubmitEnabled();
+        manualLong.TextChanged += (_, _) => UpdateSubmitEnabled();
+        manualAcc.TextChanged += (_, _) => UpdateSubmitEnabled();
         manualRows.Children.Add(CreateFieldRow("Manual latitude", manualLat, clearLat));
         manualRows.Children.Add(CreateFieldRow("Manual longitude", manualLong, clearLong));
         manualRows.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
@@ -470,6 +475,11 @@ public sealed class InspectionWindow : Window
         locationBox.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         locationBox.Text = "Not resolved yet. A submission is made from the customer's own site; the recorded coordinates are jittered a few metres.";
         locationCard.Children.Add(locationBox);
+        // D6: the resolved pair, its source and the distance are shown before
+        // the form is filled, so a wrong registered site is caught up front.
+        // A record with no coordinates resolves to "Manual" and keeps Submit
+        // disabled until the officer types them.
+        _ = ResolveLocation();
         rightPanel.Children.Add(locationCard);
 
         Grid.SetColumn(rightPanel, 1);
@@ -503,7 +513,7 @@ public sealed class InspectionWindow : Window
 
         // Actions — left-aligned buttons row
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
-        var submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6) };
+        submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6), IsEnabled = false };
         submitBtn.Click += async (_, _) => await Submit();
         actions.Children.Add(submitBtn);
         var verifyBtn = new Button { Content = "Verify (re-read)", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6) };
@@ -651,7 +661,9 @@ public sealed class InspectionWindow : Window
     {
         var source = loc.Source == LocationSource.SiteCoords
             ? $"SiteCoords (installation ±{(loc.JitterMetres.HasValue ? loc.JitterMetres.Value.ToString("0", CultureInfo.InvariantCulture) : "0")} m)"
-            : loc.Source.ToString();
+            : loc.Source == LocationSource.None
+                ? "Manual"
+                : loc.Source.ToString();
         return $"Source: {source}  ·  Lat={loc.Lat}  ·  Long={loc.Long}  ·  " +
             $"Accuracy={(string.IsNullOrEmpty(loc.Accuracy) ? "0" : loc.Accuracy)}  ·  Mocked={loc.Mocked}  ·  " +
             $"Distance from installation={(distance.HasValue ? Math.Round(distance.Value).ToString("0", CultureInfo.InvariantCulture) : "n/a")} m  ·  " +
@@ -665,7 +677,23 @@ public sealed class InspectionWindow : Window
             Empty(manualLat.Text), Empty(manualLong.Text), Empty(manualAcc.Text),
             record.Latitude, record.Longitude, CancellationToken.None);
         locationBox.Text = DescribeLocation(loc, DistanceToInstall(loc.Lat, loc.Long));
+        locationResolved = loc.HasCoords;
+        UpdateSubmitEnabled();
         SetStatus("Location resolved: " + loc.Source);
+    }
+
+    /// <summary>
+    /// D6: Submit stays disabled until a position is resolved - either the
+    /// record's own coordinates (SiteCoords) or coordinates typed by hand.
+    /// </summary>
+    void UpdateSubmitEnabled()
+    {
+        if (submitBtn == null) return;
+        var manualOk = !string.IsNullOrWhiteSpace(manualLat.Text)
+            && !string.IsNullOrWhiteSpace(manualLong.Text)
+            && double.TryParse(manualLat.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
+            && double.TryParse(manualLong.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+        submitBtn.IsEnabled = locationResolved || manualOk;
     }
 
     /// <summary>
@@ -1164,6 +1192,13 @@ public sealed class InspectionWindow : Window
     async Task Submit()
     {
         if (submitBusy) return;
+        // D6: a record with no resolved position cannot be sent.
+        if (submitBtn != null && !submitBtn.IsEnabled)
+        {
+            MessageBox.Show(this, "This survey needs a position: enter the coordinates by hand before submitting.",
+                "Submit", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
         submitBusy = true;
         // P3: stop harvesting for the duration of the upload.
         harvester?.Pause();
