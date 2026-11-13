@@ -1203,6 +1203,41 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     Check(veryHigh.Band == Mskpy.Infrastructure.ReturnRiskScorer.Band.LikelyReturned,
         "M2: returned before unchanged is very high");
 }
+// M3: a state refusal classifies as state; a payload refusal as payload.
+{
+    Check(Mskpy.Infrastructure.RefusalClassifier.IsStateRefusal("beneficiary not available at site") == true,
+        "M3: a state refusal is classified as state");
+    Check(Mskpy.Infrastructure.RefusalClassifier.IsStateRefusal("photo not clear") == false,
+        "M3: a payload refusal is classified as payload");
+    // store-level: a state refusal lands in Blocked, not Failed.
+    var dir = Path.Combine(Path.GetTempPath(), $"m3-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var db = Path.Combine(dir, "store.db");
+        using (var seed = new Mskpy.Infrastructure.InspectionStore(db))
+        {
+            seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+                ConsumerNumber: "MBLK", CpfNo: "sample", VendorCode: "V", ConsumerName: "x",
+                Latitude: "1", Longitude: "2", InstallDate: "2026-08-01",
+                ReasonToRevert: null, SurveyDurationMinutes: null,
+                IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.Submitted,
+                LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+                SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+        }
+        using (var s = new Mskpy.Infrastructure.InspectionStore(db))
+        {
+            s.SetStatus("MBLK", Mskpy.Infrastructure.RecordStatus.Blocked, "beneficiary not available",
+                blockedReason: "beneficiary not available", blockedAt: DateTime.UtcNow);
+            var blocked = s.GetAll(status: Mskpy.Infrastructure.RecordStatus.Blocked);
+            var failed = s.GetAll(status: Mskpy.Infrastructure.RecordStatus.Failed);
+            Check(blocked.Count == 1 && blocked[0].BlockedReason == "beneficiary not available",
+                "M3: a state refusal produces Blocked with a reason");
+            Check(failed.Count == 0, "M3: a blocked record does not appear in Needs redo");
+        }
+    }
+    finally { try { Directory.Delete(dir, true); } catch { } }
+}
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {

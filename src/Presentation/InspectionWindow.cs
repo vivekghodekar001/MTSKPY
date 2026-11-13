@@ -1497,6 +1497,10 @@ public sealed class InspectionWindow : Window
             // W4: update record status based on submit outcome.
             if (outcome.Ok) {
                 store?.SetStatus(consumerNumber, RecordStatus.Accepted);
+            } else if (RefusalClassifier.IsStateRefusal(outcome.Body)) {
+                store?.SetStatus(consumerNumber, RecordStatus.Blocked, outcome.Body,
+                    blockedReason: RefusalClassifier.Reason(outcome.Body),
+                    blockedAt: DateTime.UtcNow);
             } else {
                 store?.SetStatus(consumerNumber, RecordStatus.Failed, outcome.Body);
             }

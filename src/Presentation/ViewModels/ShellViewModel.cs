@@ -149,6 +149,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         ViewDetails = new RelayCommand(_ => ShowDetails(null), _ => !IsBusy);
         ShowReturned = new RelayCommand(_ => NavigateTo("Returned"), _ => !IsBusy && IsSignedIn && store != null);
         ShowNeedsRedo = new RelayCommand(_ => NavigateTo("NeedsRedo"), _ => !IsBusy && IsSignedIn && store != null);
+        ShowBlocked = new RelayCommand(_ => NavigateTo("Blocked"), _ => !IsBusy && IsSignedIn && store != null);
         RetryRecord = new AsyncCommand((_, ct) => RetryRecordAsync(_), ShowError, _ => !IsBusy && IsSignedIn);
         OpenOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(null, ct), ShowError, _ => !IsBusy);
         OpenJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(null, ct), ShowError, _ => !IsBusy);
@@ -170,6 +171,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public ObservableCollection<DisplayField> Fields { get; } = [];
     public ObservableCollection<StoredInspectionRecord> ReturnedRecords { get; } = [];
     public ObservableCollection<StoredInspectionRecord> NeedsRedoRecords { get; } = [];
+    public ObservableCollection<StoredInspectionRecord> BlockedRecords { get; } = [];
     public string Username { get => username; set => Set(ref username, value); }
     public string SelectedRole { get => role; set { if (Set(ref role, value)) Changed(nameof(IsAgency)); } }
     public bool IsAgency => SelectedRole == "Agency";
@@ -218,6 +220,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool IsList => page == "Applications";
     public bool IsReturned => page == "Returned";
     public bool IsNeedsRedo => page == "NeedsRedo";
+    public bool IsBlocked => page == "Blocked";
     public bool IsFieldPage => page is "Profile" or "Settings" or "Diagnostics" or "Details";
     public bool IsDiagnostics => page == "Diagnostics";
     public bool IsDetails => page == "Details";
@@ -241,7 +244,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     string ImportedCountPath => Path.Combine(
         Path.GetDirectoryName(Path.GetFullPath(IndexPath)) ?? ".",
         InspectionIndexImporter.CountFileName);
-    public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page;
+    public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page == "Blocked" ? "Waiting on SDO" : page;
     public string ModuleDescription => currentModule?.Description ?? "";
     public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
     // D1: the list scope. The officer's own queue is the default; the statewide
@@ -380,6 +383,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public RelayCommand ViewDetails { get; }
     public RelayCommand ShowReturned { get; }
     public RelayCommand ShowNeedsRedo { get; }
+    public RelayCommand ShowBlocked { get; }
     public AsyncCommand RetryRecord { get; }
     public RelayCommand CopyDiagnostics { get; }
     /// <summary>H1: opens the live inspection form for the selected record.</summary>
@@ -778,6 +782,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             SetPage("NeedsRedo");
             return;
         }
+        if (destination == "Blocked" && store != null)
+        {
+            BlockedRecords.Clear();
+            foreach (var r in store.GetAll(status: RecordStatus.Blocked))
+                BlockedRecords.Add(r);
+            RefreshRecordCounts();
+            SetPage("Blocked");
+            return;
+        }
         SetPage(destination is "Profile" or "Settings" or "Diagnostics" ? destination : "Applications");
         if (destination == "Profile" && profile != null)
         {
@@ -819,7 +832,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void SetPage(string name)
     {
-        page = name; foreach (var property in new[] { nameof(PageTitle), nameof(IsList), nameof(IsReturned), nameof(IsNeedsRedo), nameof(IsFieldPage), nameof(IsDiagnostics), nameof(IsDetails), nameof(IsJsrDetails), nameof(IsInspectionDetails), nameof(IsInspectionSection), nameof(IsProfilePage), nameof(IsSettingsPage) }) Changed(property); RefreshCommands();
+        page = name; foreach (var property in new[] { nameof(PageTitle), nameof(IsList), nameof(IsReturned), nameof(IsNeedsRedo), nameof(IsBlocked), nameof(IsFieldPage), nameof(IsDiagnostics), nameof(IsDetails), nameof(IsJsrDetails), nameof(IsInspectionDetails), nameof(IsInspectionSection), nameof(IsProfilePage), nameof(IsSettingsPage) }) Changed(property); RefreshCommands();
     }
     void ShowError(Exception ex)
     {
@@ -845,7 +858,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
     void RefreshCommands()
     {
-        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); OpenLiveInspectionCommand?.Refresh();
+        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); ShowNeedsRedo?.Refresh(); ShowBlocked?.Refresh(); OpenLiveInspectionCommand?.Refresh();
     }
 
     async Task OpenInspectionAsync(CancellationToken ct)

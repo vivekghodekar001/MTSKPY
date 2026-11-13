@@ -13,9 +13,10 @@ public enum RecordStatus
     Submitted, // Submit attempted (regardless of outcome)
     Accepted,  // Verify confirmed count=1, no hasErrors
     Returned,  // Server returned 500 or hasErrors=true
-    Failed     // Non-2xx submit; awaits retry in Needs redo view
-}
+    Failed,     // Non-2xx submit; awaits retry in Needs redo view
+    Blocked     // State refusal: waiting on SDO
 
+}
 /// <summary>
 /// A (consumer_number, cpf_no) pair the store knows. Primary marks the row's
 /// own cpf_no - the officer the record was first seen under - so the index
@@ -50,7 +51,9 @@ public sealed record StoredInspectionRecord(
     string? SubmissionLat = null,
     string? SubmissionLong = null,
     string? LocationSource = null,
-    string? ReasonCategory = null
+    string? ReasonCategory = null,
+    string? BlockedReason = null,
+    DateTime? BlockedAt = null
 );
 
 /// <summary>
@@ -114,6 +117,8 @@ public sealed class InspectionStore : IDisposable
                 submission_long TEXT,
                 location_source TEXT,
                 reason_category TEXT,
+                blocked_reason TEXT,
+                blocked_at TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_records_status ON inspection_records(status);
@@ -162,7 +167,7 @@ public sealed class InspectionStore : IDisposable
                 var have = new HashSet<string>(StringComparer.Ordinal);
                 using var reader2 = pragma2.ExecuteReader();
                 while (reader2.Read()) have.Add(reader2.GetString(1));
-                foreach (var column in new[] { "submission_lat", "submission_long", "location_source", "reason_category" })
+                foreach (var column in new[] { "submission_lat", "submission_long", "location_source", "reason_category", "blocked_reason", "blocked_at" })
                 {
                     if (have.Contains(column)) continue;
                     using var alter = connection.CreateCommand();
@@ -596,7 +601,8 @@ public sealed class InspectionStore : IDisposable
         el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     public void SetStatus(string consumerNumber, RecordStatus status, string? lastServerMessage = null,
-        string? submissionLat = null, string? submissionLong = null, string? locationSource = null)
+        string? submissionLat = null, string? submissionLong = null, string? locationSource = null,
+        string? blockedReason = null, DateTime? blockedAt = null)
     {
         dbLock.Wait();
         try
@@ -610,7 +616,9 @@ public sealed class InspectionStore : IDisposable
                     updated_at=@ua,
                     submission_lat=COALESCE(@slat, submission_lat),
                     submission_long=COALESCE(@slon, submission_long),
-                    location_source=COALESCE(@lsrc, location_source)
+                    location_source=COALESCE(@lsrc, location_source),
+                    blocked_reason=COALESCE(@br, blocked_reason),
+                    blocked_at=COALESCE(@bat, blocked_at)
                 WHERE consumer_number=@cn;
             ";
             cmd.Parameters.AddWithValue("@cn", consumerNumber);
@@ -621,6 +629,8 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@slat", submissionLat ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@slon", submissionLong ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@lsrc", locationSource ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@br", blockedReason ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@bat", blockedAt.HasValue ? blockedAt.Value.ToString("o") : (object)DBNull.Value);
             cmd.ExecuteNonQuery();
         }
         finally
@@ -715,7 +725,9 @@ public sealed class InspectionStore : IDisposable
         SubmissionLat: reader.IsDBNull(reader.GetOrdinal("submission_lat")) ? null : reader.GetString(reader.GetOrdinal("submission_lat")),
         SubmissionLong: reader.IsDBNull(reader.GetOrdinal("submission_long")) ? null : reader.GetString(reader.GetOrdinal("submission_long")),
         LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source")),
-        ReasonCategory: reader.IsDBNull(reader.GetOrdinal("reason_category")) ? null : reader.GetString(reader.GetOrdinal("reason_category"))
+        ReasonCategory: reader.IsDBNull(reader.GetOrdinal("reason_category")) ? null : reader.GetString(reader.GetOrdinal("reason_category")),
+        BlockedReason: reader.IsDBNull(reader.GetOrdinal("blocked_reason")) ? null : reader.GetString(reader.GetOrdinal("blocked_reason")),
+        BlockedAt: reader.IsDBNull(reader.GetOrdinal("blocked_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("blocked_at")), null, System.Globalization.DateTimeStyles.RoundtripKind)
     );
 
     public StoredInspectionRecord? GetByConsumerNumber(string consumerNumber)
