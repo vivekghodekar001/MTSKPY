@@ -40,7 +40,10 @@ using (var seed = new Mskpy.Infrastructure.InspectionStore(storePath))
             LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
             SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
 }
-using var shell = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath);
+// D2: a dead host, so the delayed walk can start in a test without touching
+// production. Nothing the shell reads comes from here.
+using var shell = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath,
+    inspectionHostOverride: "http://127.0.0.1:1");
 await shell.Login.ExecuteAsync();
 Check(shell.HasError && gateway.LoginCalls == 0, "empty username fails before contacting backend");
 shell.Username = "sample"; await shell.Login.ExecuteAsync();
@@ -54,6 +57,8 @@ Check(shell.ListScope == "MyPending" && shell.Applications.All(x => x.Fields.Any
 Check(shell.MyPendingCount == 3 && shell.MyPendingChip.Contains("3") && shell.AllChip.Contains("5"),
     "the scope chips carry the counts of each set");
 shell.ListScope = "All";
+Check(shell.AllLoad != null, "D2: choosing All starts an on-demand load instead of reading the statewide set at sign-in");
+await shell.AllLoad!;
 Check(shell.Applications.Count == 5, "the statewide set is one click away");
 shell.ListScope = "MyPending";
 Check(shell.Applications.Count == 3, "switching back to the officer's own queue restores it");
@@ -164,7 +169,8 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     credentials.Save("sample", "synthetic-password");
     gateway.SignInFailure = new Mskpy.Infrastructure.SignInException("waiting for the reply",
         "The account service did not answer within 120 seconds (step: waiting for the reply). Please try again.");
-    using var slow = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    using var slow = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath,
+        inspectionHostOverride: "http://127.0.0.1:1", credentials: credentials);
     await slow.AutoSignInAsync();
     Check(!slow.IsSignedIn && slow.Error.Contains("waiting for the reply"), "D1: a saved sign-in that timed out says which step stopped");
     Check(slow.Username == "sample", "D1: the username survives a timeout");
@@ -199,7 +205,8 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     credentials.Save("sample", "synthetic-password");
     var before = gateway.LoginCalls;
     gateway.PendingLogin = new TaskCompletionSource<AccountProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
-    using var open = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    using var open = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath,
+        inspectionHostOverride: "http://127.0.0.1:1", credentials: credentials);
     var automatic = open.AutoSignInAsync();
     Check(!open.IsBusy && open.Login.CanExecute(null), "D1: the form stays usable while the saved sign-in is waiting");
     open.Username = "sample";
@@ -210,6 +217,77 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     await typed;
     await automatic;
     Check(open.IsSignedIn && gateway.LoginCalls == before + 2, "D1: the typed sign-in takes over and signs in");
+}
+// D2: the landing list is the officer's own queue, read on its own, and it is
+// interactive before the walk begins. A statewide store this size used to be
+// read in full to show three rows, which is what made the sign-in feel broken.
+{
+    var bigStore = Path.Combine(Path.GetTempPath(), $"vm-store-big-{Guid.NewGuid():N}.db");
+    using (var seed = new Mskpy.Infrastructure.InspectionStore(bigStore))
+    {
+        for (var i = 0; i < 4997; i++)
+            seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+                ConsumerNumber: $"MB{i:D7}", CpfNo: $"02{i % 1000:D6}", VendorCode: "100038029",
+                ConsumerName: "Statewide " + i, Latitude: "19.525251", Longitude: "74.119873",
+                InstallDate: "2026-08-01", ReasonToRevert: null, SurveyDurationMinutes: null,
+                IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.New,
+                LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+                SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+        for (var i = 0; i < 3; i++)
+            seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+                ConsumerNumber: $"MMINE{i:D6}", CpfNo: "sample", VendorCode: "100038029",
+                ConsumerName: "Mine " + i, Latitude: "19.525251", Longitude: "74.119873",
+                InstallDate: "2026-08-01", ReasonToRevert: null, SurveyDurationMinutes: null,
+                IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.New,
+                LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+                SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+    }
+
+    // Three consecutive cold starts: the list is on screen in under two
+    // seconds each time, and the walk has not begun inside that window.
+    var runtimes = new List<double>();
+    for (var run = 0; run < 3; run++)
+    {
+        using var timed = new ShellViewModel(workflow, secrets, desktop,
+            indexTsvPath: uiIndexPath, storePath: bigStore, inspectionHostOverride: "http://127.0.0.1:1")
+        { Username = "sample" };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await timed.Login.ExecuteAsync();
+        var elapsed = clock.Elapsed.TotalMilliseconds;
+        runtimes.Add(elapsed);
+        Check(timed.IsList && timed.Applications.Count == 3,
+            $"D2: run {run + 1} lands on the officer's three rows, not the statewide set");
+        Check(!timed.IsWalking, $"D2: run {run + 1} shows the list before the walk starts");
+        Check(timed.AllChip.Contains("5000") && timed.Applications.All(x => x.Fields.Any(f => f.Label == "Cpf" && f.Value == "sample")),
+            $"D2: run {run + 1} carries the statewide count on its chip without reading the statewide rows");
+    }
+    Check(runtimes.All(ms => ms < 2000),
+        $"D2: the interactive list is under 2 s on three consecutive cold starts (worst {runtimes.Max():0} ms)");
+
+    // All Maharashtra is read only when the officer chooses it, and the chip can
+    // say the count while the rows are still loading.
+    using var onDemand = new ShellViewModel(workflow, secrets, desktop,
+        indexTsvPath: uiIndexPath, storePath: bigStore, inspectionHostOverride: "http://127.0.0.1:1")
+    { Username = "sample" };
+    await onDemand.Login.ExecuteAsync();
+    Check(onDemand.AllLoad == null, "D2: the statewide set is not read at sign-in");
+    onDemand.ListScope = "All";
+    Check(onDemand.Applications.Count == 0 && onDemand.AllChip.Contains("5000"),
+        "D2: choosing All keeps the count on the chip while the rows load");
+    await onDemand.AllLoad!;
+    Check(onDemand.Applications.Count == 5000, "D2: All Maharashtra fills on demand");
+    onDemand.ListScope = "MyPending";
+    Check(onDemand.Applications.Count == 3, "D2: the officer's queue comes back without another statewide read");
+
+    // The walk is armed, not started: it begins once the list has had the screen.
+    Check(!onDemand.IsWalking, "D2: the walk is not running while the officer reads the list");
+    var walking = false;
+    for (var waited = 0; waited < 80 && !walking; waited++)
+    {
+        await Task.Delay(100);
+        walking = onDemand.IsWalking;
+    }
+    Check(walking, $"D2: the walk starts by itself after the list has had the screen ({ShellViewModel.HarvestStartDelayMs} ms)");
 }
 Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
 

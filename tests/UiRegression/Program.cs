@@ -59,7 +59,9 @@ internal static class Program
         // C7: the walk starts at the sign-in, so the test walks its own index.
         var uiIndexPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"ui-index-{Guid.NewGuid():N}.tsv");
         File.WriteAllLines(uiIndexPath, new[] { "MTWALK00000001\t02781310" });
-        using var shell = new ShellViewModel(new ClientWorkflow(gateway), new RenderSecret(), desktop, indexTsvPath: uiIndexPath, storePath: uiStorePath) { Username = "sample" };
+        using var shell = new ShellViewModel(new ClientWorkflow(gateway), new RenderSecret(), desktop,
+            indexTsvPath: uiIndexPath, storePath: uiStorePath, inspectionHostOverride: "http://127.0.0.1:1")
+        { Username = "sample" };
         var main = new MainWindow { DataContext = shell };
         var shellRoot = (FrameworkElement)main.Content;
         foreach (var width in new[] { 740, 1100, 1500 })
@@ -80,7 +82,10 @@ internal static class Program
         // C7: the walk starts by itself, and the arrivals badge counts what
         // the harvest brings in.
         Assert(shell.IsSignedIn, "C7: the shell is signed in");
-        Assert(shell.IsWalking, "C7: the walk started by itself, on the sign-in");
+        // D2: the walk is armed at the sign-in, not started beside the first
+        // paint. It begins by itself once the list has had the screen.
+        Assert(!shell.IsWalking, "D2: the list is on screen before the walk starts");
+        Assert(WaitFor(() => shell.IsWalking, 8000), "C7: the walk starts by itself, after the list has had the screen");
         Assert(shell.ArrivalsCount == 0 && shell.NewCountBadge.Length == 0, "C7: the badge shows nothing at zero");
         Assert(!shell.HasArrivals, "C7: there are no arrivals to show yet");
         shell.RecordArrivals(3);
@@ -234,6 +239,26 @@ internal static class Program
             foreach (var node in Descendants(child)) yield return node;
     }
     static void Assert(bool ok, string label) { if (!ok) throw new Exception(label); Console.WriteLine("PASS " + label); }
+    /// <summary>
+    /// D2: wait for a condition while keeping the dispatcher alive. A delayed
+    /// walk that resumes on the dispatcher cannot start under a blocked thread,
+    /// so the wait is a dispatcher frame, not a sleep.
+    /// </summary>
+    static bool WaitFor(Func<bool> condition, int milliseconds)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (!condition() && clock.ElapsedMilliseconds < milliseconds)
+        {
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            var timer = new System.Windows.Threading.DispatcherTimer(
+                System.Windows.Threading.DispatcherPriority.Background,
+                System.Windows.Threading.Dispatcher.CurrentDispatcher) { Interval = TimeSpan.FromMilliseconds(50) };
+            timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
+            timer.Start();
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+        }
+        return condition();
+    }
     static IEnumerable<DependencyObject> VisualDescendants(DependencyObject parent)
     {
         yield return parent;

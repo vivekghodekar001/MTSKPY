@@ -256,9 +256,26 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         set
         {
             if (!Set(ref listScope, value)) return;
+            // D2: the statewide set is read only when the officer asks for it.
+            // The chip already carries its count, so the click is a choice, not
+            // a surprise at sign-in.
+            if (value == ListScopeAll) { BeginAllScopeLoad(); return; }
             ApplySearch();
         }
     }
+
+    /// <summary>
+    /// D2: the officer's own rows are read on their own, and the statewide set
+    /// is read on demand. This is the task the All scope is loading, so a test
+    /// (or the status bar) can wait for it.
+    /// </summary>
+    public Task? AllLoad { get; private set; }
+    List<ApplicationDocument>? allRows;
+    bool allLoading;
+
+    /// <summary>D2: the list gets this long to itself before the walk starts.</summary>
+    public const int HarvestStartDelayMs = 2500;
+    Task? harvestStart;
     /// <summary>
     /// D1/H3: the officer's own pending queue — the records seen under their
     /// cpf that have not been accepted. Counted through record_cpfs with the
@@ -481,9 +498,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // place) is gone, and the sidebar's Inspection entry is the way
             // back from the details.
             await OpenInspectionListAsync(ct);
-            // C7: the walk starts by itself, on the sign-in. It is not tied to
-            // a page and it keeps running while the officer works.
-            StartHarvester();
+            // C7/D2: the walk starts by itself, but only once the officer's own
+            // list is on screen and has had a moment to itself. Starting it
+            // beside the first read is what made the landing feel slow.
+            ScheduleHarvestStart();
             Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -538,7 +556,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // staring at an empty list with 27,000 records already harvested.
             LoadFromStore();
             ApplySearch();
-            Status = $"Loaded {loaded.Count} applications.";
+            // D2: the landing list is the officer's own queue, so the count is
+            // their queue's count - the statewide total is on its chip.
+            Status = listScope == ListScopeAll
+                ? $"Loaded {loaded.Count} applications."
+                : $"Loaded your pending queue: {loaded.Count} inspection{ (loaded.Count == 1 ? "" : "s") }.";
 
             // Then the liveness probe, bounded so a slow host cannot hold the
             // page hostage. Its only job is to detect an expired session.
@@ -554,9 +576,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (version != generation) return;
 
             if (probeFailure != null)
-                Status = $"Loaded {loaded.Count} applications from the store. The live service check failed ({probeFailure}).";
-            else if (loaded.Count == 0)
+                Status = $"Loaded {loaded.Count} from the store. The live service check failed ({probeFailure}).";
+            else if (AllRecordCount == 0)
                 Status = "The store is empty. The harvester fills it from index.tsv — check Diagnostics.";
+            else if (loaded.Count == 0 && listScope != ListScopeAll)
+                Status = $"Your queue is empty. All Maharashtra ({AllRecordCount}) is one click away.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { if (version == generation) Status = "Loading cancelled."; }
         finally { if (version == generation) IsBusy = false; }
@@ -564,12 +588,28 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>
     /// Reads the store into the list model. The store is the only source of
     /// rows, so this must be re-run whenever the store grows.
+    ///
+    /// D2: the default scope reads the officer's OWN rows (a single indexed
+    /// EXISTS query). The statewide set is 37,000 rows on the live store and is
+    /// no longer read to show three of them - it is read when the All chip is
+    /// chosen, and kept for the rest of the session.
     /// </summary>
     void LoadFromStore()
     {
         if (store == null) { loaded = []; return; }
-        var stored = store.GetAll();
-        loaded = stored.Select(r => new ApplicationDocument(
+        if (listScope == ListScopeAll)
+        {
+            // All is filled by BeginAllScopeLoad; until then the list is empty,
+            // not the statewide set loaded behind the officer's back.
+            loaded = allRows ?? [];
+            return;
+        }
+        loaded = Materialise(store.GetSeenUnder(profile?.LoginId ?? "", RecordStatus.Accepted));
+    }
+
+    /// <summary>The one place a stored row becomes a row the list can show.</summary>
+    static List<ApplicationDocument> Materialise(IEnumerable<StoredInspectionRecord> stored) =>
+        stored.Select(r => new ApplicationDocument(
             Identity: r.ConsumerNumber,
             Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
             Fields: new DisplayField[]
@@ -585,6 +625,60 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             },
             OriginalJson: r.OriginalJson ?? ""
         )).ToList();
+
+    /// <summary>
+    /// D2: read and draw All Maharashtra on demand. The read runs off the UI
+    /// thread; the rows are added in small batches, so the window keeps
+    /// painting instead of freezing on 37,000 collection changes.
+    /// </summary>
+    void BeginAllScopeLoad(bool force = false)
+    {
+        if (store == null) return;
+        if (allLoading) return;
+        if (allRows != null && !force) { loaded = allRows; ApplySearch(); return; }
+        allLoading = true;
+        loaded = [];
+        Applications.Clear();
+        Changed(nameof(RecordCount));
+        Status = force ? "Refreshing all Maharashtra…" : "Loading all Maharashtra on demand…";
+        AllLoad = LoadAllRowsAsync();
+    }
+
+    async Task LoadAllRowsAsync()
+    {
+        try
+        {
+            var rows = await Task.Run(() => Materialise(store!.GetAll()));
+            allRows = rows;
+            if (listScope != ListScopeAll) return;
+            loaded = rows;
+            await FillListAsync(rows);
+            Status = $"All Maharashtra: {Applications.Count} shown of {AllRecordCount} in the store.";
+        }
+        catch (Exception ex)
+        {
+            Error = "The statewide list could not be loaded: " + ex.Message;
+            loaded = [];
+            Applications.Clear();
+        }
+        finally { allLoading = false; }
+    }
+
+    /// <summary>D2: add the visible rows in batches so the UI paints as it fills.</summary>
+    async Task FillListAsync(List<ApplicationDocument> rows)
+    {
+        Applications.Clear();
+        var matches = rows.Where(Matches).ToList();
+        for (var i = 0; i < matches.Count; i++)
+        {
+            Applications.Add(matches[i]);
+            if ((i & 511) == 511) await Task.Yield();
+        }
+        if (SelectedApplication != null && !Applications.Contains(SelectedApplication)) SelectedApplication = null;
+        Changed(nameof(RecordCount));
+        Changed(nameof(MyPendingChip));
+        Changed(nameof(AllChip));
+        RefreshRecordCounts();
     }
 
     static string DocField(ApplicationDocument doc, string label) =>
@@ -620,10 +714,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     void ApplySearch()
     {
         Applications.Clear();
-        // A3: the whole store is listed. Row virtualisation (recycling) keeps the
-        // scroll smooth with thousands of rows, so the old 100-row cap is gone.
-        foreach (var row in loaded.Where(x => InScope(x)
-            && (string.IsNullOrWhiteSpace(Search) || x.Fields.Any(f => f.Value.Contains(Search, StringComparison.OrdinalIgnoreCase)))))
+        // A3: the whole current scope is listed. Row virtualisation (recycling)
+        // keeps the scroll smooth with thousands of rows, so the old 100-row cap
+        // is gone.
+        foreach (var row in loaded.Where(Matches))
             Applications.Add(row);
         if (SelectedApplication != null && !Applications.Contains(SelectedApplication)) SelectedApplication = null;
         Changed(nameof(RecordCount));
@@ -631,6 +725,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Changed(nameof(AllChip));
         RefreshRecordCounts();
     }
+
+    /// <summary>D2: one row test for the scope and the local search.</summary>
+    bool Matches(ApplicationDocument doc) =>
+        InScope(doc) && (string.IsNullOrWhiteSpace(Search)
+            || doc.Fields.Any(f => f.Value.Contains(Search, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>R4/R5: keep the first-time / re-inspection / returned badges in sync.</summary>
     void RefreshRecordCounts()
@@ -846,6 +945,28 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// D2: the walk is armed, not started. The list must be on screen first -
+    /// a sign-in that begins a network walk beside its own first paint makes
+    /// the landing page feel broken - and the officer gets a short moment
+    /// before the harvester's requests begin.
+    /// </summary>
+    void ScheduleHarvestStart()
+    {
+        if (harvester != null) return;
+        harvestStart = StartHarvestAfterListAsync();
+    }
+
+    async Task StartHarvestAfterListAsync()
+    {
+        await Task.Delay(HarvestStartDelayMs);
+        if (!IsSignedIn || harvester != null) return;
+        // The list is the only landing page, so this is the page the officer
+        // is looking at. If they navigated away, the walk waits for the list.
+        if (page != "Applications") return;
+        StartHarvester();
+    }
+
+    /// <summary>
     /// A5: the index file can change while the app is running. Reloading re-reads
     /// the tsv, restarts the harvester against it and keeps the session alive.
     /// </summary>
@@ -884,7 +1005,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 if (page == "Applications" && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 10)
                 {
                     _lastListRefresh = DateTime.UtcNow;
-                    try { LoadFromStore(); ApplySearch(); }
+                    try
+                    {
+                        // D2: the statewide view is refreshed the same way it is
+                        // first filled - on demand - not by blocking the timer.
+                        if (listScope == ListScopeAll) BeginAllScopeLoad(force: true);
+                        else { LoadFromStore(); ApplySearch(); }
+                    }
                     catch { /* a list refresh must never disturb the walk */ }
                 }
             }));

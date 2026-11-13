@@ -614,32 +614,7 @@ public sealed class InspectionStore : IDisposable
 
             var results = new List<StoredInspectionRecord>();
             using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                results.Add(new StoredInspectionRecord(
-                    ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
-                    CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
-                    VendorCode: reader.IsDBNull(reader.GetOrdinal("vendor_code")) ? null : reader.GetString(reader.GetOrdinal("vendor_code")),
-                    ConsumerName: reader.IsDBNull(reader.GetOrdinal("consumer_name")) ? null : reader.GetString(reader.GetOrdinal("consumer_name")),
-                    Latitude: reader.IsDBNull(reader.GetOrdinal("latitude")) ? null : reader.GetString(reader.GetOrdinal("latitude")),
-                    Longitude: reader.IsDBNull(reader.GetOrdinal("longitude")) ? null : reader.GetString(reader.GetOrdinal("longitude")),
-                    InstallDate: reader.IsDBNull(reader.GetOrdinal("inst_date")) ? null : reader.GetString(reader.GetOrdinal("inst_date")),
-                    ReasonToRevert: reader.IsDBNull(reader.GetOrdinal("reason_to_revert")) ? null : reader.GetString(reader.GetOrdinal("reason_to_revert")),
-                    SurveyDurationMinutes: reader.IsDBNull(reader.GetOrdinal("survey_duration_minutes")) ? null : reader.GetString(reader.GetOrdinal("survey_duration_minutes")),
-                    IsFirstTime: reader.GetInt32(reader.GetOrdinal("is_first_time")) != 0,
-                    Status: (RecordStatus)reader.GetInt32(reader.GetOrdinal("status")),
-                    LastServerMessage: reader.IsDBNull(reader.GetOrdinal("last_server_message")) ? null : reader.GetString(reader.GetOrdinal("last_server_message")),
-                    LastServerMessageAt: reader.IsDBNull(reader.GetOrdinal("last_server_message_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("last_server_message_at")), null, System.Globalization.DateTimeStyles.RoundtripKind),
-                    OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
-                    SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
-                    PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
-                    SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
-                    SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs")),
-                    SubmissionLat: reader.IsDBNull(reader.GetOrdinal("submission_lat")) ? null : reader.GetString(reader.GetOrdinal("submission_lat")),
-                    SubmissionLong: reader.IsDBNull(reader.GetOrdinal("submission_long")) ? null : reader.GetString(reader.GetOrdinal("submission_long")),
-                    LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source"))
-                ));
-            }
+            while (reader.Read()) results.Add(ReadRecord(reader));
             return results;
         }
         finally
@@ -647,6 +622,65 @@ public sealed class InspectionStore : IDisposable
             dbLock.Release();
         }
     }
+
+    /// <summary>
+    /// D2: the officer's own queue, read directly.
+    ///
+    /// The landing list used to read every one of the 37,000 statewide rows to
+    /// show the officer's three. This is the same predicate <see cref="CountSeenUnder"/>
+    /// counts with - EXISTS over record_cpfs - so the chip and the rows still
+    /// cannot disagree, but the statewide set is never read for the default
+    /// scope.
+    /// </summary>
+    public List<StoredInspectionRecord> GetSeenUnder(string cpf, RecordStatus? excludeStatus = null)
+    {
+        if (string.IsNullOrWhiteSpace(cpf)) return [];
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT r.* FROM inspection_records r WHERE EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
+            if (excludeStatus.HasValue) sb.Append(" AND r.status<>@st");
+            sb.Append(" ORDER BY r.updated_at DESC");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            cmd.Parameters.AddWithValue("@cpf", cpf.Trim());
+            if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
+            var results = new List<StoredInspectionRecord>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) results.Add(ReadRecord(reader));
+            return results;
+        }
+        finally
+        {
+            dbLock.Release();
+        }
+    }
+
+    /// <summary>The one row reader, so every query returns the same shape.</summary>
+    static StoredInspectionRecord ReadRecord(Microsoft.Data.Sqlite.SqliteDataReader reader) => new(
+        ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
+        CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
+        VendorCode: reader.IsDBNull(reader.GetOrdinal("vendor_code")) ? null : reader.GetString(reader.GetOrdinal("vendor_code")),
+        ConsumerName: reader.IsDBNull(reader.GetOrdinal("consumer_name")) ? null : reader.GetString(reader.GetOrdinal("consumer_name")),
+        Latitude: reader.IsDBNull(reader.GetOrdinal("latitude")) ? null : reader.GetString(reader.GetOrdinal("latitude")),
+        Longitude: reader.IsDBNull(reader.GetOrdinal("longitude")) ? null : reader.GetString(reader.GetOrdinal("longitude")),
+        InstallDate: reader.IsDBNull(reader.GetOrdinal("inst_date")) ? null : reader.GetString(reader.GetOrdinal("inst_date")),
+        ReasonToRevert: reader.IsDBNull(reader.GetOrdinal("reason_to_revert")) ? null : reader.GetString(reader.GetOrdinal("reason_to_revert")),
+        SurveyDurationMinutes: reader.IsDBNull(reader.GetOrdinal("survey_duration_minutes")) ? null : reader.GetString(reader.GetOrdinal("survey_duration_minutes")),
+        IsFirstTime: reader.GetInt32(reader.GetOrdinal("is_first_time")) != 0,
+        Status: (RecordStatus)reader.GetInt32(reader.GetOrdinal("status")),
+        LastServerMessage: reader.IsDBNull(reader.GetOrdinal("last_server_message")) ? null : reader.GetString(reader.GetOrdinal("last_server_message")),
+        LastServerMessageAt: reader.IsDBNull(reader.GetOrdinal("last_server_message_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("last_server_message_at")), null, System.Globalization.DateTimeStyles.RoundtripKind),
+        OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
+        SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
+        PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
+        SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
+        SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs")),
+        SubmissionLat: reader.IsDBNull(reader.GetOrdinal("submission_lat")) ? null : reader.GetString(reader.GetOrdinal("submission_lat")),
+        SubmissionLong: reader.IsDBNull(reader.GetOrdinal("submission_long")) ? null : reader.GetString(reader.GetOrdinal("submission_long")),
+        LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source"))
+    );
 
     public StoredInspectionRecord? GetByConsumerNumber(string consumerNumber)
     {
