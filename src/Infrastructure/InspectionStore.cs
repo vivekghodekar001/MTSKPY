@@ -49,7 +49,8 @@ public sealed record StoredInspectionRecord(
     // auditable: where the pair came from, and the pair itself.
     string? SubmissionLat = null,
     string? SubmissionLong = null,
-    string? LocationSource = null
+    string? LocationSource = null,
+    string? ReasonCategory = null
 );
 
 /// <summary>
@@ -112,6 +113,7 @@ public sealed class InspectionStore : IDisposable
                 submission_lat TEXT,
                 submission_long TEXT,
                 location_source TEXT,
+                reason_category TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_records_status ON inspection_records(status);
@@ -160,7 +162,7 @@ public sealed class InspectionStore : IDisposable
                 var have = new HashSet<string>(StringComparer.Ordinal);
                 using var reader2 = pragma2.ExecuteReader();
                 while (reader2.Read()) have.Add(reader2.GetString(1));
-                foreach (var column in new[] { "submission_lat", "submission_long", "location_source" })
+                foreach (var column in new[] { "submission_lat", "submission_long", "location_source", "reason_category" })
                 {
                     if (have.Contains(column)) continue;
                     using var alter = connection.CreateCommand();
@@ -175,6 +177,7 @@ public sealed class InspectionStore : IDisposable
         // falls back to the row's own cpf) disagreed until the next restart.
         // Derive the index from cpf_no plus every entry of the seen set.
         BackfillSeenCpfs();
+        BackfillReasonCategories();
     }
 
     /// <summary>
@@ -260,6 +263,36 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
+    public int BackfillReasonCategories()
+    {
+        // M1: every stored reason gets a category. Rows where the category is
+        // already set are left alone, so this is idempotent.
+        dbLock.Wait();
+        try
+        {
+            var rows = new List<(string Consumer, string? Reason)>();
+            using (var read = connection.CreateCommand())
+            {
+                read.CommandText = "SELECT consumer_number, reason_to_revert FROM inspection_records WHERE reason_category IS NULL;";
+                using var r = read.ExecuteReader();
+                while (r.Read())
+                    rows.Add((r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1)));
+            }
+            int updated = 0;
+            foreach (var (consumer, reason) in rows)
+            {
+                var cat = ReasonCategoriser.Categorise(reason);
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = "UPDATE inspection_records SET reason_category=@c WHERE consumer_number=@cn;";
+                cmd.Parameters.AddWithValue("@c", cat);
+                cmd.Parameters.AddWithValue("@cn", consumer);
+                updated += cmd.ExecuteNonQuery();
+            }
+            return updated;
+        }
+        finally { dbLock.Release(); }
+    }
+
     public int Upsert(StoredInspectionRecord record, bool preserveStatus = false)
     {
         dbLock.Wait();
@@ -271,9 +304,9 @@ public sealed class InspectionStore : IDisposable
                 (consumer_number, cpf_no, vendor_code, consumer_name, latitude, longitude,
                  inst_date, reason_to_revert, survey_duration_minutes, is_first_time,
                  status, last_server_message, last_server_message_at, original_json, updated_at,
-                 submitted_data_path, photo_paths, sign_paths, submission_lat, submission_long, location_source)
+                 submitted_data_path, photo_paths, sign_paths, submission_lat, submission_long, location_source, reason_category)
                 VALUES (@cn, @cpf, @vc, @cnm, @lat, @lon, @inst, @rtv, @sdm, @ift, @st, @lsm, @lsma, @oj, @ua,
-                        @sdp, @pp, @sp, @slat, @slon, @lsrc)
+                        @sdp, @pp, @sp, @slat, @slon, @lsrc, @rcat)
                 ON CONFLICT(consumer_number) DO UPDATE SET
                     -- F1: cpf_no is INSERT-ONLY. The list endpoint is per-cpf and
                     -- the same consumer appears under different cpfs in different
@@ -312,7 +345,8 @@ public sealed class InspectionStore : IDisposable
                     sign_paths=excluded.sign_paths,
                     submission_lat=excluded.submission_lat,
                     submission_long=excluded.submission_long,
-                    location_source=excluded.location_source
+                    location_source=excluded.location_source,
+                    reason_category=excluded.reason_category
                 ";
             cmd.Parameters.AddWithValue("@preserve", preserveStatus ? 1 : 0);
             cmd.Parameters.AddWithValue("@cn", record.ConsumerNumber);
@@ -335,6 +369,7 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@slat", record.SubmissionLat ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@slon", record.SubmissionLong ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@lsrc", record.LocationSource ?? (object)DBNull.Value);
+            cmd.Parameters.AddWithValue("@rcat", (record.ReasonCategory ?? ReasonCategoriser.Categorise(record.ReasonToRevert)) ?? (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
             var result = cmd.ExecuteNonQuery();
 
@@ -679,7 +714,8 @@ public sealed class InspectionStore : IDisposable
         SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs")),
         SubmissionLat: reader.IsDBNull(reader.GetOrdinal("submission_lat")) ? null : reader.GetString(reader.GetOrdinal("submission_lat")),
         SubmissionLong: reader.IsDBNull(reader.GetOrdinal("submission_long")) ? null : reader.GetString(reader.GetOrdinal("submission_long")),
-        LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source"))
+        LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source")),
+        ReasonCategory: reader.IsDBNull(reader.GetOrdinal("reason_category")) ? null : reader.GetString(reader.GetOrdinal("reason_category"))
     );
 
     public StoredInspectionRecord? GetByConsumerNumber(string consumerNumber)
@@ -692,26 +728,7 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@cn", consumerNumber);
             using var reader = cmd.ExecuteReader();
             if (!reader.Read()) return null;
-            return new StoredInspectionRecord(
-                ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
-                CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
-                VendorCode: reader.IsDBNull(reader.GetOrdinal("vendor_code")) ? null : reader.GetString(reader.GetOrdinal("vendor_code")),
-                ConsumerName: reader.IsDBNull(reader.GetOrdinal("consumer_name")) ? null : reader.GetString(reader.GetOrdinal("consumer_name")),
-                Latitude: reader.IsDBNull(reader.GetOrdinal("latitude")) ? null : reader.GetString(reader.GetOrdinal("latitude")),
-                Longitude: reader.IsDBNull(reader.GetOrdinal("longitude")) ? null : reader.GetString(reader.GetOrdinal("longitude")),
-                InstallDate: reader.IsDBNull(reader.GetOrdinal("inst_date")) ? null : reader.GetString(reader.GetOrdinal("inst_date")),
-                ReasonToRevert: reader.IsDBNull(reader.GetOrdinal("reason_to_revert")) ? null : reader.GetString(reader.GetOrdinal("reason_to_revert")),
-                SurveyDurationMinutes: reader.IsDBNull(reader.GetOrdinal("survey_duration_minutes")) ? null : reader.GetString(reader.GetOrdinal("survey_duration_minutes")),
-                IsFirstTime: reader.GetInt32(reader.GetOrdinal("is_first_time")) != 0,
-                Status: (RecordStatus)reader.GetInt32(reader.GetOrdinal("status")),
-                LastServerMessage: reader.IsDBNull(reader.GetOrdinal("last_server_message")) ? null : reader.GetString(reader.GetOrdinal("last_server_message")),
-                LastServerMessageAt: reader.IsDBNull(reader.GetOrdinal("last_server_message_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("last_server_message_at")), null, System.Globalization.DateTimeStyles.RoundtripKind),
-                OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
-                SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
-                PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
-                SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
-                SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs"))
-            );
+            return ReadRecord(reader);
         }
         finally
         {

@@ -1135,6 +1135,49 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
     finally { try { Directory.Delete(dir, true); } catch { } }
 }
+// M1: every reason string lands in one of the eight categories.
+{
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise(null) == Mskpy.Infrastructure.ReasonCategoriser.Other,
+        "M1: a missing reason is 'other'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("attach proper photo") == Mskpy.Infrastructure.ReasonCategoriser.Photo,
+        "M1: a photo reason is 'photo'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("Pump not installed") == Mskpy.Infrastructure.ReasonCategoriser.Unfixable,
+        "M1: an unfixable reason is 'unfixable'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("Water source is not seen in the photo.") == Mskpy.Infrastructure.ReasonCategoriser.WaterSource,
+        "M1: a water-source reason is 'water_source'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("Water discharge is not seen in the photo.") == Mskpy.Infrastructure.ReasonCategoriser.WaterDischarge,
+        "M1: a water-discharge reason is 'water_discharge'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("Beneficiary not available") == Mskpy.Infrastructure.ReasonCategoriser.BeneficiaryAbsent,
+        "M1: a beneficiary-absent reason is 'beneficiary_absent'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("lat long diff") == Mskpy.Infrastructure.ReasonCategoriser.WrongData,
+        "M1: a wrong-data reason is 'wrong_data'");
+    Check(Mskpy.Infrastructure.ReasonCategoriser.Categorise("pending for installtion") == Mskpy.Infrastructure.ReasonCategoriser.SystemIncomplete,
+        "M1: a system-incomplete reason is 'system_incomplete'");
+    // M1: the store backfills the category on every row that carries a reason.
+    var dir = Path.Combine(Path.GetTempPath(), $"m1-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var db = Path.Combine(dir, "store.db");
+        using (var seed = new Mskpy.Infrastructure.InspectionStore(db))
+        {
+            seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+                ConsumerNumber: "MCAT", CpfNo: "sample", VendorCode: "V", ConsumerName: "x",
+                Latitude: "1", Longitude: "2", InstallDate: "2026-08-01",
+                ReasonToRevert: "attach proper photo", SurveyDurationMinutes: null,
+                IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.Returned,
+                LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+                SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+        }
+        using (var reloaded = new Mskpy.Infrastructure.InspectionStore(db))
+        {
+            var row = reloaded.GetByConsumerNumber("MCAT");
+            Check(row != null && row.ReasonCategory == Mskpy.Infrastructure.ReasonCategoriser.Photo,
+                "M1: the store stores the category on the row");
+        }
+    }
+    finally { try { Directory.Delete(dir, true); } catch { } }
+}
 Console.WriteLine($"{passed} checks passed. No production requests were sent.");
 sealed class FakeHandler : HttpMessageHandler
 {
