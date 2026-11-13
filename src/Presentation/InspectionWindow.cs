@@ -1098,6 +1098,20 @@ public sealed class InspectionWindow : Window
         var panel = suggestionPanel;
         if (panel == null) return;
         panel.Children.Clear();
+        // D4: an empty book is not a broken form - it tells the officer how to
+        // fill it, instead of showing nothing and leaving them to guess.
+        if (vendorPeople.People.Count == 0)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = "No saved installers — press Edit to add one.",
+                Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+                FontSize = 13,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 0)
+            });
+            return;
+        }
         foreach (var person in vendorPeople.Suggest(vendorPersonNameBox.Text))
         {
             var button = new Button
