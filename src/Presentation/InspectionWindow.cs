@@ -106,7 +106,7 @@ public sealed class InspectionWindow : Window
     Button? submitBtn;
     Button? acknowledgeBtn;
     bool riskAcknowledged;
-    bool isBlockedOrLikelyReturned;
+    bool isBlockedRecord;
     readonly System.Threading.Timer signatureDebounceTimer;
 
     static readonly (string Suffix, string Label)[] PhotoSlots =
@@ -784,42 +784,38 @@ public sealed class InspectionWindow : Window
         var result = ReturnRiskScorer.Score(input);
         var label = ReturnRiskScorer.BandLabel(result.Band);
         var blocked = stored?.Status == RecordStatus.Blocked;
-        isBlockedOrLikelyReturned = blocked || result.Band == ReturnRiskScorer.Band.LikelyReturned;
+        isBlockedRecord = blocked;
 
-        if (blocked)
+        var reasons = result.Reasons.Take(2).ToArray();
+        var reasonText = reasons.Length > 0 ? " - " + string.Join("; ", reasons) : "";
+
+        if (riskHeader != null)
         {
-            if (riskHeader != null)
+            if (blocked)
             {
-                riskHeader.Text = "Blocked: " + (stored?.BlockedReason ?? "waiting on SDO") + " - Waiting on SDO";
+                riskHeader.Text = "Risk: blocked — " + (stored?.BlockedReason ?? "waiting on SDO");
                 riskHeader.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB));
             }
-            if (riskFooter != null)
-                riskFooter.Text = "Waiting on SDO: " + (stored?.BlockedReason ?? "");
-        }
-        else
-        {
-            if (riskHeader != null)
+            else
             {
-                riskHeader.Text = $"Risk: {label}" + (result.Reasons.Length > 0 ? " - " + string.Join("; ", result.Reasons) : "");
+                riskHeader.Text = reasons.Length > 0
+                    ? $"Risk: {ReturnRiskScorer.BandLabel(result.Band).ToLowerInvariant()} — {string.Join("; ", reasons)}"
+                    : $"Risk: {ReturnRiskScorer.BandLabel(result.Band).ToLowerInvariant()}";
                 riskHeader.Foreground = result.Band == ReturnRiskScorer.Band.LikelyReturned
                     ? new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
                     : result.Band == ReturnRiskScorer.Band.Risky
                         ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80))
                         : (Brush)System.Windows.Application.Current.FindResource("Muted");
             }
-            if (riskFooter != null)
-            {
-                riskFooter.Text = result.Reasons.Length > 0
-                    ? "Warnings: " + string.Join("; ", result.Reasons)
-                    : "";
-            }
         }
-
+        if (riskFooter != null)
+        {
+            riskFooter.Text = "";
+            riskFooter.Visibility = Visibility.Collapsed;
+        }
         if (acknowledgeBtn != null)
         {
-            acknowledgeBtn.Visibility = isBlockedOrLikelyReturned && !riskAcknowledged
-                ? Visibility.Visible : Visibility.Collapsed;
-            acknowledgeBtn.IsEnabled = !blocked; // blocked records cannot be acknowledged into submitting
+            acknowledgeBtn.Visibility = Visibility.Collapsed;
         }
 
         UpdateSubmitEnabled();
@@ -832,7 +828,7 @@ public sealed class InspectionWindow : Window
             && !string.IsNullOrWhiteSpace(manualLong.Text)
             && double.TryParse(manualLat.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
             && double.TryParse(manualLong.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-        submitBtn.IsEnabled = (locationResolved || manualOk) && (!isBlockedOrLikelyReturned || riskAcknowledged);
+        submitBtn.IsEnabled = (locationResolved || manualOk) && !isBlockedRecord;
     }
 
     /// <summary>
