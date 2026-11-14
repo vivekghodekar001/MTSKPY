@@ -308,7 +308,7 @@ public sealed class InspectionStore : IDisposable
             cmd.CommandText = @"
                 SELECT cc.cpf_no,
                        COUNT(*) AS total,
-                       SUM(CASE WHEN r.status = 4 THEN 1 ELSE 0 END) AS returned
+                       SUM(CASE WHEN r.reason_to_revert IS NOT NULL AND TRIM(r.reason_to_revert) <> '' THEN 1 ELSE 0 END) AS returned
                 FROM record_cpfs cc
                 JOIN inspection_records r ON r.consumer_number = cc.consumer_number
                 GROUP BY cc.cpf_no;

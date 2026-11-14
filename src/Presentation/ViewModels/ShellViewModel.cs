@@ -311,7 +311,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (rates.Count == 0) return "";
             var total = rates.Values.Sum(v => v.Total);
             var returned = rates.Values.Sum(v => v.Returned);
-            if (total == 0) return "";
+            if (total == 0) return "—";
             return $"Return rate: {100.0 * returned / total:F1}% ({returned}/{total})";
         }
     }
@@ -927,11 +927,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 var totalOfficer = byOfficer.Values.Sum(v => v.Total);
                 var returnedOfficer = byOfficer.Values.Sum(v => v.Returned);
                 Fields.Add(new("Return rate (all officers)",
-                    totalOfficer == 0 ? "n/a" : $"{100.0 * returnedOfficer / totalOfficer:F1}% ({returnedOfficer}/{totalOfficer})"));
-                foreach (var kv in byCategory.OrderByDescending(x => x.Value.Returned))
+                    totalOfficer == 0 ? "—" : $"{100.0 * returnedOfficer / totalOfficer:F1}% ({returnedOfficer}/{totalOfficer})"));
+                var totalReturns = byCategory.Values.Sum(v => v.Total);
+                foreach (var kv in byCategory.OrderByDescending(x => x.Value.Total))
                 {
                     var (t, r) = kv.Value;
-                    Fields.Add(new($"Return rate - {kv.Key}", t == 0 ? "n/a" : $"{100.0 * r / t:F1}% ({r}/{t})"));
+                    Fields.Add(new($"Returns - {kv.Key}",
+                        totalReturns == 0 ? "—" : $"{t} ({100.0 * t / totalReturns:F1}% of returns)"));
                 }
             }
             // J7: the walk's own state - a stopped walk must be visible.
