@@ -105,7 +105,6 @@ public sealed class InspectionWindow : Window
     bool submitBusy;
     Button? submitBtn;
     Button? acknowledgeBtn;
-    bool riskAcknowledged;
     bool isBlockedRecord;
     readonly System.Threading.Timer signatureDebounceTimer;
 
@@ -569,8 +568,7 @@ public sealed class InspectionWindow : Window
         footer.Children.Add(riskFooter);
 
         acknowledgeBtn = new Button { Content = "Acknowledge", Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(14, 6, 14, 6), Visibility = Visibility.Collapsed };
-        acknowledgeBtn.Click += (_, _) => { riskAcknowledged = true; UpdateSubmitEnabled(); acknowledgeBtn.Visibility = Visibility.Collapsed; };
-        footer.Children.Add(acknowledgeBtn);
+            footer.Children.Add(acknowledgeBtn);
 
         // Actions — left-aligned buttons row
         var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
@@ -1708,3 +1706,4 @@ public sealed class InspectionWindow : Window
         return path;
     }
 }
+
