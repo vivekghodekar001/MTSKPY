@@ -188,6 +188,7 @@ internal static class Program
         var newBook = new Mskpy.Infrastructure.VendorPeople(
             System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"vendor-people-{Guid.NewGuid():N}.json"));
         newBook.Add("Sandip Kale", "9000000000");
+        newBook.Add("Vivek Kumar", "9111111111"); // H3: a second entry so a re-pick really changes value
         var inspection = new InspectionWindow(
             record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow,
             owner, installerBook: newBook);
@@ -232,6 +233,59 @@ internal static class Program
         nameBox.Text = "no such installer";
         Assert(inspection.RefreshVendorSuggestionList() == 0,
             "a typed value with no match leaves nothing to offer, so the popup stays shut");
+
+        // H3: picking has to FILL the boxes - the name box with the name, the
+        // contact box with that person's mobile - and the contact dropdown has
+        // to exist and offer the same book. The contact box is cleared first so
+        // DecidePick returns Fill: a differing typed mobile would raise the
+        // modal Ask question and hang the suite.
+        var contactBox = installerCombos.First(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Mobile No");
+        Assert(contactBox.ItemTemplate != null && string.IsNullOrEmpty(contactBox.DisplayMemberPath),
+            "the contact dropdown prints each row through a template, leaving the box's own text to ToString");
+
+        nameBox.Text = "";
+        contactBox.Text = "";
+        inspection.RefreshVendorSuggestionList(offerBookWhenEmpty: true);
+        var pickedPerson = (nameBox.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
+            .OfType<Mskpy.Infrastructure.VendorPeople.Person>()
+            .First(p => p.Name == "Sandip Kale");
+        nameBox.SelectedItem = pickedPerson;
+        Assert(nameBox.Text == "Sandip Kale",
+            "picking a name from the dropdown puts that name into the name box");
+        Assert(contactBox.Text == "9000000000",
+            "picking a name fills the contact box with the mobile from the book");
+
+        // The contact box on its own: same book, and a pick names the person
+        // when the name box is empty.
+        nameBox.Text = "";
+        inspection.RefreshContactSuggestionList(offerBookWhenEmpty: true);
+        Assert(ContactLabels(contactBox).Any(l => l.Contains("Sandip Kale", StringComparison.Ordinal)),
+            "the contact dropdown offers the same book, labelled with the name and the mobile");
+        var pickedOption = (contactBox.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
+            .OfType<InspectionWindow.VendorOption>()
+            .First(o => o.Person.Name == "Sandip Kale");
+        contactBox.SelectedItem = pickedOption;
+        // The pump matters: WPF's own selection write lands on the box after
+        // the pick handler returns, and it must land on the mobile.
+        contactBox.Dispatcher.Invoke(new Action(() => { }), System.Windows.Threading.DispatcherPriority.Loaded);
+        Assert(contactBox.Text == "9000000000",
+            "picking a contact puts that mobile into the contact box (got '" + contactBox.Text + "')");
+        Assert(nameBox.Text == "Sandip Kale",
+            "picking a contact also fills the name box when the officer has not typed a name");
+
+        // ...but never over a name the officer has already typed. A different
+        // person is picked so the selection genuinely changes (VendorOption is
+        // a record - re-picking an equal value would not fire the event).
+        nameBox.Text = "Someone Else";
+        contactBox.Text = ""; // the box still holds the previous mobile, which would filter the book
+        inspection.RefreshContactSuggestionList(offerBookWhenEmpty: true);
+        contactBox.SelectedItem = (contactBox.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
+            .OfType<InspectionWindow.VendorOption>()
+            .First(o => o.Person.Name == "Vivek Kumar");
+        Assert(contactBox.Text == "9111111111",
+            "picking a different contact replaces the mobile in the contact box");
+        Assert(nameBox.Text == "Someone Else",
+            "picking a contact never overwrites a name the officer has typed");
 
         // G1a evidence: the installer card and the location heading as they
         // actually lay out, with the Photos tab selected.
@@ -278,6 +332,13 @@ internal static class Program
         Assert(!statusText.Contains("Signature check failed", StringComparison.Ordinal),
             "the debounced signature check runs the real comparison, not an error path");
     }
+    /// <summary>H3: the labels the contact dropdown is currently offering.</summary>
+    static List<string> ContactLabels(ComboBox box) =>
+        (box.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
+            .OfType<InspectionWindow.VendorOption>()
+            .Select(o => o.Label)
+            .ToList();
+
     /// <summary>H1: the names the vendor dropdown is currently offering.</summary>
     static List<string> InstallerNames(ComboBox box) =>
         (box.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())

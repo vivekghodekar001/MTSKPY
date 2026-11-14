@@ -93,7 +93,21 @@ public sealed class InspectionWindow : Window
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
     readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
+    /// <summary>
+    /// H3: how a contact row prints in the dropdown - "name  ·  mobile". The
+    /// row shows this template; the box's own text is ToString() (the mobile),
+    /// so WPF's selection write can never paste the label into the field.
+    /// </summary>
+    static readonly DataTemplate ContactRowTemplate = BuildContactRowTemplate();
+
+    static DataTemplate BuildContactRowTemplate()
+    {
+        var rowText = new FrameworkElementFactory(typeof(TextBlock));
+        rowText.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(VendorOption.Label)));
+        return new DataTemplate { VisualTree = rowText };
+    }
+
+    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0), ItemTemplate = ContactRowTemplate };
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
     StackPanel? manualRows;
@@ -455,7 +469,48 @@ public sealed class InspectionWindow : Window
         vendorPersonMobileBox.Loaded += (_, _) =>
         {
             if (vendorPersonMobileBox.Template.FindName("PART_EditableTextBox", vendorPersonMobileBox) is TextBox tb)
-                tb.TextChanged += (_, _) => UpdateRisk();
+            {
+                tb.TextChanged += (_, _) =>
+                {
+                    // H3: a pick is filling this box - rebuilding under it
+                    // would drop the very entry being picked.
+                    if (vendorPicking) { UpdateRisk(); return; }
+                    // H3: the contact box offers the same book, by name or by
+                    // number, and opens on a match exactly like the name box.
+                    vendorPersonMobileBox.IsDropDownOpen = RefreshContactSuggestionList() > 0;
+                    UpdateRisk();
+                };
+            }
+        };
+        vendorPersonMobileBox.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                vendorPersonMobileBox.IsDropDownOpen = false;
+                e.Handled = true;
+            }
+        };
+        vendorPersonMobileBox.DropDownOpened += (_, _) => RefreshContactSuggestionList(offerBookWhenEmpty: true);
+        vendorPersonMobileBox.SelectionChanged += (_, e) =>
+        {
+            // H3: read the pick off the event - replacing the item list clears
+            // SelectedItem before this handler runs.
+            var picked = e.AddedItems.Count > 0 ? e.AddedItems[0] as VendorOption : null;
+            picked ??= vendorPersonMobileBox.SelectedItem as VendorOption;
+            if (picked == null) return;
+            vendorPicking = true;
+            try
+            {
+                if (!string.Equals(vendorPersonMobileBox.Text, picked.Person.Mobile, StringComparison.Ordinal))
+                    vendorPersonMobileBox.Text = picked.Person.Mobile;
+                // H3: a contact chosen first also names the person - but never
+                // over a name the officer has already typed.
+                if (string.IsNullOrWhiteSpace(vendorPersonNameBox.Text))
+                    vendorPersonNameBox.Text = picked.Person.Name;
+                UpdateRisk();
+            }
+            finally { vendorPicking = false; }
+            vendorPersonMobileBox.IsDropDownOpen = false;
         };
 
         // The suggestions: what the officer has typed so far, matched against
@@ -469,12 +524,15 @@ public sealed class InspectionWindow : Window
                 e.Handled = true;
             }
         };
-        vendorPersonNameBox.SelectionChanged += (_, _) =>
+        vendorPersonNameBox.SelectionChanged += (_, e) =>
         {
-            if (vendorPersonNameBox.SelectedItem is Mskpy.Infrastructure.VendorPeople.Person p)
-            {
-                PickVendorPerson(p);
-            }
+            // H3: read the pick off the event, not off SelectedItem - the item
+            // list is replaced while the text is filled, and a replaced list
+            // clears SelectedItem before this handler runs. That is why a click
+            // used to leave both boxes untouched.
+            var picked = e.AddedItems.Count > 0 ? e.AddedItems[0] as Mskpy.Infrastructure.VendorPeople.Person : null;
+            picked ??= vendorPersonNameBox.SelectedItem as Mskpy.Infrastructure.VendorPeople.Person;
+            if (picked != null) PickVendorPerson(picked);
         };
         vendorPersonNameBox.Loaded += (_, _) =>
         {
@@ -482,7 +540,10 @@ public sealed class InspectionWindow : Window
             {
                 tb.TextChanged += (_, _) =>
                 {
-                    // H1: every key press rebuilds the list; no match means
+                    // H3: a pick is filling this box - replacing the item list
+                    // here would clear the selection it is filling from.
+                    if (vendorPicking) { UpdateRisk(); return; }
+                    // H1/H3: every key press rebuilds the list; no match means
                     // nothing is offered, so the popup stays shut.
                     vendorPersonNameBox.IsDropDownOpen = RefreshVendorSuggestionList() > 0;
                     RefreshSuggestions();
@@ -1278,6 +1339,25 @@ public sealed class InspectionWindow : Window
         RefreshSuggestions();
     }
 
+    /// <summary>
+    /// H3: one row of the contact dropdown: what the officer sees in the list,
+    /// and who it is. ToString() is the MOBILE, not the label - an editable
+    /// ComboBox writes the selected item's text into the box itself, after the
+    /// pick handler has run, and that write used to replace the mobile with
+    /// "name  ·  mobile". The rows print Label; the box takes ToString().
+    /// </summary>
+    public sealed record VendorOption(string Label, VendorPeople.Person Person)
+    {
+        public override string ToString() => Person.Mobile;
+    }
+
+    /// <summary>
+    /// H3: set while a pick is filling the boxes. Rebuilding the dropdown's
+    /// item list under a pick drops the selection the pick is filling from -
+    /// which is why picking used to leave both boxes empty.
+    /// </summary>
+    bool vendorPicking;
+
     /// <summary>C5: the officer's own book of installers.</summary>
     readonly VendorPeople vendorPeople;
     TextBlock? vendorWarning;
@@ -1286,22 +1366,38 @@ public sealed class InspectionWindow : Window
     /// <summary>C5: take a person from the book.</summary>
     void PickVendorPerson(VendorPeople.Person person)
     {
-        // Picking never overwrites a mobile the officer has typed.
-        switch (VendorPeople.DecidePick(vendorPersonMobileBox.Text, person.Mobile))
+        // H3: everything below fills boxes, and each fill fires TextChanged.
+        // The guard stops those handlers from rebuilding the dropdown's item
+        // list mid-pick - a rebuilt list drops the selection, and the pick was
+        // being thrown away before it could put anything anywhere.
+        vendorPicking = true;
+        try
         {
-            case VendorPeople.Pick.Fill:
-                vendorPersonMobileBox.Text = person.Mobile;
-                break;
-            case VendorPeople.Pick.Ask:
-                var answer = MessageBox.Show(this,
-                    "The mobile you typed (" + vendorPersonMobileBox.Text + ") is not the one in your list (" + person.Mobile + ").\n\nUse the one in your list?",
-                    "Mobile", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                if (answer != MessageBoxResult.Yes) return;
-                vendorPersonMobileBox.Text = person.Mobile;
-                break;
-            case VendorPeople.Pick.Keep:
-                break;
+            // H3: the name goes INTO THE BOX, not merely into the selection.
+            if (!string.Equals(vendorPersonNameBox.Text, person.Name, StringComparison.Ordinal))
+                vendorPersonNameBox.Text = person.Name;
+
+            // Picking never overwrites a mobile the officer has typed.
+            switch (VendorPeople.DecidePick(vendorPersonMobileBox.Text, person.Mobile))
+            {
+                case VendorPeople.Pick.Fill:
+                    vendorPersonMobileBox.Text = person.Mobile;
+                    break;
+                case VendorPeople.Pick.Ask:
+                    var answer = MessageBox.Show(this,
+                        "The mobile you typed (" + vendorPersonMobileBox.Text + ") is not the one in your list (" + person.Mobile + ").\n\nUse the one in your list?",
+                        "Mobile", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    if (answer != MessageBoxResult.Yes) return;
+                    vendorPersonMobileBox.Text = person.Mobile;
+                    break;
+                case VendorPeople.Pick.Keep:
+                    break;
+            }
+            UpdateRisk();
         }
+        finally { vendorPicking = false; }
+        // H3: the pick is done - the list closes, and typing opens it again.
+        vendorPersonNameBox.IsDropDownOpen = false;
         // The vendor in the payload is the RECORD's vendor, untouched. If the
         // person was last used with another vendor, say so - softly.
         var recordVendor = record.VendorCode ?? "";
@@ -1372,6 +1468,32 @@ public sealed class InspectionWindow : Window
         vendorPersonNameBox.ItemsSource = list;
         return list.Count;
     }
+
+    /// <summary>
+    /// H3: what the CONTACT dropdown offers - the same book, matched on the
+    /// name OR the number, laid out as "name  ·  mobile". Returns how many
+    /// entries are being offered.
+    /// </summary>
+    internal int RefreshContactSuggestionList(bool offerBookWhenEmpty = false)
+    {
+        var typed = (vendorPersonMobileBox.Text ?? "").Trim();
+        IReadOnlyList<VendorOption> list = typed.Length == 0
+            ? (offerBookWhenEmpty ? vendorPeople.People.Take(6).Select(ToOption).ToList() : Array.Empty<VendorOption>())
+            : vendorPeople.People
+                .Where(p => p.Name.Contains(typed, StringComparison.OrdinalIgnoreCase)
+                         || (p.Mobile.Length > 0 && p.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(p => p.Name.Length)
+                .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .Select(ToOption)
+                .ToList();
+        vendorPersonMobileBox.ItemsSource = list;
+        return list.Count;
+    }
+
+    /// <summary>H3: one book entry as a row the contact dropdown can print.</summary>
+    static VendorOption ToOption(VendorPeople.Person p) =>
+        new(p.Mobile.Length > 0 ? p.Name + "  ·  " + p.Mobile : p.Name, p);
 
     /// <summary>C5: a note the app keeps beside its data.</summary>
     void LogStartupNote(string message)
