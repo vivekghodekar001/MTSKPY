@@ -61,6 +61,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     int generation;
     string username = "", role = "Employee", search = "", status = "Sign in to test the existing account service.", error = "", page = "Home";
     bool busy;
+    bool isCompactSidebar;
+    public bool IsCompactSidebar
+    {
+        get => isCompactSidebar;
+        set { if (Set(ref isCompactSidebar, value)) Changed(nameof(IsCompactSidebar)); }
+    }
     AccountProfile? profile;
     bool sessionVerified = true;
     ModuleDefinition? currentModule;
