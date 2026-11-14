@@ -92,8 +92,8 @@ public sealed class InspectionWindow : Window
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
 
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
@@ -388,8 +388,8 @@ public sealed class InspectionWindow : Window
         photosGrid.Children.Add(leftPanel);
 
         // Right column: Installer Details + Location
-        var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0) };
-        rightPanel.Children.Add(Label("Installer Details", 15, new Thickness(0, 0, 0, 6)));
+        var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0), MaxWidth = 420, HorizontalAlignment = HorizontalAlignment.Left };
+        // (header now lives inside the installer border)
         var installerFields = new StackPanel();
         // P1: installer boxes start EMPTY — the officer types whoever actually
         // attended. The stored name is only whoever attended last time and must
@@ -470,7 +470,15 @@ public sealed class InspectionWindow : Window
 
 
         installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
-        rightPanel.Children.Add(installerFields);
+        rightPanel.Children.Add(new Border
+        {
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12),
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            Margin = new Thickness(0, 0, 0, 12),
+            MaxWidth = 420,
+            Child = installerFields
+        });
 
         // C3/C4: the location. The submission's position is the customer's
         // site; the raw boxes are hidden behind a link, for the rare record
@@ -526,7 +534,14 @@ public sealed class InspectionWindow : Window
         // A record with no coordinates resolves to "Manual" and keeps Submit
         // disabled until the officer types them.
         _ = ResolveLocation();
-        rightPanel.Children.Add(locationCard);
+        rightPanel.Children.Add(new Border
+        {
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12),
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            MaxWidth = 420,
+            Child = locationCard
+        });
 
         Grid.SetColumn(rightPanel, 1);
         photosGrid.Children.Add(rightPanel);
@@ -1310,15 +1325,18 @@ public sealed class InspectionWindow : Window
         {
             Text = label + ": ",
             FontSize = 13,
-            // Z1: field labels use the normal body-text brush. Without this they
-            // inherit the tab's accent foreground and read as purple on dark.
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 6, 0),
             MinWidth = 150
         });
-        row.Children.Add(box);
-        row.Children.Add(clear);
+        var fieldGrid = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        fieldGrid.Children.Add(box);
+        clear.Margin = new Thickness(0, 0, 4, 0);
+        clear.VerticalAlignment = VerticalAlignment.Center;
+        clear.HorizontalAlignment = HorizontalAlignment.Right;
+        fieldGrid.Children.Add(clear);
+        row.Children.Add(fieldGrid);
         return row;
     }
 
