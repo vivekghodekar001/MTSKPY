@@ -92,8 +92,8 @@ public sealed class InspectionWindow : Window
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly TextBox vendorPersonNameBox = new() { Width = 300, Margin = new Thickness(0, 0, 8, 0) };
-    readonly TextBox vendorPersonMobileBox = new() { Width = 300, Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
 
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
@@ -397,10 +397,8 @@ public sealed class InspectionWindow : Window
         // not block a legitimate re-inspection with a different person.
         vendorPersonNameBox.Text = "";
         vendorPersonMobileBox.Text = "";
-        var clearName = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Name" };
-        clearName.Click += (_, _) => vendorPersonNameBox.Text = "";
-        var clearMobile = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0), ToolTip = "Clear Vendor Person Mobile No" };
-        clearMobile.Click += (_, _) => vendorPersonMobileBox.Text = "";
+        var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonNameBox.Text = "");
+        var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonMobileBox.Text = "");
 
         // C5: the officer's own book of installers. The boxes stay free text
         // and stay empty; the book only offers what is already in it.
@@ -417,16 +415,40 @@ public sealed class InspectionWindow : Window
         editBook.Click += (_, _) => EditVendorPeople(vendorPeople);
         var nameRow = CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName);
         nameRow.Children.Add(editBook);
-        installerFields.Children.Add(nameRow);
+        vendorPersonMobileBox.Loaded += (_, _) =>
+        {
+            if (vendorPersonMobileBox.Template.FindName("PART_EditableTextBox", vendorPersonMobileBox) is TextBox tb)
+                tb.TextChanged += (_, _) => UpdateRisk();
+        };
 
         // The suggestions: what the officer has typed so far, matched against
         // the book. Picking one fills the mobile - but never over a mobile the
         // officer has already typed.
+        vendorPersonNameBox.DisplayMemberPath = "Name";
+        vendorPersonNameBox.SelectionChanged += (_, _) =>
+        {
+            if (vendorPersonNameBox.SelectedItem is Mskpy.Infrastructure.VendorPeople.Person p)
+            {
+                PickVendorPerson(p);
+            }
+        };
+        vendorPersonNameBox.Loaded += (_, _) =>
+        {
+            if (vendorPersonNameBox.Template.FindName("PART_EditableTextBox", vendorPersonNameBox) is TextBox tb)
+            {
+                tb.TextChanged += (_, _) =>
+                {
+                    var text = vendorPersonNameBox.Text;
+                    vendorPersonNameBox.ItemsSource = vendorPeople.Suggest(text);
+                    vendorPersonNameBox.IsDropDownOpen = vendorPeople.Suggest(text).Count > 0;
+                    RefreshSuggestions();
+                    UpdateRisk();
+                };
+            }
+        };
         suggestionPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
         installerFields.Children.Add(suggestionPanel);
-        vendorPersonNameBox.TextChanged += (_, _) => RefreshSuggestions();
-        vendorPersonNameBox.TextChanged += (_, _) => UpdateRisk();
-        vendorPersonMobileBox.TextChanged += (_, _) => UpdateRisk();
+        RefreshSuggestions();
         RefreshSuggestions();
 
         // The soft warning: the person was last used with another vendor.
@@ -1280,7 +1302,7 @@ public sealed class InspectionWindow : Window
         catch { /* a note that cannot be written must never stop the form */ }
     }
 
-    static StackPanel CreateFieldRow(string label, TextBox box, Button clear)
+    static StackPanel CreateFieldRow(string label, FrameworkElement box, Button clear)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
         row.Children.Add(new TextBlock

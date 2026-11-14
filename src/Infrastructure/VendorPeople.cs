@@ -103,7 +103,7 @@ public sealed class VendorPeople
         var wanted = (prefix ?? "").Trim();
         if (wanted.Length == 0) return Array.Empty<Person>();
         return people
-            .Where(p => p.Name.StartsWith(wanted, StringComparison.OrdinalIgnoreCase))
+            .Where(p => p.Name.Contains(wanted, StringComparison.OrdinalIgnoreCase))
             .OrderBy(p => p.Name.Length)
             .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
             .Take(6)
