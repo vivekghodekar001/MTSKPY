@@ -872,7 +872,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (destination == "Returned" && store != null)
         {
             ReturnedRecords.Clear();
-            foreach (var r in store.GetAll(status: RecordStatus.Returned))
+            var seen = profile != null ? store.GetSeenUnder(profile.LoginId) : store.GetAll();
+            foreach (var r in seen.Where(r => !string.IsNullOrWhiteSpace(r.ReasonToRevert)))
                 ReturnedRecords.Add(r);
             RefreshRecordCounts();
             SetPage("Returned");

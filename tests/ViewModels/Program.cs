@@ -289,6 +289,22 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     }
     Check(walking, $"D2: the walk starts by itself after the list has had the screen ({ShellViewModel.HarvestStartDelayMs} ms)");
 }
+// E5: a Blocked row lands in Waiting on SDO and not in Needs redo.
+{
+    using var seed = new Mskpy.Infrastructure.InspectionStore(storePath);
+    seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+        ConsumerNumber: "MBLOCKED", CpfNo: "sample", VendorCode: "V", ConsumerName: "blocked one",
+        Latitude: "1", Longitude: "2", InstallDate: "2026-08-01",
+        ReasonToRevert: null, SurveyDurationMinutes: null,
+        IsFirstTime: true, Status: Mskpy.Infrastructure.RecordStatus.Blocked,
+        LastServerMessage: null, LastServerMessageAt: null, OriginalJson: "{}",
+        SubmittedDataPath: null, PhotoPaths: null, SignPaths: null,
+        BlockedReason: "state", BlockedAt: DateTime.UtcNow));
+    shell.ShowBlocked.Execute(null);
+    Check(shell.BlockedRecords.Count == 1, "E5: a seeded Blocked row appears in Waiting on SDO");
+    shell.ShowNeedsRedo.Execute(null);
+    Check(shell.NeedsRedoRecords.Count == 0, "E5: a blocked row does not appear in Needs redo");
+}
 Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
 
 sealed class FakeSecrets : ISecretInput { public int Reads; public string ReadAndClear() { Reads++; return "synthetic-password"; } }
