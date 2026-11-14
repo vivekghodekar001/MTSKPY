@@ -92,8 +92,8 @@ public sealed class InspectionWindow : Window
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Margin = new Thickness(0, 0, 8, 0) };
 
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
@@ -424,7 +424,14 @@ public sealed class InspectionWindow : Window
         // The suggestions: what the officer has typed so far, matched against
         // the book. Picking one fills the mobile - but never over a mobile the
         // officer has already typed.
-        vendorPersonNameBox.DisplayMemberPath = "Name";
+        vendorPersonNameBox.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Escape)
+            {
+                vendorPersonNameBox.IsDropDownOpen = false;
+                e.Handled = true;
+            }
+        };
         vendorPersonNameBox.SelectionChanged += (_, _) =>
         {
             if (vendorPersonNameBox.SelectedItem is Mskpy.Infrastructure.VendorPeople.Person p)
