@@ -183,9 +183,14 @@ internal static class Program
             new Mskpy.Infrastructure.InspectionMultipartBuilder(),
             new Mskpy.Infrastructure.LocationProvider());
         var owner = new Window();
+        // H1: a book the officer filled in by hand, with the app's own data
+        // folder left out of it - the test never touches the real profile.
+        var newBook = new Mskpy.Infrastructure.VendorPeople(
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"vendor-people-{Guid.NewGuid():N}.json"));
+        newBook.Add("Sandip Kale", "9000000000");
         var inspection = new InspectionWindow(
             record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow,
-            owner);
+            owner, installerBook: newBook);
 
         var root = (FrameworkElement)inspection.Content;
         root.Measure(new Size(1000, 820));
@@ -208,6 +213,25 @@ internal static class Program
             "the installer list Edit button is in the inspection window's tree");
         Assert(installerCombos.All(c => c.Height == 30),
             "both installer fields carry an explicit 30 px height");
+
+        // H1: the dropdown has to print the names the officer added by hand.
+        var nameBox = installerCombos.First(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Name");
+        Assert(nameBox.DisplayMemberPath == "Name",
+            "the vendor name dropdown prints each entry's name instead of the record's ToString");
+
+        nameBox.Text = "";
+        inspection.RefreshVendorSuggestionList(offerBookWhenEmpty: true);
+        Assert(InstallerNames(nameBox).Contains("Sandip Kale"),
+            "a name added by hand in Edit… is offered as soon as the dropdown is opened");
+
+        nameBox.Text = "Sand";
+        var nameMatches = inspection.RefreshVendorSuggestionList();
+        Assert(nameMatches > 0 && InstallerNames(nameBox).Contains("Sandip Kale"),
+            "typing a few characters matches a name added by hand, case-insensitively");
+
+        nameBox.Text = "no such installer";
+        Assert(inspection.RefreshVendorSuggestionList() == 0,
+            "a typed value with no match leaves nothing to offer, so the popup stays shut");
 
         // G1a evidence: the installer card and the location heading as they
         // actually lay out, with the Photos tab selected.
@@ -254,6 +278,13 @@ internal static class Program
         Assert(!statusText.Contains("Signature check failed", StringComparison.Ordinal),
             "the debounced signature check runs the real comparison, not an error path");
     }
+    /// <summary>H1: the names the vendor dropdown is currently offering.</summary>
+    static List<string> InstallerNames(ComboBox box) =>
+        (box.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
+            .OfType<Mskpy.Infrastructure.VendorPeople.Person>()
+            .Select(p => p.Name)
+            .ToList();
+
     static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
     {
         yield return parent;

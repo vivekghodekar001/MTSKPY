@@ -92,7 +92,7 @@ public sealed class InspectionWindow : Window
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
     readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
@@ -130,13 +130,17 @@ public sealed class InspectionWindow : Window
         InspectionHarvester? harvester = null,
         InspectionStore? store = null,
         Action<InspectionRecord, SubmitOutcome>? onSubmitComplete = null,
-        Action<InspectionRecord, VerifyOutcome>? onVerifyComplete = null)
+        Action<InspectionRecord, VerifyOutcome>? onVerifyComplete = null,
+        Mskpy.Infrastructure.VendorPeople? installerBook = null)
     {
         this.record = record;
         this.consumerNumber = consumerNumber;
         this.cpfNo = cpfNo;
         this.loginId = loginId;
         this.workflow = workflow;
+        // H1: named installerBook, not vendorPeople - a same-named parameter
+        // would shadow this field everywhere below and hand out null.
+        this.vendorPeople = installerBook ?? new Mskpy.Infrastructure.VendorPeople();
 
         this.harvester = harvester;
         this.store = store; // W1
@@ -478,14 +482,18 @@ public sealed class InspectionWindow : Window
             {
                 tb.TextChanged += (_, _) =>
                 {
-                    var text = vendorPersonNameBox.Text;
-                    vendorPersonNameBox.ItemsSource = vendorPeople.Suggest(text);
-                    vendorPersonNameBox.IsDropDownOpen = vendorPeople.Suggest(text).Count > 0;
+                    // H1: every key press rebuilds the list; no match means
+                    // nothing is offered, so the popup stays shut.
+                    vendorPersonNameBox.IsDropDownOpen = RefreshVendorSuggestionList() > 0;
                     RefreshSuggestions();
                     UpdateRisk();
                 };
             }
         };
+        // H1: opening the dropdown by clicking the arrow also rebuilds it, so a
+        // name added through Edit… is offered without a keystroke. With an empty
+        // box the whole book (first six) is what the officer is offered.
+        vendorPersonNameBox.DropDownOpened += (_, _) => RefreshVendorSuggestionList(offerBookWhenEmpty: true);
         RefreshSuggestions();
 
         // The soft warning: the person was last used with another vendor.
@@ -1271,7 +1279,7 @@ public sealed class InspectionWindow : Window
     }
 
     /// <summary>C5: the officer's own book of installers.</summary>
-    readonly VendorPeople vendorPeople = new();
+    readonly VendorPeople vendorPeople;
     TextBlock? vendorWarning;
     TextBlock? installerHint;
 
@@ -1347,6 +1355,22 @@ public sealed class InspectionWindow : Window
         grid.Children.Add(box);
         grid.Children.Add(clear);
         return grid;
+    }
+
+    /// <summary>
+    /// H1: what the vendor name dropdown offers, and how many entries it is
+    /// offering. Typing filters the book (case-insensitive); opening the box
+    /// with an empty field offers the book itself, so a name just added
+    /// through Edit… shows up without a keystroke.
+    /// </summary>
+    internal int RefreshVendorSuggestionList(bool offerBookWhenEmpty = false)
+    {
+        var typed = (vendorPersonNameBox.Text ?? "").Trim();
+        IReadOnlyList<VendorPeople.Person> list = typed.Length == 0
+            ? (offerBookWhenEmpty ? vendorPeople.People.Take(6).ToList() : Array.Empty<VendorPeople.Person>())
+            : vendorPeople.Suggest(typed);
+        vendorPersonNameBox.ItemsSource = list;
+        return list.Count;
     }
 
     /// <summary>C5: a note the app keeps beside its data.</summary>
