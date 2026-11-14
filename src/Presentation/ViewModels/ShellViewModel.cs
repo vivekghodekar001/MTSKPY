@@ -24,7 +24,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     readonly InspectionMultipartBuilder? builder;
     readonly LocationProvider? location;
     readonly string? inspectionHostOverride;
+    readonly SessionStore? sessionStore;
     readonly string? indexTsvPath;
+    public SessionStore Sessions { get; private set; } = new SessionStore();
     // A5: the index path is runtime-editable so the tsv can be reloaded in place.
     string indexPath = "";
     public string IndexPath { get => indexPath; set => Set(ref indexPath, value?.Trim() ?? ""); }
@@ -60,6 +62,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     string username = "", role = "Employee", search = "", status = "Sign in to test the existing account service.", error = "", page = "Home";
     bool busy;
     AccountProfile? profile;
+    bool sessionVerified = true;
     ModuleDefinition? currentModule;
     SchemeOption selectedScheme;
     ApplicationDocument? selectedApplication;
@@ -113,13 +116,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         string? inspectionHostOverride = null,
         string? indexTsvPath = null,
         string? storePath = null,
-        CredentialStore? credentials = null)
+        CredentialStore? credentials = null,
+        SessionStore? sessionStore = null)
     {
         this.workflow = workflow; this.secret = secret; this.desktop = desktop;
         this.index = index; this.builder = builder; this.location = location;
         Credentials = credentials ?? new CredentialStore();
         this.inspectionHostOverride = inspectionHostOverride;
         this.indexTsvPath = indexTsvPath;
+        this.sessionStore = sessionStore;
+        this.Sessions = sessionStore ?? new SessionStore();
         this.indexPath = indexTsvPath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RenewableEnergyDesktop", "index.tsv");
@@ -217,6 +223,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool IsIdle => !IsBusy;
     public bool IsSignedIn => profile != null;
     public bool IsSignedOut => !IsSignedIn;
+    public bool IsSessionUnverified => IsSignedIn && !sessionVerified;
     public bool IsList => page == "Applications";
     public bool IsReturned => page == "Returned";
     public bool IsNeedsRedo => page == "NeedsRedo";
@@ -450,15 +457,27 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         SignInLog.Write("auto sign-in: requested");
         if (!StaySignedIn) { SignInLog.Write("auto sign-in: skipped (stay signed in is off)"); return; }
+
+        // D9: restore the session first, without touching the network.
+        var restored = RestoreSession();
+        if (restored)
+        {
+            SignInLog.Write("session restored from disk: " + Username);
+            sessionVerified = false;
+            Changed(nameof(IsSessionUnverified));
+            // D9: verify in the background. A transient failure leaves the
+            // restored session in place; only a definite refusal clears it.
+            _ = VerifySessionAsync();
+            return;
+        }
+
         var loaded = Credentials.LoadWithStep();
         SignInLog.Write("credential: " + Credentials.Describe(loaded));
         if (!loaded.Found) return;
         if (!loaded.Ok)
         {
-            // The file is present but this Windows account cannot open it:
-            // that is the unprotect step, and it is not recoverable - forget it
-            // and ask once.
             Credentials.Clear();
+            Sessions.Clear();
             Username = "";
             Error = loaded.Step == "unprotect"
                 ? "The saved sign-in could not be decrypted for this Windows account (step: unprotect). Please sign in again."
@@ -468,8 +487,6 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             return;
         }
         Username = loaded.Login!;
-        // D1: client ready means the account client and the window that owns
-        // the password input both exist. The POST is only issued after this.
         SignInLog.Write("client ready (window shown, account client built)");
         var mine = new CancellationTokenSource();
         autoSignIn = mine;
@@ -480,6 +497,72 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             mine.Dispose();
         }
     }
+
+    /// <summary>
+    /// D9: restore a session from disk without any network call. Returns true
+    /// when a session was restored.
+    /// </summary>
+    bool RestoreSession()
+    {
+        var stored = Sessions.Load();
+        if (stored == null) return false;
+        profile = new AccountProfile(stored.LoginId, stored.Role, stored.Scheme,
+            stored.Fields.Select(f => new DisplayField(f.Item1, f.Item2)).ToList());
+        Username = stored.LoginId;
+        listScope = ListScopeMyPending;
+        Changed(nameof(IsSignedIn));
+        Changed(nameof(IsSignedOut));
+        Changed(nameof(ListScope));
+        LoadFromStore();
+        ApplySearch();
+        ScheduleHarvestStart();
+        Status = "Restored session.";
+        return true;
+    }
+
+    /// <summary>
+    /// D9: background verification of a restored session. Success updates the
+    /// profile and clears the unverified line. A definite refusal clears the
+    /// session and the credential. Anything else leaves things as they are.
+    /// </summary>
+    async Task VerifySessionAsync()
+    {
+        try
+        {
+            var loaded = Credentials.Load();
+            if (loaded == null) return;
+            var account = await workflow.SignInAsync(
+                new LoginRequest(Username, loaded.Value.Password, SelectedRole, SelectedScheme.Value),
+                CancellationToken.None);
+            profile = account;
+            sessionVerified = true;
+            Changed(nameof(IsSignedIn));
+            Changed(nameof(IsSessionUnverified));
+            // keep the session file fresh
+            Sessions.Save(new SessionStore.StoredSession(
+                account.LoginId, account.Role, account.Scheme,
+                account.Fields.Select(f => (f.Label, f.Value)).ToList(),
+                DateTimeOffset.Now));
+            Status = "Session verified.";
+        }
+        catch (Exception ex)
+        {
+            if (ex is SignInException se && se.Rejected)
+            {
+                Credentials.Clear();
+                Sessions.Clear();
+                profile = null;
+                sessionVerified = true;
+                Changed(nameof(IsSignedIn));
+                Changed(nameof(IsSignedOut));
+                Changed(nameof(IsSessionUnverified));
+                Error = "The saved sign-in did not work. Please sign in again.";
+                Status = "Signed out.";
+            }
+            // transient: leave the restored session in place
+        }
+    }
+
 
     async Task SignInAsync(string? passwordOverride, bool automatic, CancellationToken ct)
     {
@@ -498,6 +581,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             if (version != generation) return;
             profile = account; Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut));
             SignInLog.Write("sign-in: signed in as " + account.LoginId);
+            sessionVerified = true;
+            Changed(nameof(IsSessionUnverified));
+            // D9: persist the session so the next launch needs no network.
+            Sessions.Save(new SessionStore.StoredSession(
+                account.LoginId, account.Role, account.Scheme,
+                account.Fields.Select(f => (f.Label, f.Value)).ToList(),
+                DateTimeOffset.Now));
             // C6: keep the sign-in so the next launch does not need it typed.
             if (StaySignedIn)
             {
@@ -880,6 +970,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         // C6: signing out forgets the saved sign-in, so the button finally
         // means something.
         Credentials.Clear();
+        Sessions.Clear();
         // The store is NOT session state: it is the local cache of the statewide
         // harvest. Disposing it on sign-out left the app with a dead store after
         // the next sign-in — the list came up empty and the harvest could not
