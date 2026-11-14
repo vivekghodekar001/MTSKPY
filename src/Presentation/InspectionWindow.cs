@@ -94,7 +94,6 @@ public sealed class InspectionWindow : Window
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
     readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
     readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
-
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
     StackPanel? manualRows;
@@ -387,10 +386,9 @@ public sealed class InspectionWindow : Window
         Grid.SetColumn(leftPanel, 0);
         photosGrid.Children.Add(leftPanel);
 
-        // Right column: Installer Details + Location
-        var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0), MaxWidth = 420, HorizontalAlignment = HorizontalAlignment.Left };
-        // (header now lives inside the installer border)
-        var installerFields = new StackPanel();
+        // G1a: right column — the installer card rebuilt as a vertical stack.
+        var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        var installerStack = new StackPanel();
         // P1: installer boxes start EMPTY — the officer types whoever actually
         // attended. The stored name is only whoever attended last time and must
         // not block a legitimate re-inspection with a different person.
@@ -398,13 +396,15 @@ public sealed class InspectionWindow : Window
         vendorPersonMobileBox.Text = "";
         var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonNameBox.Text = "");
         var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonMobileBox.Text = "");
+        System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
+        System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
         // C5: the officer's own book of installers. The boxes stay free text
         // and stay empty; the book only offers what is already in it.
         if (vendorPeople.LoadWarning != null) LogStartupNote(vendorPeople.LoadWarning);
         var editBook = new Button
         {
-            Content = "Edit",
+            Content = "Edit…",
             Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
             Margin = new Thickness(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -412,8 +412,42 @@ public sealed class InspectionWindow : Window
         };
         System.Windows.Automation.AutomationProperties.SetName(editBook, "Edit the installer list");
         editBook.Click += (_, _) => EditVendorPeople(vendorPeople);
-        var nameRow = CreateFieldRow("Vendor Person Name", vendorPersonNameBox, clearName);
-        nameRow.Children.Add(editBook);
+
+        // Row 0 — "Installer Details" | "Edit…"
+        var installerHeader = new Grid();
+        installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        installerHeader.Children.Add(new TextBlock
+        {
+            Text = "Installer Details",
+            FontWeight = FontWeights.Bold,
+            FontSize = 15,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        installerHeader.Children.Add(editBook);
+        Grid.SetColumn(editBook, 1);
+        installerStack.Children.Add(installerHeader);
+
+        // Rows 1–4 — label, field, label, field. Every field carries an
+        // explicit height; the clear disc is overlaid inside its own field.
+        installerStack.Children.Add(FieldLabel("Vendor Person Name"));
+        installerStack.Children.Add(CreateComboRow(vendorPersonNameBox, clearName));
+        installerStack.Children.Add(FieldLabel("Vendor Person Mobile No"));
+        installerStack.Children.Add(CreateComboRow(vendorPersonMobileBox, clearMobile));
+
+        // Row 5 — the empty-book hint, collapsed the moment the book has anyone.
+        installerHint = new TextBlock
+        {
+            Text = "No saved installers — press Edit to add one.",
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+            Visibility = vendorPeople.People.Count == 0 ? Visibility.Visible : Visibility.Collapsed
+        };
+        installerStack.Children.Add(installerHint);
+
         vendorPersonMobileBox.Loaded += (_, _) =>
         {
             if (vendorPersonMobileBox.Template.FindName("PART_EditableTextBox", vendorPersonMobileBox) is TextBox tb)
@@ -452,9 +486,6 @@ public sealed class InspectionWindow : Window
                 };
             }
         };
-        suggestionPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
-        installerFields.Children.Add(suggestionPanel);
-        RefreshSuggestions();
         RefreshSuggestions();
 
         // The soft warning: the person was last used with another vendor.
@@ -466,25 +497,35 @@ public sealed class InspectionWindow : Window
             Margin = new Thickness(0, 4, 0, 0),
             Visibility = Visibility.Collapsed
         };
-        installerFields.Children.Add(vendorWarning);
-
-
-        installerFields.Children.Add(CreateFieldRow("Vendor Person Mobile No", vendorPersonMobileBox, clearMobile));
+        installerStack.Children.Add(vendorWarning);
         rightPanel.Children.Add(new Border
         {
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12),
             Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
             Margin = new Thickness(0, 0, 0, 12),
-            MaxWidth = 420,
-            Child = installerFields
+            Width = 420,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Child = installerStack
         });
 
         // C3/C4: the location. The submission's position is the customer's
         // site; the raw boxes are hidden behind a link, for the rare record
         // whose registered coordinates are plainly wrong.
         var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        locationCard.Children.Add(Label("Location", 15, new Thickness(0, 0, 0, 6)));
+        // G1a: "Location" and the "set manually" link share one line.
+        var locationHeader = new Grid();
+        locationHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        locationHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        locationHeader.Children.Add(new TextBlock
+        {
+            Text = "Location",
+            FontWeight = FontWeights.Bold,
+            FontSize = 15,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        locationCard.Children.Add(locationHeader);
         var clearLat = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
         clearLat.Click += (_, _) => manualLat.Text = "";
         var clearLong = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
@@ -505,8 +546,9 @@ public sealed class InspectionWindow : Window
         {
             Content = "set manually",
             Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 4, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0),
             ToolTip = "Enter the coordinates by hand - for a record whose registered coordinates are plainly wrong"
         };
         System.Windows.Automation.AutomationProperties.SetName(setManually, "set manually");
@@ -515,7 +557,8 @@ public sealed class InspectionWindow : Window
             manualRows.Visibility = manualRows.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
             setManually.Content = manualRows.Visibility == Visibility.Visible ? "hide the manual boxes" : "set manually";
         };
-        locationCard.Children.Add(setManually);
+        locationHeader.Children.Add(setManually);
+        Grid.SetColumn(setManually, 1);
         var locationActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(10, 4, 10, 4) };
         resolveBtn.Click += async (_, _) => await ResolveLocation();
@@ -1230,7 +1273,7 @@ public sealed class InspectionWindow : Window
     /// <summary>C5: the officer's own book of installers.</summary>
     readonly VendorPeople vendorPeople = new();
     TextBlock? vendorWarning;
-    StackPanel? suggestionPanel;
+    TextBlock? installerHint;
 
     /// <summary>C5: take a person from the book.</summary>
     void PickVendorPerson(VendorPeople.Person person)
@@ -1271,36 +1314,39 @@ public sealed class InspectionWindow : Window
     /// <summary>C5: the entries that match what has been typed.</summary>
     void RefreshSuggestions()
     {
-        var panel = suggestionPanel;
-        if (panel == null) return;
-        panel.Children.Clear();
-        // D4: an empty book is not a broken form - it tells the officer how to
-        // fill it, instead of showing nothing and leaving them to guess.
-        if (vendorPeople.People.Count == 0)
-        {
-            panel.Children.Add(new TextBlock
-            {
-                Text = "No saved installers — press Edit to add one.",
-                Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-                FontSize = 13,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 4, 0, 0)
-            });
-            return;
-        }
-        foreach (var person in vendorPeople.Suggest(vendorPersonNameBox.Text))
-        {
-            var button = new Button
-            {
-                Content = person.Mobile.Length > 0 ? person.Name + "  ·  " + person.Mobile : person.Name,
-                Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(0, 0, 0, 2)
-            };
-            System.Windows.Automation.AutomationProperties.SetName(button, "Use " + person.Name);
-            button.Click += (_, _) => PickVendorPerson(person);
-            panel.Children.Add(button);
-        }
+        // G1a: the dropdown is the offer (F1 opens it on a match); the only
+        // chrome left under the fields is the empty-book hint.
+        var hint = installerHint;
+        if (hint == null) return;
+        hint.Visibility = vendorPeople.People.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>G1a: a 12 px muted caption above a field.</summary>
+    static TextBlock FieldLabel(string text) => new()
+    {
+        Text = text,
+        FontSize = 12,
+        Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+        Margin = new Thickness(0, 6, 0, 0)
+    };
+
+    /// <summary>
+    /// G1a: an explicit-height field with its clear disc overlaid inside the
+    /// field's own row — 4 px from the right edge, never floating beside it.
+    /// </summary>
+    static Grid CreateComboRow(ComboBox box, Button clear)
+    {
+        var grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        box.Height = 30;
+        box.Width = double.NaN;
+        box.HorizontalAlignment = HorizontalAlignment.Stretch;
+        box.VerticalContentAlignment = VerticalAlignment.Center;
+        clear.HorizontalAlignment = HorizontalAlignment.Right;
+        clear.VerticalAlignment = VerticalAlignment.Center;
+        clear.Margin = new Thickness(0, 0, 4, 0);
+        grid.Children.Add(box);
+        grid.Children.Add(clear);
+        return grid;
     }
 
     /// <summary>C5: a note the app keeps beside its data.</summary>

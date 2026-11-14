@@ -122,7 +122,7 @@ internal static class Program
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(jpegPath)));
         var selectedPhoto = new WpfJsrInteractions(() => null).RestorePhotoAsync(new PhotoReference(jpegPath, new FileInfo(jpegPath).Length, hash), CancellationToken.None).GetAwaiter().GetResult();
         Assert(selectedPhoto.Preview is BitmapImage preview && preview.IsFrozen && selectedPhoto.Reference.Sha256 == hash, "JSR restores a genuine JPEG into a frozen thumbnail with a verified file hash");
-        SignatureTimerRegression();
+        SignatureTimerRegression(args[0]);
         // C6: the saved sign-in - encrypted for the Windows user, and gone
         // when the officer signs out.
         var credDir = Path.Combine(Path.GetTempPath(), "mskpy-cred-" + Guid.NewGuid().ToString("N"));
@@ -154,7 +154,7 @@ internal static class Program
     /// terminated the process, losing the operator's staged form. The timer
     /// callback must marshal onto the UI thread first.
     /// </summary>
-    static void SignatureTimerRegression()
+    static void SignatureTimerRegression(string outputDir)
     {
         var raw = new Dictionary<string, JsonElement>();
         using (var doc = JsonDocument.Parse("""
@@ -195,6 +195,28 @@ internal static class Program
         // they are in the logical tree but not the visual one.
         var canvases = Descendants(root).OfType<InkCanvas>().ToArray();
         Assert(canvases.Length == 2, "live inspection window exposes two signature canvases");
+
+        // G1a: the installer card must actually reach the tree. Both combos and
+        // the Edit button were built in code, but only the mobile row was ever
+        // attached - the name field and Edit button were missing from the window.
+        var installerCombos = Descendants(root).OfType<ComboBox>().ToArray();
+        Assert(installerCombos.Any(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Name"),
+            "the vendor person name ComboBox is in the inspection window's tree");
+        Assert(installerCombos.Any(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Mobile No"),
+            "the vendor person mobile ComboBox is in the inspection window's tree");
+        Assert(Descendants(root).OfType<Button>().Any(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Edit the installer list"),
+            "the installer list Edit button is in the inspection window's tree");
+        Assert(installerCombos.All(c => c.Height == 30),
+            "both installer fields carry an explicit 30 px height");
+
+        // G1a evidence: the installer card and the location heading as they
+        // actually lay out, with the Photos tab selected.
+        var photosTabItem = Descendants(root).OfType<TabItem>().First(t => t.Header?.ToString() == "Photos & Signatures");
+        photosTabItem.IsSelected = true;
+        root.Measure(new Size(1100, 850));
+        root.Arrange(new Rect(0, 0, 1100, 850));
+        root.UpdateLayout();
+        SaveRender(root, 1100, 850, Path.Combine(outputDir, "g1a-installer.png"));
 
         // The fault shape is real: a background thread cannot read Strokes.
         var offThread = Task.Run(() =>
