@@ -231,8 +231,13 @@ internal static class Program
             "typing a few characters matches a name added by hand, case-insensitively");
 
         nameBox.Text = "no such installer";
-        Assert(inspection.RefreshVendorSuggestionList() == 0,
-            "a typed value with no match leaves nothing to offer, so the popup stays shut");
+        inspection.RefreshVendorSuggestionList();
+        // T5: the Clear item leads the list; a typed value with no match is
+        // never offered as a match, so the popup stays shut.
+        var noMatchNames = InstallerNames(nameBox);
+        Assert(noMatchNames.Count > 0 && noMatchNames[0].StartsWith("\u2715 Clear")
+               && noMatchNames.All(n => n.StartsWith("\u2715 Clear") || !n.Contains("no such installer")),
+            "a typed value with no match leaves only the Clear item, so the popup stays shut; got " + string.Join(",", noMatchNames));
 
         // H3: picking has to FILL the boxes - the name box with the name, the
         // contact box with that person's mobile - and the contact dropdown has

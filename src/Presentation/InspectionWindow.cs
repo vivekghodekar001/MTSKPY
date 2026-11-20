@@ -93,7 +93,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = true, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = true, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0) };
     /// <summary>
     /// H3: how a contact row prints in the dropdown - "name  ·  mobile". The
     /// row shows this template; the box's own text is ToString() (the mobile),
@@ -121,7 +121,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         return new DataTemplate { VisualTree = dock };
     }
 
-    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0), ItemTemplate = ContactRowTemplate };
+    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = false, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0), ItemTemplate = ContactRowTemplate };
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
     StackPanel? manualRows;
@@ -453,8 +453,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // pair if it exists, else the vendor's most recent). Empty only when
         // there is no history for this vendor.
         PrefillInstallerPair();
-        var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { VendorPersonName = ""; VendorPersonMobile = ""; vendorPersonNameBox.Focus(); });
-        var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { VendorPersonMobile = ""; vendorPersonNameBox.Focus(); });
+        Button? clearName = null;
+        Button? clearMobile = null;
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
@@ -491,7 +491,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // Rows 1–4 — label, field, label, field. Every field carries an
         // explicit height; the clear disc is overlaid inside its own field.
         installerStack.Children.Add(FieldLabel("Vendor Person Name"));
-        installerStack.Children.Add(CreateComboRow(vendorPersonNameBox, clearName));
+        installerStack.Children.Add(CreateComboRow(vendorPersonNameBox));
         installerStack.Children.Add(FieldLabel("Vendor Person Mobile No"));
         installerStack.Children.Add(CreateComboRow(vendorPersonMobileBox, clearMobile));
         // B3: inline note (no modal) when a typed mobile differs from the saved one.
@@ -601,13 +601,18 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         };
         vendorPersonNameBox.SelectionChanged += (_, e) =>
         {
-            // H3: read the pick off the event, not off SelectedItem - the item
-            // list is replaced while the text is filled, and a replaced list
-            // clears SelectedItem before this handler runs. That is why a click
-            // used to leave both boxes untouched.
             var picked = e.AddedItems.Count > 0 ? e.AddedItems[0] as Mskpy.Infrastructure.VendorPeople.Person : null;
             picked ??= vendorPersonNameBox.SelectedItem as Mskpy.Infrastructure.VendorPeople.Person;
-            if (picked != null) PickVendorPerson(picked);
+            if (picked == null) return;
+            if (IsClear(picked))
+            {
+                DoClear();
+                vendorPersonNameBox.IsDropDownOpen = false;
+                return;
+            }
+            PickVendorPerson(picked);
+            EnableMobile(true);
+            SetMobileItemsFromPerson(picked);
         };
         vendorPersonNameBox.Loaded += (_, _) =>
         {
@@ -1617,6 +1622,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         if (pair == null)
         {
             LogInstaller("prefill: nothing found for vendor=" + vendorCode + " (store=" + (store != null) + ", book=" + vendorPeople.People.Count + ")");
+            EnableMobile(false);
+            vendorPersonMobileBox.ItemsSource = null;
             return;
         }
         vendorPicking = true;
@@ -1627,6 +1634,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             VendorPersonMobile = pair.Value.Mobile;
         }
         finally { vendorPicking = false; programmaticChange = false; }
+        // T2: a prefilled record has a chosen person; enable the mobile list.
+        EnableMobile(true);
+        SetMobileItemsFromPerson(new VendorPeople.Person(pair.Value.Name, pair.Value.Mobile, DateTimeOffset.Now, recordVendorCode));
         LogInstaller("prefill: resolved via " + branch + " -> " + pair.Value.Name + " / " + pair.Value.Mobile);
         UpdateRisk();
     }
@@ -1681,18 +1691,21 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// G1a: an explicit-height field with its clear disc overlaid inside the
     /// field's own row — 4 px from the right edge, never floating beside it.
     /// </summary>
-    static Grid CreateComboRow(ComboBox box, Button clear)
+    static Grid CreateComboRow(ComboBox box, Button? clear = null)
     {
         var grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
         box.Height = 30;
         box.Width = double.NaN;
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
         box.VerticalContentAlignment = VerticalAlignment.Center;
-        clear.HorizontalAlignment = HorizontalAlignment.Right;
-        clear.VerticalAlignment = VerticalAlignment.Center;
-        clear.Margin = new Thickness(0, 0, 4, 0);
         grid.Children.Add(box);
-        grid.Children.Add(clear);
+        if (clear != null)
+        {
+            clear.HorizontalAlignment = HorizontalAlignment.Right;
+            clear.VerticalAlignment = VerticalAlignment.Center;
+            clear.Margin = new Thickness(0, 0, 4, 0);
+            grid.Children.Add(clear);
+        }
         return grid;
     }
 
@@ -1718,19 +1731,80 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             .ToList();
     }
 
+    /// <summary>T2: numbers a person has. One stored per person, book may add more.</summary>
+    List<string> NumbersForPerson(VendorPeople.Person person)
+    {
+        var result = new List<string>();
+        if (store != null)
+        {
+            foreach (var c in store.VendorContacts(person.Vendor ?? recordVendorCode ?? ""))
+                if (string.Equals(c.PersonName, person.Name, StringComparison.OrdinalIgnoreCase))
+                    result.Add(c.Mobile);
+        }
+        if (string.IsNullOrWhiteSpace(person.Mobile)) { }
+        else if (!result.Contains(person.Mobile, StringComparer.Ordinal)) result.Add(person.Mobile);
+        if (result.Count == 0 && !string.IsNullOrWhiteSpace(person.Mobile)) result.Add(person.Mobile);
+        return result.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>T2: set the mobile box to this person's numbers; first is primary.</summary>
+    void SetMobileItemsFromPerson(VendorPeople.Person person)
+    {
+        vendorPicking = true;
+        try
+        {
+            var numbers = NumbersForPerson(person);
+            vendorPersonMobileBox.ItemsSource = numbers.Select(m => new VendorOption(m, person)).ToList();
+            if (numbers.Count > 0)
+            {
+                VendorPersonMobile = numbers[0];
+                vendorPersonMobileBox.SelectedIndex = 0;
+            }
+        }
+        finally { vendorPicking = false; }
+    }
+
+    internal void EnableMobile(bool enable) => vendorPersonMobileBox.IsEnabled = enable;
+
     internal int RefreshVendorSuggestionList(bool offerBookWhenEmpty = false)
     {
-        var typed = (VendorPersonName ?? "").Trim();
+        var typed = (vendorPersonNameBox.Text ?? "").Trim();
         var people = VendorPersonsForRecord();
-        IReadOnlyList<VendorPeople.Person> list = typed.Length == 0
-            ? (offerBookWhenEmpty ? people.Take(6).ToList() : Array.Empty<VendorPeople.Person>())
-            : people.Where(p => p.Name.Contains(typed, StringComparison.OrdinalIgnoreCase))
+        List<VendorPeople.Person> list;
+        if (typed.Length == 0)
+        {
+            list = offerBookWhenEmpty ? people.Take(6).ToList() : new List<VendorPeople.Person>();
+        }
+        else
+        {
+            list = people.Where(p => p.Name.Contains(typed, StringComparison.OrdinalIgnoreCase))
                     .OrderBy(p => p.Name.Length)
                     .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
                     .Take(6)
                     .ToList();
+        }
+        // T5: clearing is a first item in the name list.
+        if (!list.Any(p => p.Name == CLEAR_NAME))
+            list.Insert(0, new VendorPeople.Person(CLEAR_NAME, "", DateTimeOffset.MinValue, null));
         vendorPersonNameBox.ItemsSource = list;
         return list.Count;
+    }
+
+    const string CLEAR_NAME = "\u2715 Clear";
+
+    static bool IsClear(VendorPeople.Person p) => p != null && p.Name == CLEAR_NAME;
+
+    void DoClear()
+    {
+        vendorPicking = true;
+        try
+        {
+            VendorPersonName = "";
+            VendorPersonMobile = "";
+            vendorPersonMobileBox.ItemsSource = null;
+            EnableMobile(false);
+        }
+        finally { vendorPicking = false; }
     }
 
     /// <summary>
@@ -1740,7 +1814,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// </summary>
     internal int RefreshContactSuggestionList(bool offerBookWhenEmpty = false)
     {
-        var typed = (VendorPersonMobile ?? "").Trim();
+        var typed = (vendorPersonMobileBox.Text ?? "").Trim();
         var people = VendorPersonsForRecord();
         // 2R: once a name is chosen, the mobile box offers only that person's
         // numbers. Otherwise it offers the whole book.
