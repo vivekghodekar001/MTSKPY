@@ -1122,7 +1122,7 @@ public sealed class InspectionStore : IDisposable
             cmd.CommandText = @"
                 SELECT person_name, mobile FROM vendor_contacts
                 WHERE vendor_code = @v
-                ORDER BY last_used_at DESC;
+                ORDER BY person_name;
             ";
             cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             using var reader = cmd.ExecuteReader();

@@ -202,95 +202,32 @@ internal static class Program
         var canvases = Descendants(root).OfType<InkCanvas>().ToArray();
         Assert(canvases.Length == 2, "live inspection window exposes two signature canvases");
 
-        // G1a: the installer card must actually reach the tree. Both combos and
-        // the Edit button were built in code, but only the mobile row was ever
-        // attached - the name field and Edit button were missing from the window.
+        // V5/V1: installer fields are read-only TextBoxes; picker is a button;
+        // Clear is a text link. No combos on the row.
         var installerCombos = Descendants(root).OfType<ComboBox>().ToArray();
-        Assert(installerCombos.Any(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Name"),
-            "the vendor person name ComboBox is in the inspection window's tree");
-        Assert(installerCombos.Any(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Mobile No"),
-            "the vendor person mobile ComboBox is in the inspection window's tree");
-        Assert(Descendants(root).OfType<Button>().Any(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Edit the installer list"),
-            "the installer list Edit button is in the inspection window's tree");
-        Assert(installerCombos.All(c => c.Height == 30),
-            "both installer fields carry an explicit 30 px height");
+        Assert(!installerCombos.Any(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Name")
+            && !installerCombos.Any(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Mobile No"),
+            "the installer row has no ComboBoxes anymore");
+        var nameBox = Descendants(root).OfType<TextBox>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Vendor Person Name");
+        var contactBox = Descendants(root).OfType<TextBox>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Vendor Person Mobile No");
+        Assert(nameBox != null && contactBox != null, "name and mobile fields both exist in the tree");
+        Assert(nameBox.Height == 30 && contactBox.Height == 30, "both installer fields carry an explicit 30 px height");
+        Assert(nameBox.IsReadOnly && contactBox.IsReadOnly, "both installer fields are read-only");
+        var chooseBtn = Descendants(root).OfType<Button>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
+        Assert(chooseBtn != null && chooseBtn.IsEnabled, "the Choose... button exists and is enabled");
+        var clearLink = Descendants(root).OfType<Button>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Clear");
+        Assert(clearLink != null, "the Clear text link exists");
 
-        // H1: the dropdown has to print the names the officer added by hand.
-        var nameBox = installerCombos.First(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Name");
-        Assert(nameBox.DisplayMemberPath == "Name",
-            "the vendor name dropdown prints each entry's name instead of the record's ToString");
+        // V3: prefill writes the two plain strings on open (book has sandip).
+        var prefilledName = nameBox?.Text;
+        Assert(!string.IsNullOrWhiteSpace(prefilledName), "the name field is prefilled on open");
+        var prefilledMobile = contactBox?.Text;
+        Assert(!string.IsNullOrWhiteSpace(prefilledMobile), "the mobile field is prefilled on open");
 
-        nameBox.Text = "";
-        inspection.RefreshVendorSuggestionList(offerBookWhenEmpty: true);
-        Assert(InstallerNames(nameBox).Contains("Sandip Kale"),
-            "a name added by hand in Edit… is offered as soon as the dropdown is opened");
-
-        nameBox.Text = "Sand";
-        var nameMatches = inspection.RefreshVendorSuggestionList();
-        Assert(nameMatches > 0 && InstallerNames(nameBox).Contains("Sandip Kale"),
-            "typing a few characters matches a name added by hand, case-insensitively");
-
-        nameBox.Text = "no such installer";
-        inspection.RefreshVendorSuggestionList();
-        // T5: the Clear item leads the list; a typed value with no match is
-        // never offered as a match, so the popup stays shut.
-        var noMatchNames = InstallerNames(nameBox);
-        Assert(noMatchNames.Count > 0 && noMatchNames[0].StartsWith("\u2715 Clear")
-               && noMatchNames.All(n => n.StartsWith("\u2715 Clear") || !n.Contains("no such installer")),
-            "a typed value with no match leaves only the Clear item, so the popup stays shut; got " + string.Join(",", noMatchNames));
-
-        // H3: picking has to FILL the boxes - the name box with the name, the
-        // contact box with that person's mobile - and the contact dropdown has
-        // to exist and offer the same book. The contact box is cleared first so
-        // DecidePick returns Fill: a differing typed mobile would raise the
-        // modal Ask question and hang the suite.
-        var contactBox = installerCombos.First(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Mobile No");
-        Assert(contactBox.DisplayMemberPath == "Mobile" && contactBox.IsEditable == false,
-            "the contact box is a stock combo: DisplayMemberPath=Mobile, not editable");
-
-        nameBox.Text = "";
-        contactBox.Text = "";
-        inspection.RefreshVendorSuggestionList(offerBookWhenEmpty: true);
-        var pickedPerson = (nameBox.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
-            .OfType<Mskpy.Infrastructure.VendorPeople.Person>()
-            .First(p => p.Name == "Sandip Kale");
-        nameBox.SelectedItem = pickedPerson;
-        Assert(nameBox.Text == "Sandip Kale",
-            "picking a name from the dropdown puts that name into the name box");
-        Assert(contactBox.Text == "9000000000",
-            "picking a name fills the contact box with the mobile from the book");
-
-        // The contact box on its own: same book, and a pick names the person
-        // when the name box is empty.
-        nameBox.Text = "";
-        inspection.RefreshContactSuggestionList(offerBookWhenEmpty: true);
-        Assert(ContactLabels(contactBox).Any(l => l.Contains("Sandip Kale", StringComparison.Ordinal)),
-            "the contact dropdown offers the same book, labelled with the name and the mobile");
-        var pickedOption = (contactBox.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
-            .OfType<InspectionWindow.VendorOption>()
-            .First(o => o.Person.Name == "Sandip Kale");
-        contactBox.SelectedItem = pickedOption;
-        // The pump matters: WPF's own selection write lands on the box after
-        // the pick handler returns, and it must land on the mobile.
-        contactBox.Dispatcher.Invoke(new Action(() => { }), System.Windows.Threading.DispatcherPriority.Loaded);
-        Assert(contactBox.Text == "9000000000",
-            "picking a contact puts that mobile into the contact box (got '" + contactBox.Text + "')");
-        Assert(nameBox.Text == "Sandip Kale",
-            "picking a contact also fills the name box when the officer has not typed a name");
-
-        // ...but never over a name the officer has already typed. A different
-        // person is picked so the selection genuinely changes (VendorOption is
-        // a record - re-picking an equal value would not fire the event).
-        nameBox.Text = "Someone Else";
-        contactBox.Text = ""; // the box still holds the previous mobile, which would filter the book
-        inspection.RefreshContactSuggestionList(offerBookWhenEmpty: true);
-        contactBox.SelectedItem = (contactBox.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
-            .OfType<InspectionWindow.VendorOption>()
-            .First(o => o.Person.Name == "Vivek Kumar");
-        Assert(contactBox.Text == "9111111111",
-            "picking a different contact replaces the mobile in the contact box");
-        Assert(nameBox.Text == "Someone Else",
-            "picking a contact never overwrites a name the officer has typed");
+        // V1/V5: Clear empties both strings; book untouched.
+        inspection.DoClear();
+        Assert(string.IsNullOrWhiteSpace(nameBox.Text) && string.IsNullOrWhiteSpace(contactBox.Text),
+            "Clear empties both the name and mobile fields");
 
         // G1a evidence: the installer card and the location heading as they
         // actually lay out, with the Photos tab selected.
