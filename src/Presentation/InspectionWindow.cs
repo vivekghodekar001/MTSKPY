@@ -1583,9 +1583,16 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             vendorPersonNameBox.Text = person.Name;
             vendorPersonNameBox.GetBindingExpression(ComboBox.TextProperty)?.UpdateSource();
             // U2: mobile box derives from the person; first item is the primary.
-            vendorPersonMobileBox.ItemsSource = NumbersForPerson(person);
-            vendorPersonMobileBox.SelectedIndex = 0;
-            vendorPersonMobileBox.GetBindingExpression(ComboBox.SelectedItemProperty)?.UpdateSource();
+            var numbers = NumbersForPerson(person);
+            vendorPersonMobileBox.ItemsSource = numbers.Select(m => new VendorOption(m, person)).ToList();
+            if (numbers.Count > 0)
+            {
+                VendorPersonMobile = numbers[0];
+                vendorPersonMobileBox.Text = numbers[0];
+                vendorPersonMobileBox.SelectedIndex = 0;
+                vendorPersonMobileBox.GetBindingExpression(ComboBox.TextProperty)?.UpdateSource();
+                vendorPersonMobileBox.GetBindingExpression(ComboBox.SelectedItemProperty)?.UpdateSource();
+            }
             UpdateRisk();
             UpdatePlaceholders();
         }
