@@ -1794,7 +1794,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             if (numbers.Count > 0)
             {
                 VendorPersonMobile = numbers[0];
+                vendorPersonMobileBox.Text = numbers[0];
                 vendorPersonMobileBox.SelectedIndex = 0;
+                vendorPersonMobileBox.GetBindingExpression(ComboBox.TextProperty)?.UpdateSource();
             }
         }
         finally { vendorPicking = false; }
