@@ -146,12 +146,15 @@ public sealed class InspectionStore : IDisposable
                  person_name TEXT NOT NULL,
                  mobile TEXT NOT NULL,
                  last_used_at TEXT NOT NULL,
-                 PRIMARY KEY (vendor_code, person_name, mobile)
+                 PRIMARY KEY (vendor_code, person_name)
              );
              CREATE INDEX IF NOT EXISTS ix_vendor_contacts_vendor ON vendor_contacts(vendor_code);
              CREATE INDEX IF NOT EXISTS ix_vendor_contacts_lastused ON vendor_contacts(last_used_at);
         ";
         cmd.ExecuteNonQuery();
+
+        // B2 (0.9.12): migrate vendor_contacts to (vendor_code, person_name) PK.
+        MigrateVendorContacts();
 
         // J3: a store written by an earlier build has no seen_cpfs column at
         // all. Add it before the backfill reads it.
@@ -954,6 +957,114 @@ public sealed class InspectionStore : IDisposable
         }
     }
 
+    /// <summary>B2 (0.9.12): collapse vendor_contacts to (vendor_code, person_name) PK,
+    /// keeping the row with the newest last_used_at per person. Idempotent.</summary>
+    void MigrateVendorContacts()
+    {
+        // Does the table exist?
+        bool exists = false;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='vendor_contacts';";
+            using var r = cmd.ExecuteReader();
+            exists = r.Read();
+        }
+        finally { dbLock.Release(); }
+        if (!exists) return;
+
+        // Determine whether mobile is part of the PK (old schema).
+        bool oldPk = false;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "PRAGMA table_info(vendor_contacts);";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var col = r.GetString(1);
+                var pk = r.GetInt32(5);
+                if (col == "mobile" && pk != 0) { oldPk = true; break; }
+            }
+        }
+        finally { dbLock.Release(); }
+        if (!oldPk) return;
+
+        int before = 0, after = 0;
+        dbLock.Wait();
+        try
+        {
+            using (var c = connection.CreateCommand()) { c.CommandText = "SELECT COUNT(*) FROM vendor_contacts;"; before = Convert.ToInt32(c.ExecuteScalar()); }
+            using var tx = connection.BeginTransaction();
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+                    CREATE TABLE vendor_contacts_new (
+                        vendor_code TEXT NOT NULL,
+                        person_name TEXT NOT NULL,
+                        mobile TEXT NOT NULL,
+                        last_used_at TEXT NOT NULL,
+                        PRIMARY KEY (vendor_code, person_name)
+                    );
+                ";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+                    INSERT INTO vendor_contacts_new (vendor_code, person_name, mobile, last_used_at)
+                    SELECT v.vendor_code, v.person_name, v.mobile, v.last_used_at
+                    FROM vendor_contacts v
+                    WHERE v.last_used_at = (
+                        SELECT MAX(v2.last_used_at) FROM vendor_contacts v2
+                        WHERE v2.vendor_code = v.vendor_code AND v2.person_name = v.person_name
+                    );
+                ";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "DROP TABLE vendor_contacts;";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "ALTER TABLE vendor_contacts_new RENAME TO vendor_contacts;";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_vendor_contacts_vendor ON vendor_contacts(vendor_code);";
+                cmd.ExecuteNonQuery();
+            }
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_vendor_contacts_lastused ON vendor_contacts(last_used_at);";
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+            using (var c = connection.CreateCommand()) { c.CommandText = "SELECT COUNT(*) FROM vendor_contacts;"; after = Convert.ToInt32(c.ExecuteScalar()); }
+        }
+        finally { dbLock.Release(); }
+        System.Diagnostics.Debug.WriteLine("vendor_contacts migration: merged " + (before - after) + " duplicate rows (" + before + " -> " + after + ")");
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenewableEnergyDesktop");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "inspection.log"),
+                string.Format("{0:O} vendor_contacts migration: merged {1} duplicate rows ({2} -> {3}){4}", DateTime.Now, before - after, before, after, Environment.NewLine));
+        }
+        catch { }
+    }
+
     /// <summary>P3: upsert a vendor contact pair and mark it last-used now.</summary>
     public void UpsertVendorContact(string vendorCode, string personName, string mobile, DateTimeOffset? lastUsedAt = null)
     {
@@ -966,8 +1077,8 @@ public sealed class InspectionStore : IDisposable
             cmd.CommandText = @"
                 INSERT INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at)
                 VALUES (@v, @p, @m, @t)
-                ON CONFLICT(vendor_code, person_name, mobile)
-                DO UPDATE SET last_used_at = excluded.last_used_at;
+                ON CONFLICT(vendor_code, person_name)
+                DO UPDATE SET mobile = excluded.mobile, last_used_at = excluded.last_used_at;
             ";
             cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             cmd.Parameters.AddWithValue("@p", personName.Trim());

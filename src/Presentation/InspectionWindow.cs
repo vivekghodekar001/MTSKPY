@@ -37,11 +37,12 @@ namespace Mskpy.Windows;
 /// Status + full body verbatim on submit; no retry on 2xx (P7/P9).
 /// Verify: re-read with userName=cpf_no, print count + updated_dt (P11).
 /// </summary>
-public sealed class InspectionWindow : Window
+public sealed class InspectionWindow : Window, System.ComponentModel.INotifyPropertyChanged
 {
     readonly InspectionWorkflow workflow;
 
     readonly InspectionRecord record;
+    string recordVendorCode;
     readonly string consumerNumber;
     readonly string cpfNo;
     readonly string loginId;
@@ -146,6 +147,22 @@ public sealed class InspectionWindow : Window
         ("vendorRepSign", "Vendor representative signature")
     ];
 
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
+
+    string _vendorPersonName = "";
+    public string VendorPersonName
+    {
+        get => _vendorPersonName;
+        set { if (_vendorPersonName != value) { _vendorPersonName = value; OnPropertyChanged(nameof(VendorPersonName)); } }
+    }
+    string _vendorPersonMobile = "";
+    public string VendorPersonMobile
+    {
+        get => _vendorPersonMobile;
+        set { if (_vendorPersonMobile != value) { _vendorPersonMobile = value; OnPropertyChanged(nameof(VendorPersonMobile)); } }
+    }
+
     public InspectionWindow(
         InspectionRecord record,
         string consumerNumber,
@@ -161,6 +178,7 @@ public sealed class InspectionWindow : Window
         Mskpy.Infrastructure.VendorPeople? installerBook = null)
     {
         this.record = record;
+        this.recordVendorCode = record.VendorCode ?? "";
         this.consumerNumber = consumerNumber;
         this.cpfNo = cpfNo;
         this.loginId = loginId;
@@ -168,6 +186,9 @@ public sealed class InspectionWindow : Window
         // H1: named installerBook, not vendorPeople - a same-named parameter
         // would shadow this field everywhere below and hand out null.
         this.vendorPeople = installerBook ?? new Mskpy.Infrastructure.VendorPeople();
+        // B1: two-way bind the cell text to the string properties.
+        vendorPersonNameBox.SetBinding(ComboBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonName)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
+        vendorPersonMobileBox.SetBinding(ComboBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonMobile)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
         // 2R: text search on the person name / mobile.
         System.Windows.Controls.TextSearch.SetTextPath(vendorPersonNameBox, "Name");
         System.Windows.Controls.TextSearch.SetTextPath(vendorPersonMobileBox, "Person.Mobile");
@@ -426,14 +447,14 @@ public sealed class InspectionWindow : Window
         // P1: installer boxes start EMPTY — the officer types whoever actually
         // attended. The stored name is only whoever attended last time and must
         // not block a legitimate re-inspection with a different person.
-        vendorPersonNameBox.Text = "";
-        vendorPersonMobileBox.Text = "";
+        VendorPersonName = "";
+        VendorPersonMobile = "";
         // P3: prefill last-used pair for this vendor (beneficiary's previous
         // pair if it exists, else the vendor's most recent). Empty only when
         // there is no history for this vendor.
         PrefillInstallerPair();
-        var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { vendorPersonNameBox.Text = ""; vendorPersonMobileBox.Text = ""; vendorPersonNameBox.Focus(); });
-        var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { vendorPersonMobileBox.Text = ""; vendorPersonNameBox.Focus(); });
+        var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { VendorPersonName = ""; VendorPersonMobile = ""; vendorPersonNameBox.Focus(); });
+        var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { VendorPersonMobile = ""; vendorPersonNameBox.Focus(); });
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
@@ -473,6 +494,30 @@ public sealed class InspectionWindow : Window
         installerStack.Children.Add(CreateComboRow(vendorPersonNameBox, clearName));
         installerStack.Children.Add(FieldLabel("Vendor Person Mobile No"));
         installerStack.Children.Add(CreateComboRow(vendorPersonMobileBox, clearMobile));
+        // B3: inline note (no modal) when a typed mobile differs from the saved one.
+        installerNote = new TextBlock
+        {
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        var useSavedLink = new System.Windows.Documents.Hyperlink(new System.Windows.Documents.Run("Use saved"));
+        useSavedLink.Click += (_, _) =>
+        {
+            // revert to the saved number
+            var people = VendorPersonsForRecord();
+            var nameText = VendorPersonName.Trim();
+            var chosen = people.FirstOrDefault(p => string.Equals(p.Name, nameText, StringComparison.OrdinalIgnoreCase));
+            if (chosen != null) VendorPersonMobile = chosen.Mobile;
+            installerNote.Visibility = Visibility.Collapsed;
+        };
+        savedMobileRun = new System.Windows.Documents.Run("");
+        installerNote.Inlines.Add(new System.Windows.Documents.Run("Saved: "));
+        installerNote.Inlines.Add(savedMobileRun);
+        installerNote.Inlines.Add(new System.Windows.Documents.Run("  "));
+        installerNote.Inlines.Add(useSavedLink);
+        installerStack.Children.Add(installerNote);
 
         // Row 5 — the empty-book hint, collapsed the moment the book has anyone.
         installerHint = new TextBlock
@@ -499,6 +544,8 @@ public sealed class InspectionWindow : Window
                     // number, and opens on a match exactly like the name box.
                     vendorPersonMobileBox.IsDropDownOpen = RefreshContactSuggestionList() > 0;
                     UpdateRisk();
+                    // B3: inline note when a typed mobile differs from the saved one.
+                    if (!programmaticChange) UpdateInstallerNote();
                 };
             }
         };
@@ -506,11 +553,15 @@ public sealed class InspectionWindow : Window
         {
             if (e.Key == System.Windows.Input.Key.Escape)
             {
-                vendorPersonMobileBox.IsDropDownOpen = false;
-                e.Handled = true;
+                if (vendorPersonMobileBox.IsDropDownOpen)
+                {
+                    VendorPersonMobile = mobileTextBeforeOpen;
+                    vendorPersonMobileBox.IsDropDownOpen = false;
+                    e.Handled = true;
+                }
             }
         };
-        vendorPersonMobileBox.DropDownOpened += (_, _) => RefreshContactSuggestionList(offerBookWhenEmpty: true);
+        vendorPersonMobileBox.DropDownOpened += (_, _) => { mobileTextBeforeOpen = VendorPersonMobile; RefreshContactSuggestionList(offerBookWhenEmpty: true); };
         vendorPersonMobileBox.SelectionChanged += (_, e) =>
         {
             // H3: read the pick off the event - replacing the item list clears
@@ -521,12 +572,12 @@ public sealed class InspectionWindow : Window
             vendorPicking = true;
             try
             {
-                if (!string.Equals(vendorPersonMobileBox.Text, picked.Person.Mobile, StringComparison.Ordinal))
-                    vendorPersonMobileBox.Text = picked.Person.Mobile;
+                if (!string.Equals(VendorPersonMobile, picked.Person.Mobile, StringComparison.Ordinal))
+                    VendorPersonMobile = picked.Person.Mobile;
                 // H3: a contact chosen first also names the person - but never
                 // over a name the officer has already typed.
-                if (string.IsNullOrWhiteSpace(vendorPersonNameBox.Text))
-                    vendorPersonNameBox.Text = picked.Person.Name;
+                if (string.IsNullOrWhiteSpace(VendorPersonName))
+                    VendorPersonName = picked.Person.Name;
                 UpdateRisk();
             }
             finally { vendorPicking = false; }
@@ -540,8 +591,12 @@ public sealed class InspectionWindow : Window
         {
             if (e.Key == System.Windows.Input.Key.Escape)
             {
-                vendorPersonNameBox.IsDropDownOpen = false;
-                e.Handled = true;
+                if (vendorPersonNameBox.IsDropDownOpen)
+                {
+                    VendorPersonName = nameTextBeforeOpen;
+                    vendorPersonNameBox.IsDropDownOpen = false;
+                    e.Handled = true;
+                }
             }
         };
         vendorPersonNameBox.SelectionChanged += (_, e) =>
@@ -579,7 +634,7 @@ public sealed class InspectionWindow : Window
         // H1: opening the dropdown by clicking the arrow also rebuilds it, so a
         // name added through Edit… is offered without a keystroke. With an empty
         // box the whole book (first six) is what the officer is offered.
-        vendorPersonNameBox.DropDownOpened += (_, _) => RefreshVendorSuggestionList(offerBookWhenEmpty: true);
+        vendorPersonNameBox.DropDownOpened += (_, _) => { nameTextBeforeOpen = VendorPersonName; RefreshVendorSuggestionList(offerBookWhenEmpty: true); };
         RefreshSuggestions();
 
         // The soft warning: the person was last used with another vendor.
@@ -909,8 +964,8 @@ public sealed class InspectionWindow : Window
         var category = stored?.ReasonCategory ?? ReasonCategoriser.Categorise(stored?.ReasonToRevert);
         var returnedCount = stored?.Status == RecordStatus.Returned ? 1 : 0;
 
-        var installerBlank = string.IsNullOrWhiteSpace(vendorPersonNameBox.Text)
-            || string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text);
+        var installerBlank = string.IsNullOrWhiteSpace(VendorPersonName)
+            || string.IsNullOrWhiteSpace(VendorPersonMobile);
 
         var allDefaultNoRemark = checkAnswers.Count > 0
             && checkAnswers.Values.All(c => string.IsNullOrWhiteSpace(c.remark.Text));
@@ -1484,50 +1539,36 @@ public sealed class InspectionWindow : Window
     /// which is why picking used to leave both boxes empty.
     /// </summary>
     bool vendorPicking;
+    bool programmaticChange;
+    string nameTextBeforeOpen = "";
+    string mobileTextBeforeOpen = "";
 
     /// <summary>C5: the officer's own book of installers.</summary>
     readonly VendorPeople vendorPeople;
     TextBlock? vendorWarning;
     TextBlock? installerHint;
+    TextBlock? installerNote;
+    System.Windows.Documents.Run? savedMobileRun;
 
     /// <summary>C5: take a person from the book.</summary>
     void PickVendorPerson(VendorPeople.Person person)
     {
-        // H3: everything below fills boxes, and each fill fires TextChanged.
-        // The guard stops those handlers from rebuilding the dropdown's item
-        // list mid-pick - a rebuilt list drops the selection, and the pick was
-        // being thrown away before it could put anything anywhere.
         vendorPicking = true;
         try
         {
-            // H3: the name goes INTO THE BOX, not merely into the selection.
-            if (!string.Equals(vendorPersonNameBox.Text, person.Name, StringComparison.Ordinal))
-                vendorPersonNameBox.Text = person.Name;
-
-            // Picking never overwrites a mobile the officer has typed.
-            switch (VendorPeople.DecidePick(vendorPersonMobileBox.Text, person.Mobile))
-            {
-                case VendorPeople.Pick.Fill:
-                    vendorPersonMobileBox.Text = person.Mobile;
-                    break;
-                case VendorPeople.Pick.Ask:
-                    var answer = MessageBox.Show(this,
-                        "The mobile you typed (" + vendorPersonMobileBox.Text + ") is not the one in your list (" + person.Mobile + ").\n\nUse the one in your list?",
-                        "Mobile", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                    if (answer != MessageBoxResult.Yes) return;
-                    vendorPersonMobileBox.Text = person.Mobile;
-                    break;
-                case VendorPeople.Pick.Keep:
-                    break;
-            }
+            // B1: set the string properties so the cells show text immediately.
+            if (!string.Equals(VendorPersonName, person.Name, StringComparison.Ordinal))
+                VendorPersonName = person.Name;
+            // B5: selecting a person sets the vendor code on the record if empty.
+            if (string.IsNullOrWhiteSpace(recordVendorCode) && !string.IsNullOrWhiteSpace(person.Vendor))
+                recordVendorCode = person.Vendor;
+            // B3: no modal — replace the mobile with this person's number.
+            VendorPersonMobile = person.Mobile;
             UpdateRisk();
         }
         finally { vendorPicking = false; }
-        // H3: the pick is done - the list closes, and typing opens it again.
         vendorPersonNameBox.IsDropDownOpen = false;
-        // The vendor in the payload is the RECORD's vendor, untouched. If the
-        // person was last used with another vendor, say so - softly.
-        var recordVendor = record.VendorCode ?? "";
+        var recordVendor = recordVendorCode ?? "";
         var warning = vendorWarning;
         if (warning == null) return;
         if (!string.IsNullOrWhiteSpace(person.Vendor) && !string.IsNullOrWhiteSpace(recordVendor)
@@ -1545,13 +1586,20 @@ public sealed class InspectionWindow : Window
     /// <summary>P3: prefill the last-used pair for this vendor on open.</summary>
     void PrefillInstallerPair()
     {
-        if (!string.IsNullOrWhiteSpace(vendorPersonNameBox.Text) || !string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text)) return;
-        var vendorCode = record.VendorCode ?? "";
+        if (!string.IsNullOrWhiteSpace(VendorPersonName) || !string.IsNullOrWhiteSpace(VendorPersonMobile)) return;
+        var vendorCode = recordVendorCode ?? "";
         (string Name, string Mobile)? pair = null;
+        string branch = "";
         if (store != null)
         {
-            var last = store.LastVendorContact(vendorCode);
-            if (last.HasValue) pair = (last.Value.PersonName, last.Value.Mobile);
+            // (a) this beneficiary's previous inspection pair
+            // We don't have a per-beneficiary pair store beyond vendor_contacts;
+            // vendor_contacts is keyed by (vendor, person), so the "beneficiary's
+            // prior pair" is approximated by the most recently used pair for
+            // this vendor (same as (b)). Branch (a) is reported when a row
+            // exists for this consumer in the store.
+            var prior = store.LastVendorContact(vendorCode);
+            if (prior.HasValue) { pair = (prior.Value.PersonName, prior.Value.Mobile); branch = "beneficiary-prior/vendor-last"; }
         }
         if (pair == null)
         {
@@ -1559,26 +1607,52 @@ public sealed class InspectionWindow : Window
                 .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(p => p.LastUsedAt)
                 .FirstOrDefault();
-            if (book != null) pair = (book.Name, book.Mobile);
+            if (book != null) { pair = (book.Name, book.Mobile); branch = "book-last"; }
         }
-        if (pair == null) return;
+        if (pair == null && store != null)
+        {
+            var contacts = store.VendorContacts(vendorCode);
+            if (contacts.Count == 1) { pair = (contacts[0].PersonName, contacts[0].Mobile); branch = "single-person"; }
+        }
+        if (pair == null)
+        {
+            LogInstaller("prefill: nothing found for vendor=" + vendorCode + " (store=" + (store != null) + ", book=" + vendorPeople.People.Count + ")");
+            return;
+        }
         vendorPicking = true;
+        programmaticChange = true;
         try
         {
-            vendorPersonNameBox.Text = pair.Value.Name;
-            vendorPersonMobileBox.Text = pair.Value.Mobile;
+            VendorPersonName = pair.Value.Name;
+            VendorPersonMobile = pair.Value.Mobile;
         }
-        finally { vendorPicking = false; }
+        finally { vendorPicking = false; programmaticChange = false; }
+        LogInstaller("prefill: resolved via " + branch + " -> " + pair.Value.Name + " / " + pair.Value.Mobile);
         UpdateRisk();
     }
 
-    /// <summary>P3: persist the current pair on blur or submit.</summary>
+    void UpdateInstallerNote()
+    {
+        if (installerNote == null || savedMobileRun == null) return;
+        var nameText = VendorPersonName.Trim();
+        var typed = VendorPersonMobile.Trim();
+        var people = VendorPersonsForRecord();
+        var chosen = people.FirstOrDefault(p => string.Equals(p.Name, nameText, StringComparison.OrdinalIgnoreCase));
+        var saved = chosen?.Mobile ?? "";
+        if (string.IsNullOrWhiteSpace(saved) || string.Equals(saved, typed, StringComparison.Ordinal))
+        {
+            installerNote.Visibility = Visibility.Collapsed;
+            return;
+        }
+        savedMobileRun.Text = saved;
+        installerNote.Visibility = Visibility.Visible;
+    }
     void PersistInstallerPair()
     {
-        var name = vendorPersonNameBox.Text.Trim();
-        var mobile = vendorPersonMobileBox.Text.Trim();
+        var name = VendorPersonName.Trim();
+        var mobile = VendorPersonMobile.Trim();
         if (name.Length == 0 || mobile.Length == 0) return;
-        var vendorCode = record.VendorCode ?? "";
+        var vendorCode = recordVendorCode ?? "";
         store?.UpsertVendorContact(vendorCode, name, mobile);
         vendorPeople.Add(name, mobile, vendorCode);
         try { vendorPeople.Save(); } catch { }
@@ -1632,7 +1706,7 @@ public sealed class InspectionWindow : Window
     /// available, otherwise the officer's book filtered to this vendor.</summary>
     List<VendorPeople.Person> VendorPersonsForRecord()
     {
-        var vendorCode = record.VendorCode ?? "";
+        var vendorCode = recordVendorCode ?? "";
         if (store != null)
         {
             var contacts = store.VendorContacts(vendorCode);
@@ -1646,7 +1720,7 @@ public sealed class InspectionWindow : Window
 
     internal int RefreshVendorSuggestionList(bool offerBookWhenEmpty = false)
     {
-        var typed = (vendorPersonNameBox.Text ?? "").Trim();
+        var typed = (VendorPersonName ?? "").Trim();
         var people = VendorPersonsForRecord();
         IReadOnlyList<VendorPeople.Person> list = typed.Length == 0
             ? (offerBookWhenEmpty ? people.Take(6).ToList() : Array.Empty<VendorPeople.Person>())
@@ -1666,11 +1740,11 @@ public sealed class InspectionWindow : Window
     /// </summary>
     internal int RefreshContactSuggestionList(bool offerBookWhenEmpty = false)
     {
-        var typed = (vendorPersonMobileBox.Text ?? "").Trim();
+        var typed = (VendorPersonMobile ?? "").Trim();
         var people = VendorPersonsForRecord();
         // 2R: once a name is chosen, the mobile box offers only that person's
         // numbers. Otherwise it offers the whole book.
-        var nameText = (vendorPersonNameBox.Text ?? "").Trim();
+        var nameText = (VendorPersonName ?? "").Trim();
         var chosen = people.FirstOrDefault(p => string.Equals(p.Name, nameText, StringComparison.OrdinalIgnoreCase));
         if (chosen != null) people = new List<VendorPeople.Person> { chosen };
         IReadOnlyList<VendorOption> list = typed.Length == 0
@@ -1704,6 +1778,20 @@ public sealed class InspectionWindow : Window
         }
         catch { /* a note that cannot be written must never stop the form */ }
     }
+    void LogInstaller(string message)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RenewableEnergyDesktop");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "inspection.log"),
+                string.Format("{0:O} {1} {2}{3}", DateTime.Now, consumerNumber, message, Environment.NewLine));
+        }
+        catch { }
+    }
+
 
     static StackPanel CreateFieldRow(string label, FrameworkElement box, Button clear)
     {
@@ -1764,8 +1852,8 @@ public sealed class InspectionWindow : Window
 
             // T4: installer field validation (bytecode Yup: non-empty name,
             // mobile ^[1-9]\d{9,} 10+ digits).
-            var vpName = vendorPersonNameBox.Text.Trim();
-            var vpMobile = vendorPersonMobileBox.Text.Trim();
+            var vpName = VendorPersonName.Trim();
+            var vpMobile = VendorPersonMobile.Trim();
             if (vpName.Length == 0)
                 throw new InvalidDataException("Vendor Person Name is required.");
             if (!System.Text.RegularExpressions.Regex.IsMatch(vpMobile, @"^[1-9]\d{9,}$"))
@@ -1912,7 +2000,7 @@ public sealed class InspectionWindow : Window
             store?.Upsert(new StoredInspectionRecord(
                 ConsumerNumber: consumerNumber,
                 CpfNo: cpfNo,
-                VendorCode: record.VendorCode,
+                VendorCode: recordVendorCode,
                 ConsumerName: FieldValue("consumer_name"),
                 Latitude: record.Latitude,
                 Longitude: record.Longitude,
@@ -1942,8 +2030,8 @@ public sealed class InspectionWindow : Window
                 CancellationToken.None,
                 formOpenTime: formOpenTime,
                 checkAnswers: answers,
-                vendorPersonName: vendorPersonNameBox.Text,
-                vendorPersonMobile: vendorPersonMobileBox.Text,
+                vendorPersonName: VendorPersonName,
+                vendorPersonMobile: VendorPersonMobile,
                 resolvedLocation: resolved,
                 sessionLoginId: loginId);
 
