@@ -92,7 +92,7 @@ public sealed class InspectionWindow : Window
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
+    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = true, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0) };
     /// <summary>
     /// H3: how a contact row prints in the dropdown - "name  ·  mobile". The
     /// row shows this template; the box's own text is ToString() (the mobile),
@@ -155,6 +155,9 @@ public sealed class InspectionWindow : Window
         // H1: named installerBook, not vendorPeople - a same-named parameter
         // would shadow this field everywhere below and hand out null.
         this.vendorPeople = installerBook ?? new Mskpy.Infrastructure.VendorPeople();
+        // 2R: text search on the person name / mobile.
+        System.Windows.Controls.TextSearch.SetTextPath(vendorPersonNameBox, "Name");
+        System.Windows.Controls.TextSearch.SetTextPath(vendorPersonMobileBox, "Person.Mobile");
 
         this.harvester = harvester;
         this.store = store; // W1
@@ -416,8 +419,8 @@ public sealed class InspectionWindow : Window
         // pair if it exists, else the vendor's most recent). Empty only when
         // there is no history for this vendor.
         PrefillInstallerPair();
-        var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonNameBox.Text = "");
-        var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonMobileBox.Text = "");
+        var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { vendorPersonNameBox.Text = ""; vendorPersonMobileBox.Text = ""; vendorPersonNameBox.Focus(); });
+        var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => { vendorPersonMobileBox.Text = ""; vendorPersonNameBox.Focus(); });
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
@@ -1612,12 +1615,33 @@ public sealed class InspectionWindow : Window
     /// with an empty field offers the book itself, so a name just added
     /// through Edit… shows up without a keystroke.
     /// </summary>
+    /// <summary>2R: the persons for this record's vendor, from the store when
+    /// available, otherwise the officer's book filtered to this vendor.</summary>
+    List<VendorPeople.Person> VendorPersonsForRecord()
+    {
+        var vendorCode = record.VendorCode ?? "";
+        if (store != null)
+        {
+            var contacts = store.VendorContacts(vendorCode);
+            if (contacts.Count > 0)
+                return contacts.Select(c => new VendorPeople.Person(c.PersonName, c.Mobile, DateTimeOffset.Now, vendorCode)).ToList();
+        }
+        return vendorPeople.People
+            .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
     internal int RefreshVendorSuggestionList(bool offerBookWhenEmpty = false)
     {
         var typed = (vendorPersonNameBox.Text ?? "").Trim();
+        var people = VendorPersonsForRecord();
         IReadOnlyList<VendorPeople.Person> list = typed.Length == 0
-            ? (offerBookWhenEmpty ? vendorPeople.People.Take(6).ToList() : Array.Empty<VendorPeople.Person>())
-            : vendorPeople.Suggest(typed);
+            ? (offerBookWhenEmpty ? people.Take(6).ToList() : Array.Empty<VendorPeople.Person>())
+            : people.Where(p => p.Name.Contains(typed, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(p => p.Name.Length)
+                    .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                    .Take(6)
+                    .ToList();
         vendorPersonNameBox.ItemsSource = list;
         return list.Count;
     }
@@ -1630,16 +1654,21 @@ public sealed class InspectionWindow : Window
     internal int RefreshContactSuggestionList(bool offerBookWhenEmpty = false)
     {
         var typed = (vendorPersonMobileBox.Text ?? "").Trim();
+        var people = VendorPersonsForRecord();
+        // 2R: once a name is chosen, the mobile box offers only that person's
+        // numbers. Otherwise it offers the whole book.
+        var nameText = (vendorPersonNameBox.Text ?? "").Trim();
+        var chosen = people.FirstOrDefault(p => string.Equals(p.Name, nameText, StringComparison.OrdinalIgnoreCase));
+        if (chosen != null) people = new List<VendorPeople.Person> { chosen };
         IReadOnlyList<VendorOption> list = typed.Length == 0
-            ? (offerBookWhenEmpty ? vendorPeople.People.Take(6).Select(ToOption).ToList() : Array.Empty<VendorOption>())
-            : vendorPeople.People
-                .Where(p => p.Name.Contains(typed, StringComparison.OrdinalIgnoreCase)
-                         || (p.Mobile.Length > 0 && p.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)))
-                .OrderBy(p => p.Name.Length)
-                .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                .Take(6)
-                .Select(ToOption)
-                .ToList();
+            ? (offerBookWhenEmpty ? people.Take(6).Select(ToOption).ToList() : Array.Empty<VendorOption>())
+            : people.Where(p => p.Name.Contains(typed, StringComparison.OrdinalIgnoreCase)
+                             || (p.Mobile.Length > 0 && p.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)))
+                    .OrderBy(p => p.Name.Length)
+                    .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                    .Take(6)
+                    .Select(ToOption)
+                    .ToList();
         vendorPersonMobileBox.ItemsSource = list;
         return list.Count;
     }
