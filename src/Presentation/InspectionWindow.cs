@@ -102,9 +102,22 @@ public sealed class InspectionWindow : Window
 
     static DataTemplate BuildContactRowTemplate()
     {
-        var rowText = new FrameworkElementFactory(typeof(TextBlock));
-        rowText.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(VendorOption.Label)));
-        return new DataTemplate { VisualTree = rowText };
+        var grid = new FrameworkElementFactory(typeof(Grid));
+        var col0 = new FrameworkElementFactory(typeof(ColumnDefinition));
+        // ...
+        // Simpler: use a DockPanel.
+        var dock = new FrameworkElementFactory(typeof(DockPanel));
+        var nameBlock = new FrameworkElementFactory(typeof(TextBlock));
+        nameBlock.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("Person.Name"));
+        var mobileBlock = new FrameworkElementFactory(typeof(TextBlock));
+        mobileBlock.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("Person.Mobile"));
+        mobileBlock.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(0x6B, 0x65, 0x75)));
+        mobileBlock.SetValue(TextBlock.FontSizeProperty, 11.0);
+        mobileBlock.SetValue(DockPanel.DockProperty, Dock.Right);
+        mobileBlock.SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 0, 0));
+        dock.AppendChild(mobileBlock);
+        dock.AppendChild(nameBlock);
+        return new DataTemplate { VisualTree = dock };
     }
 
     readonly ComboBox vendorPersonMobileBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0, 0, 26, 0), Margin = new Thickness(0, 0, 8, 0), ItemTemplate = ContactRowTemplate };
