@@ -30,15 +30,42 @@ public static class JpegExifStamper
     /// <summary>
     /// Returns the path of a copy of <paramref name="sourcePath"/> with EXIF GPS +
     /// DateTimeOriginal stamped into it. The original file is not modified.
+    ///
+    /// P1 (0.9.10): stamping is best-effort. A partial or unusual EXIF block,
+    /// an out-of-range segment or a 64 KB APP1 overflow must never fail an
+    /// attach: the source bytes are copied through unmodified instead and the
+    /// reason is reported through <paramref name="log"/>.
     /// </summary>
-    public static string Stamp(string sourcePath, double latitude, double longitude, DateTime dateTime, string? outputPath = null)
+    public static string Stamp(string sourcePath, double latitude, double longitude, DateTime dateTime, string? outputPath = null, Action<string>? log = null)
     {
         if (!File.Exists(sourcePath)) throw new FileNotFoundException("Source JPEG not found.", sourcePath);
         outputPath ??= Path.ChangeExtension(sourcePath, null) + "-stamped" + Path.GetExtension(sourcePath);
 
         var jpeg = File.ReadAllBytes(sourcePath);
-        var stamped = StampJpeg(jpeg, latitude, longitude, dateTime);
-        File.WriteAllBytes(outputPath, stamped);
+        byte[] stamped;
+        try
+        {
+            stamped = StampJpeg(jpeg, latitude, longitude, dateTime);
+        }
+        catch (Exception ex)
+        {
+            // P1: keep the photo. Unstamped bytes are a valid upload; a lost
+            // photo is not.
+            log?.Invoke($"EXIF stamp skipped for '{Path.GetFileName(sourcePath)}': {ex.GetType().Name}: {ex.Message}");
+            stamped = jpeg;
+        }
+
+        try
+        {
+            File.WriteAllBytes(outputPath, stamped);
+        }
+        catch (Exception ex) when (stamped != jpeg)
+        {
+            // Writing the stamped copy failed (locked/AV): fall back to the
+            // untouched source bytes under the same slot name.
+            log?.Invoke($"Stamped copy could not be written for '{Path.GetFileName(sourcePath)}': {ex.Message}; using the source bytes.");
+            File.WriteAllBytes(outputPath, jpeg);
+        }
         return outputPath;
     }
 
@@ -144,7 +171,11 @@ public static class JpegExifStamper
 
         var ifd0 = ReadIfd(source, ifd0Offset, littleEndian);
         var exifOffset = FindEntryValue(ifd0.Entries, TagExifIfdPointer);
-        Ifd exif = default;
+        // P1 (0.9.10): a JPEG can carry an EXIF APP1 with only IFD0 - no Exif
+        // sub-IFD at all. `default(Ifd)` has a null Entries list, and the
+        // foreach below used to throw NullReferenceException on exactly those
+        // files ("Photo could not be loaded: Object reference not set ...").
+        Ifd exif = new(new List<IfdEntry>(), 0);
 
         if (exifOffset >= 8 && exifOffset + 2 <= source.Length)
             exif = ReadIfd(source, exifOffset, littleEndian);
@@ -302,6 +333,9 @@ public static class JpegExifStamper
 
         var count = ReadU16(source, (int)offset, littleEndian);
         var pos = (int)offset + 2;
+        // P1: a corrupt entry count must not walk off the buffer or spin.
+        var room = Math.Max(0, (source.Length - pos - 4) / 12);
+        if (count > room) count = (ushort)Math.Min(room, ushort.MaxValue);
         for (var i = 0; i < count && pos + 12 <= source.Length; i++, pos += 12)
         {
             entries.Add(new IfdEntry(

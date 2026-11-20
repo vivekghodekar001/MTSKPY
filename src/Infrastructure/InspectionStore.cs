@@ -141,6 +141,15 @@ public sealed class InspectionStore : IDisposable
                 PRIMARY KEY (consumer_number, cpf_no)
             );
             CREATE INDEX IF NOT EXISTS ix_record_cpfs_cpf ON record_cpfs(cpf_no);
+             CREATE TABLE IF NOT EXISTS vendor_contacts (
+                 vendor_code TEXT NOT NULL,
+                 person_name TEXT NOT NULL,
+                 mobile TEXT NOT NULL,
+                 last_used_at TEXT NOT NULL,
+                 PRIMARY KEY (vendor_code, person_name, mobile)
+             );
+             CREATE INDEX IF NOT EXISTS ix_vendor_contacts_vendor ON vendor_contacts(vendor_code);
+             CREATE INDEX IF NOT EXISTS ix_vendor_contacts_lastused ON vendor_contacts(last_used_at);
         ";
         cmd.ExecuteNonQuery();
 
@@ -943,6 +952,73 @@ public sealed class InspectionStore : IDisposable
         {
             dbLock.Release();
         }
+    }
+
+    /// <summary>P3: upsert a vendor contact pair and mark it last-used now.</summary>
+    public void UpsertVendorContact(string vendorCode, string personName, string mobile, DateTimeOffset? lastUsedAt = null)
+    {
+        if (string.IsNullOrWhiteSpace(personName)) return;
+        var when = (lastUsedAt ?? DateTimeOffset.Now).ToString("O");
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                INSERT INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at)
+                VALUES (@v, @p, @m, @t)
+                ON CONFLICT(vendor_code, person_name, mobile)
+                DO UPDATE SET last_used_at = excluded.last_used_at;
+            ";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.Parameters.AddWithValue("@p", personName.Trim());
+            cmd.Parameters.AddWithValue("@m", (mobile ?? "").Trim());
+            cmd.Parameters.AddWithValue("@t", when);
+            cmd.ExecuteNonQuery();
+        }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>P3: the most recently used pair for this vendor, or null.</summary>
+    public (string PersonName, string Mobile)? LastVendorContact(string vendorCode)
+    {
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT person_name, mobile FROM vendor_contacts
+                WHERE vendor_code = @v
+                ORDER BY last_used_at DESC
+                LIMIT 1;
+            ";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            using var reader = cmd.ExecuteReader();
+            if (reader.Read())
+                return (reader.GetString(0), reader.GetString(1));
+            return null;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>P3: all distinct (person, mobile) pairs for this vendor, newest first.</summary>
+    public IReadOnlyList<(string PersonName, string Mobile)> VendorContacts(string vendorCode)
+    {
+        var result = new List<(string, string)>();
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT person_name, mobile FROM vendor_contacts
+                WHERE vendor_code = @v
+                ORDER BY last_used_at DESC;
+            ";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) result.Add((reader.GetString(0), reader.GetString(1)));
+            return result;
+        }
+        finally { dbLock.Release(); }
     }
 
     /// <summary>

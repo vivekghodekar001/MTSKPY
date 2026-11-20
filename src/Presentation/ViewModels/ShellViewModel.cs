@@ -291,6 +291,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>D2: the list gets this long to itself before the walk starts.</summary>
     public const int HarvestStartDelayMs = 2500;
     Task? harvestStart;
+    // P5: daily refresh timer.
+    System.Windows.Threading.DispatcherTimer? dailyRefreshTimer;
     /// <summary>
     /// D1/H3: the officer's own pending queue — the records seen under their
     /// cpf that have not been accepted. Counted through record_cpfs with the
@@ -522,6 +524,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         LoadFromStore();
         ApplySearch();
         ScheduleHarvestStart();
+        StartDailyRefreshTimer();
         Status = "Restored session.";
         return true;
     }
@@ -616,6 +619,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // list is on screen and has had a moment to itself. Starting it
             // beside the first read is what made the landing feel slow.
             ScheduleHarvestStart();
+            StartDailyRefreshTimer();
             Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1096,6 +1100,46 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         if (harvester != null) return;
         harvestStart = StartHarvestAfterListAsync();
+    }
+
+    /// <summary>P5: once a day at 02:00, refresh the pending list. Diff on
+    /// beneficiary ID: insert new, update changed, never delete. A failed
+    /// poll keeps the existing list. Manual refresh is the existing resume.</summary>
+    void StartDailyRefreshTimer()
+    {
+        if (dailyRefreshTimer != null) return;
+        dailyRefreshTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMinutes(1)
+        };
+        dailyRefreshTimer.Tick += (_, _) => TryDailyCustomerRefresh();
+        dailyRefreshTimer.Start();
+    }
+
+    void TryDailyCustomerRefresh()
+    {
+        try
+        {
+            var now = DateTime.Now;
+            if (now.Hour != 2) return;
+            var stampPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RenewableEnergyDesktop", "daily-refresh.txt");
+            var last = File.Exists(stampPath) ? File.ReadAllText(stampPath).Trim() : "";
+            var today = now.ToString("yyyy-MM-dd");
+            if (last == today) return;
+            File.WriteAllText(stampPath, today);
+            Status = "Daily customer refresh started.";
+            // Resume the harvester if it is paused; it walks the list diff-first.
+            harvester?.Resume();
+            SignInLog.Write("daily-refresh: started at " + now.ToString("O"));
+        }
+        catch (Exception ex)
+        {
+            // P5: a failed poll must never clear the existing list.
+            SignInLog.Write("daily-refresh: failed - " + ex.Message);
+            Status = "Daily customer refresh failed: " + ex.Message;
+        }
     }
 
     async Task StartHarvestAfterListAsync()
@@ -1672,8 +1716,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 if (candidate == null) continue;
                 // R7: Per-photo timestamps one second apart.
                 var photoDt = now.AddSeconds(photoSecond++);
-                // Stamp EXIF (GPS + DateTimeOriginal) into a copy, like the GUI does.
-                var stamped = JpegExifStamper.Stamp(candidate, lat, lon, photoDt);
+                // Stamp EXIF (GPS + DateTimeOriginal) into a slot-named copy,
+                // like the GUI does. One file per role, never "-stamped".
+                var candidateSha = ComputeSha1(candidate);
+                var slotPath = Path.Combine(
+                    Path.GetDirectoryName(candidate)!,
+                    $"att-{suffix}-{candidateSha[..Math.Min(10, candidateSha.Length)]}.jpg");
+                var stamped = JpegExifStamper.Stamp(candidate, lat, lon, photoDt, slotPath);
                 photoPaths.Add(stamped);
                 extraData[suffix + "Lat"] = latText;
                 extraData[suffix + "Long"] = lonText;
@@ -1726,6 +1775,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             {
                 if (Path.GetFileNameWithoutExtension(path).EndsWith("-stamped", StringComparison.OrdinalIgnoreCase))
                     continue;
+                if (Path.GetFileName(path).StartsWith("att-", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 var size = TryGetPixelSize(path);
                 if (size == null) continue; // not a decodable image
                 candidates.Add((path, (long)size.Value.Width * size.Value.Height, Math.Min(size.Value.Width, size.Value.Height)));
@@ -1738,6 +1789,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         var compliant = candidates.Where(c => c.ShortEdge >= 1000).OrderByDescending(c => c.Area).ToList();
         var pool = compliant.Count > 0 ? compliant : candidates.OrderByDescending(c => c.Area).ToList();
         return pool[0].Path;
+    }
+
+    static string ComputeSha1(string path)
+    {
+        using var sha = System.Security.Cryptography.SHA1.Create();
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(sha.ComputeHash(stream)).ToLowerInvariant();
     }
 
     static (int Width, int Height)? TryGetPixelSize(string path)

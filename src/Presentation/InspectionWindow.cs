@@ -412,6 +412,10 @@ public sealed class InspectionWindow : Window
         // not block a legitimate re-inspection with a different person.
         vendorPersonNameBox.Text = "";
         vendorPersonMobileBox.Text = "";
+        // P3: prefill last-used pair for this vendor (beneficiary's previous
+        // pair if it exists, else the vendor's most recent). Empty only when
+        // there is no history for this vendor.
+        PrefillInstallerPair();
         var clearName = MakeClearButton("Clear Vendor Person Name", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonNameBox.Text = "");
         var clearMobile = MakeClearButton("Clear Vendor Person Mobile No", (Brush)System.Windows.Application.Current.FindResource("Muted"), (Brush)System.Windows.Application.Current.FindResource("Accent"), () => vendorPersonMobileBox.Text = "");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
@@ -551,6 +555,11 @@ public sealed class InspectionWindow : Window
                 };
             }
         };
+        // P3: persist the pair on blur, so a typed number is saved against
+        // the chosen person even without a submit.
+        vendorPersonNameBox.LostFocus += (_, _) => PersistInstallerPair();
+        vendorPersonMobileBox.LostFocus += (_, _) => PersistInstallerPair();
+
         // H1: opening the dropdown by clicking the arrow also rebuilds it, so a
         // name added through Edit… is offered without a keystroke. With an empty
         // box the whole book (first six) is what the officer is offered.
@@ -1075,28 +1084,35 @@ public sealed class InspectionWindow : Window
 
     void AddPhotoSlot(Panel target, string suffix, string label)
     {
-        // Z2/Z7: compact slot — label, 110 px thumbnail, then the Choose/Remove row
+        // Z2/Z7: compact slot — label, thumbnail, then the Choose/Remove row
         // immediately under it, with the file-name hint on the same line.
         var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 4) };
         panel.Children.Add(Label(label, 14, new Thickness(0, 0, 0, 2)));
         var image = new Image
         {
-            Stretch = Stretch.UniformToFill,
-            ClipToBounds = true
+            // P1: show the whole photo, never a fixed 4:3 crop.
+            Stretch = Stretch.Uniform
         };
-        // White frame so an empty slot reads as a photo placeholder.
+        // A neutral frame so an empty slot reads as a placeholder, not a
+        // broken image.
         var thumbFrame = new Border
         {
-            Width = 110,
-            Height = 60,
-            Background = Brushes.White,
+            Width = 132,
+            Height = 96,
+            Background = new SolidColorBrush(Color.FromRgb(0xF3, 0xF0, 0xF7)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
+            BorderThickness = new Thickness(1),
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 2, 0, 2),
             Child = image
         };
         var fname = Hint("No photo selected", 11);
         fname.VerticalAlignment = VerticalAlignment.Center;
+        var orientationNote = Hint("Portrait photo", 11);
+        orientationNote.Margin = new Thickness(0, 0, 0, 2);
+        orientationNote.Visibility = Visibility.Collapsed;
         panel.Children.Add(thumbFrame);
+        panel.Children.Add(orientationNote);
         var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         var choose = CompactButton("Choose JPEG…");
         choose.Click += (_, _) =>
@@ -1111,43 +1127,49 @@ public sealed class InspectionWindow : Window
             try
             {
                 var path = picker.FileName;
-                // T1b: never accept an already-stamped JPEG.
-                if (IsStampedFile(path))
-                    throw new InvalidDataException("Do not select an already-stamped JPEG (*-stamped.jpg).");
-                var info = new FileInfo(path);
-                if (info.Length > 20 * 1024 * 1024) throw new InvalidDataException("Select a JPEG smaller than 20 MB.");
-                using var stream = info.OpenRead();
-                var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-                if (decoder is not JpegBitmapDecoder) throw new InvalidDataException("The selected file is not a genuine JPEG.");
-                // Stamp EXIF into a copy; upload the stamped copy (P5).
-                // E5: use the same coordinates that go into the blob.
-                var stamped = JpegExifStamper.Stamp(
+                // P2: the source is read-only. Picking the app's own working
+                // file (or an older *-stamped copy) is refused by name.
+                if (IsStampedFile(path) || IsSlotFile(path))
+                    throw new InvalidDataException("Pick the original photo, not a file the app has already prepared.");
+                ValidatePhotoSource(path);
+                Directory.CreateDirectory(PhotoSlotDirectory);
+
+                // P2: one working file per slot, named att-<field>-<sha1[0:10]>.jpg.
+                // The name never derives from the source file name, so the same
+                // source can sit in any number of slots without colliding.
+                var slotPath = SlotPhotoPath(suffix, ComputeSha1(path));
+                var produced = JpegExifStamper.Stamp(
                     path,
                     ResolveCoordinate("latitude", manualLat.Text),
                     ResolveCoordinate("longitude", manualLong.Text),
-                    DateTime.UtcNow);
-                // H1: hash the SOURCE (not the stamped copy) for the photo
-                // uniqueness gate — the stamped hash changes every attach, but
-                // the source hash is a stable fingerprint.
-                var photoHash = ComputeSha256(path);
-                foreach (var otherKvp in photoHashes)
-                {
-                    if (otherKvp.Key != suffix && otherKvp.Value == photoHash)
-                        throw new InvalidDataException($"Duplicate photo: '{label}' uses the same image as '{otherKvp.Key}'. Use three different originals.");
-                }
-                photos[suffix] = stamped;
+                    DateTime.UtcNow,
+                    slotPath,
+                    LogStartupNote);
+
+                // Re-picking replaces this slot's file only. Never the source,
+                // never another slot's file.
+                if (photos.TryGetValue(suffix, out var previous)
+                    && !string.Equals(previous, produced, StringComparison.OrdinalIgnoreCase))
+                    DeleteSlotFile(previous);
+
+                photos[suffix] = produced;
                 photoSources[suffix] = path;
-                photoHashes[suffix] = photoHash;
-                // S4: copy stamped photo to LocalAppData for retry
-                var consumerDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "RenewableEnergyDesktop", "inspection-data", consumerNumber);
-                Directory.CreateDirectory(consumerDir);
-                var consumerPhotoPath = Path.Combine(consumerDir, Path.GetFileName(stamped));
-                File.Copy(stamped, consumerPhotoPath, overwrite: true);
-                photos[suffix] = consumerPhotoPath;
-                image.Source = Thumbnail(consumerPhotoPath);
-                fname.Text = Path.GetFileName(stamped) + " (EXIF stamped)";
+                photoHashes[suffix] = ComputeSha256(path); // source fingerprint (W1)
+
+                try
+                {
+                    image.Source = Thumbnail(produced);
+                    orientationNote.Visibility = IsPortrait(produced) ? Visibility.Visible : Visibility.Collapsed;
+                }
+                catch (Exception ex)
+                {
+                    // P1: never bind a null/broken preview. Named message, the
+                    // attach itself still stands.
+                    image.Source = null;
+                    orientationNote.Visibility = Visibility.Collapsed;
+                    SetStatus($"Cannot read {Path.GetFileName(produced)}: {ex.Message}");
+                }
+                fname.Text = Path.GetFileName(produced);
                 // J1: the manifest preview lists what is attached.
                 RefreshManifestPreview();
             }
@@ -1161,8 +1183,13 @@ public sealed class InspectionWindow : Window
         var remove = CompactButton("Remove");
         remove.Click += (_, _) =>
         {
+            // P2: remove deletes this slot's att- file only.
+            if (photos.TryGetValue(suffix, out var slotFile)) DeleteSlotFile(slotFile);
             photos.Remove(suffix);
+            photoSources.Remove(suffix);
+            photoHashes.Remove(suffix);
             image.Source = null;
+            orientationNote.Visibility = Visibility.Collapsed;
             fname.Text = "No photo selected";
             // J1: the manifest preview drops the removed part.
             RefreshManifestPreview();
@@ -1172,6 +1199,90 @@ public sealed class InspectionWindow : Window
         row.Children.Add(fname);
         panel.Children.Add(row);
         target.Children.Add(panel);
+    }
+
+    /// <summary>P2: where this consumer's slot files live.</summary>
+    string PhotoSlotDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RenewableEnergyDesktop", "inspection-data", consumerNumber);
+
+    /// <summary>P2: att-<field>-<sha1(source bytes)[0:10]>.jpg.</summary>
+    string SlotPhotoPath(string suffix, string sha1)
+    {
+        var stamp = sha1.Length > 10 ? sha1[..10] : sha1;
+        return Path.Combine(PhotoSlotDirectory, $"att-{suffix}-{stamp}.jpg");
+    }
+
+    /// <summary>P2: true when this is one of the app's own slot files.</summary>
+    bool IsSlotFile(string path)
+    {
+        try
+        {
+            var name = Path.GetFileName(path);
+            if (!name.StartsWith("att-", StringComparison.OrdinalIgnoreCase)) return false;
+            var dir = Path.GetFullPath(Path.GetDirectoryName(path) ?? "");
+            return string.Equals(dir.TrimEnd('\\'), Path.GetFullPath(PhotoSlotDirectory).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>P2: delete only a slot-owned file. The source is never touched.</summary>
+    void DeleteSlotFile(string path)
+    {
+        try
+        {
+            if (IsSlotFile(path) && File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            LogStartupNote($"Slot file '{Path.GetFileName(path)}' could not be removed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// P1: the picked file must exist, be non-empty, be a real JPEG and decode.
+    /// Everything else is a named message, never a null preview.
+    /// </summary>
+    static void ValidatePhotoSource(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new InvalidDataException("no file was selected.");
+        var name = Path.GetFileName(path);
+        var info = new FileInfo(path);
+        if (!info.Exists) throw new InvalidDataException($"Cannot read {name}: the file no longer exists.");
+        if (info.Length == 0) throw new InvalidDataException($"Cannot read {name}: the file is empty (0 bytes).");
+        if (info.Length > 20 * 1024 * 1024) throw new InvalidDataException($"Cannot read {name}: larger than 20 MB.");
+        try
+        {
+            using var stream = info.OpenRead();
+            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+            if (decoder is not JpegBitmapDecoder)
+                throw new InvalidDataException($"Cannot read {name}: not a genuine JPEG.");
+        }
+        catch (InvalidDataException) { throw; }
+        catch (Exception ex) { throw new InvalidDataException($"Cannot read {name}: {ex.Message}"); }
+    }
+
+    /// <summary>P1: portrait means the pixels, after the EXIF orientation flag, are taller than wide.</summary>
+    static bool IsPortrait(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).Frames[0];
+            var width = frame.PixelWidth;
+            var height = frame.PixelHeight;
+            var orientation = 1;
+            if (frame.Metadata is BitmapMetadata metadata
+                && metadata.ContainsQuery("/app1/ifd/{ushort=274}"))
+            {
+                var raw = metadata.GetQuery("/app1/ifd/{ushort=274}");
+                if (raw != null) orientation = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
+            }
+            if (orientation is 6 or 8) (width, height) = (height, width);
+            return height > width;
+        }
+        catch { return false; }
     }
 
     /// <summary>Z3: a signature block — label, 110 px canvas, Clear disc in its corner.</summary>
@@ -1415,6 +1526,48 @@ public sealed class InspectionWindow : Window
             warning.Visibility = Visibility.Collapsed;
         }
     }
+    /// <summary>P3: prefill the last-used pair for this vendor on open.</summary>
+    void PrefillInstallerPair()
+    {
+        if (!string.IsNullOrWhiteSpace(vendorPersonNameBox.Text) || !string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text)) return;
+        var vendorCode = record.VendorCode ?? "";
+        (string Name, string Mobile)? pair = null;
+        if (store != null)
+        {
+            var last = store.LastVendorContact(vendorCode);
+            if (last.HasValue) pair = (last.Value.PersonName, last.Value.Mobile);
+        }
+        if (pair == null)
+        {
+            var book = vendorPeople.People
+                .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(p => p.LastUsedAt)
+                .FirstOrDefault();
+            if (book != null) pair = (book.Name, book.Mobile);
+        }
+        if (pair == null) return;
+        vendorPicking = true;
+        try
+        {
+            vendorPersonNameBox.Text = pair.Value.Name;
+            vendorPersonMobileBox.Text = pair.Value.Mobile;
+        }
+        finally { vendorPicking = false; }
+        UpdateRisk();
+    }
+
+    /// <summary>P3: persist the current pair on blur or submit.</summary>
+    void PersistInstallerPair()
+    {
+        var name = vendorPersonNameBox.Text.Trim();
+        var mobile = vendorPersonMobileBox.Text.Trim();
+        if (name.Length == 0 || mobile.Length == 0) return;
+        var vendorCode = record.VendorCode ?? "";
+        store?.UpsertVendorContact(vendorCode, name, mobile);
+        vendorPeople.Add(name, mobile, vendorCode);
+        try { vendorPeople.Save(); } catch { }
+    }
+
     /// <summary>C5: the entries that match what has been typed.</summary>
     void RefreshSuggestions()
     {
@@ -1577,6 +1730,9 @@ public sealed class InspectionWindow : Window
                 throw new InvalidDataException(
                     "Vendor Person Mobile No must be 10+ digits starting with a non-zero digit.");
 
+            // P3: remember the pair that just went out.
+            PersistInstallerPair();
+
             // T2: blank-signature refusal at Submit — zero strokes, naming the blank role.
             if (beneficiary.Strokes.Count == 0)
                 throw new InvalidDataException("Blank signature: 'Beneficiary signature' has no strokes. Draw a signature.");
@@ -1615,39 +1771,27 @@ public sealed class InspectionWindow : Window
             var extraData = new Dictionary<string, object?>();
             var stampAt = DateTime.UtcNow;
             var stampSecond = 0;
-            // Q1: within-submission photo duplicate gate — the same image must not
-            // be submitted under two different roles.
-            var seenPhotoHashes = new HashSet<string>();
             foreach (var slot in PhotoSlots)
             {
-                if (!photos.TryGetValue(slot.Suffix, out var stampedPath) || !File.Exists(stampedPath))
+                if (!photos.TryGetValue(slot.Suffix, out var slotPath) || !File.Exists(slotPath))
                     throw new InvalidDataException("Missing photo: " + slot.Label);
                 var original = photoSources.TryGetValue(slot.Suffix, out var source) && File.Exists(source)
                     ? source
-                    : stampedPath;
-                // T1a: if the source is already a "-stamped" file it was stamped
-                // at attach; do not stamp it again. Otherwise re-stamp from the
-                // original with the submit-time coordinates so EXIF and blob agree.
-                if (IsStampedFile(original))
+                    : null;
+                if (original != null)
                 {
-                    stampedPath = original;
-                }
-                else
-                {
-                    // R7: per-photo timestamps one second apart, stamped at submit.
+                    // P2: the slot keeps exactly one file. At submit it is
+                    // re-stamped in place from the original with the resolved
+                    // pair, so EXIF and blob agree. A failed stamp leaves the
+                    // bytes the slot already carries.
                     var photoAt = stampAt.AddSeconds(stampSecond++);
-                    var stamped = JpegExifStamper.Stamp(original, lat, lon, photoAt);
-                    stampedPath = stamped;
+                    slotPath = JpegExifStamper.Stamp(original, lat, lon, photoAt, slotPath, LogStartupNote);
                     extraData[slot.Suffix + "DateTime"] =
                         photoAt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
                 }
-                // Q1: refuse if this photo's source bytes match a photo already
-                // submitted in this run — compare source hashes (stable across
-                // re-stamping), not stamped bytes.
-                var photoHash = photoHashes.TryGetValue(slot.Suffix, out var h) ? h : ComputeSha256(stampedPath);
-                if (!seenPhotoHashes.Add(photoHash))
-                    throw new InvalidDataException($"Duplicate photo: '{slot.Label}' uses the same image as a previous photo in this submission. Use three different originals.");
-                photoPaths.Add(stampedPath);
+                // P2: slots are independent. The same source may fill several
+                // roles; no within-submission duplicate refusal.
+                photoPaths.Add(slotPath);
             }
 
             var signPaths = new List<string>();
@@ -1874,6 +2018,15 @@ public sealed class InspectionWindow : Window
         using var stream = File.OpenRead(path);
         var hash = sha.ComputeHash(stream);
         return Convert.ToHexString(hash);
+    }
+
+    /// <summary>P2: SHA-1 of a file's bytes, used for the slot file name.</summary>
+    static string ComputeSha1(string path)
+    {
+        using var sha = System.Security.Cryptography.SHA1.Create();
+        using var stream = File.OpenRead(path);
+        var hash = sha.ComputeHash(stream);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     static bool IsStampedFile(string path)
