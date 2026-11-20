@@ -93,35 +93,46 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
-    readonly ComboBox vendorPersonNameBox = new() { IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = true, DisplayMemberPath = "Name", Width = 300, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0) };
-    /// <summary>
-    /// H3: how a contact row prints in the dropdown - "name  ·  mobile". The
-    /// row shows this template; the box's own text is ToString() (the mobile),
-    /// so WPF's selection write can never paste the label into the field.
-    /// </summary>
-    static readonly DataTemplate ContactRowTemplate = BuildContactRowTemplate();
-
-    static DataTemplate BuildContactRowTemplate()
+    // U1: both boxes are stock WPF ComboBox — Template = null, style only.
+    readonly ComboBox vendorPersonNameBox = new()
     {
-        var grid = new FrameworkElementFactory(typeof(Grid));
-        var col0 = new FrameworkElementFactory(typeof(ColumnDefinition));
-        // ...
-        // Simpler: use a DockPanel.
-        var dock = new FrameworkElementFactory(typeof(DockPanel));
-        var nameBlock = new FrameworkElementFactory(typeof(TextBlock));
-        nameBlock.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("Person.Name"));
-        var mobileBlock = new FrameworkElementFactory(typeof(TextBlock));
-        mobileBlock.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("Person.Mobile"));
-        mobileBlock.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(0x6B, 0x65, 0x75)));
-        mobileBlock.SetValue(TextBlock.FontSizeProperty, 11.0);
-        mobileBlock.SetValue(DockPanel.DockProperty, Dock.Right);
-        mobileBlock.SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 0, 0));
-        dock.AppendChild(mobileBlock);
-        dock.AppendChild(nameBlock);
-        return new DataTemplate { VisualTree = dock };
-    }
+        Height = 30, FontSize = 12, Padding = new Thickness(4, 0, 0, 0),
+        Width = 300, Margin = new Thickness(0, 0, 8, 0),
+        IsEditable = true, StaysOpenOnEdit = true, IsTextSearchEnabled = true,
+        DisplayMemberPath = "Name",
+    };
 
-    readonly ComboBox vendorPersonMobileBox = new() { IsEditable = false, IsTextSearchEnabled = false, Width = 300, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0), ItemTemplate = ContactRowTemplate };
+    readonly ComboBox vendorPersonMobileBox = new()
+    {
+        Height = 30, FontSize = 12, Padding = new Thickness(4, 0, 0, 0),
+        Width = 300, Margin = new Thickness(0, 0, 8, 0),
+        IsEditable = false, IsTextSearchEnabled = false,
+        DisplayMemberPath = "Mobile",
+    };
+
+    // U3: placeholders sit behind the boxes; collapsed when the box has a value.
+    readonly TextBlock namePlaceholder = new()
+    {
+        Text = "Select installer name",
+        Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+        FontSize = 12,
+        IsHitTestVisible = false,
+        Margin = new Thickness(2, 0, 0, 0)
+    };
+    readonly TextBlock mobilePlaceholder = new()
+    {
+        Text = "No number",
+        Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+        FontSize = 12,
+        IsHitTestVisible = false,
+        Margin = new Thickness(2, 0, 0, 0)
+    };
+
+    void UpdatePlaceholders()
+    {
+        namePlaceholder.Visibility = string.IsNullOrWhiteSpace(vendorPersonNameBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+        mobilePlaceholder.Visibility = string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+    }
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
     StackPanel? manualRows;
@@ -491,9 +502,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // Rows 1–4 — label, field, label, field. Every field carries an
         // explicit height; the clear disc is overlaid inside its own field.
         installerStack.Children.Add(FieldLabel("Vendor Person Name"));
-        installerStack.Children.Add(CreateComboRow(vendorPersonNameBox));
+        installerStack.Children.Add(CreateComboRowWithPlaceholder(vendorPersonNameBox, namePlaceholder));
         installerStack.Children.Add(FieldLabel("Vendor Person Mobile No"));
-        installerStack.Children.Add(CreateComboRow(vendorPersonMobileBox, clearMobile));
+        installerStack.Children.Add(CreateComboRowWithPlaceholder(vendorPersonMobileBox, mobilePlaceholder));
         // B3: inline note (no modal) when a typed mobile differs from the saved one.
         installerNote = new TextBlock
         {
@@ -578,6 +589,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 // over a name the officer has already typed.
                 if (string.IsNullOrWhiteSpace(VendorPersonName))
                     VendorPersonName = picked.Person.Name;
+                UpdatePlaceholders();
                 UpdateRisk();
             }
             finally { vendorPicking = false; }
@@ -1535,6 +1547,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// </summary>
     public sealed record VendorOption(string Label, VendorPeople.Person Person)
     {
+        public string Mobile => Person.Mobile;
         public override string ToString() => Person.Mobile;
     }
 
@@ -1561,18 +1574,25 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         vendorPicking = true;
         try
         {
-            // B1: set the string properties so the cells show text immediately.
-            if (!string.Equals(VendorPersonName, person.Name, StringComparison.Ordinal))
-                VendorPersonName = person.Name;
             // B5: selecting a person sets the vendor code on the record if empty.
             if (string.IsNullOrWhiteSpace(recordVendorCode) && !string.IsNullOrWhiteSpace(person.Vendor))
                 recordVendorCode = person.Vendor;
-            // B3: no modal — replace the mobile with this person's number.
-            VendorPersonMobile = person.Mobile;
+            // U2: set the text explicitly, then force the control to read it back.
+            if (!string.Equals(VendorPersonName, person.Name, StringComparison.Ordinal))
+                VendorPersonName = person.Name;
+            vendorPersonNameBox.Text = person.Name;
+            vendorPersonNameBox.GetBindingExpression(ComboBox.TextProperty)?.UpdateSource();
+            // U2: mobile box derives from the person; first item is the primary.
+            vendorPersonMobileBox.ItemsSource = NumbersForPerson(person);
+            vendorPersonMobileBox.SelectedIndex = 0;
+            vendorPersonMobileBox.GetBindingExpression(ComboBox.SelectedItemProperty)?.UpdateSource();
             UpdateRisk();
+            UpdatePlaceholders();
         }
         finally { vendorPicking = false; }
         vendorPersonNameBox.IsDropDownOpen = false;
+        // U2: the debug line that proves the value is in the control.
+        LogInstaller("pick: name='" + vendorPersonNameBox.Text + "' sel=" + ((vendorPersonNameBox.SelectedItem as Mskpy.Infrastructure.VendorPeople.Person)?.Name) + " mobile='" + vendorPersonMobileBox.Text + "' idx=" + vendorPersonMobileBox.SelectedIndex);
         var recordVendor = recordVendorCode ?? "";
         var warning = vendorWarning;
         if (warning == null) return;
@@ -1621,9 +1641,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         }
         if (pair == null)
         {
-            LogInstaller("prefill: nothing found for vendor=" + vendorCode + " (store=" + (store != null) + ", book=" + vendorPeople.People.Count + ")");
+            LogInstaller("prefill: nothing found for vendor=" + (string.IsNullOrWhiteSpace(vendorCode) ? "(record VendorCode empty)" : vendorCode) + " record=" + consumerNumber + " (store=" + (store != null) + ", book=" + vendorPeople.People.Count + ")");
             EnableMobile(false);
             vendorPersonMobileBox.ItemsSource = null;
+            UpdatePlaceholders();
             return;
         }
         vendorPicking = true;
@@ -1634,10 +1655,16 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             VendorPersonMobile = pair.Value.Mobile;
         }
         finally { vendorPicking = false; programmaticChange = false; }
+        // U4: prove the prefill actually populated the cells.
+        vendorPersonNameBox.Text = pair.Value.Name;
+        vendorPersonNameBox.GetBindingExpression(ComboBox.TextProperty)?.UpdateSource();
+        vendorPersonMobileBox.Text = pair.Value.Mobile;
+        vendorPersonMobileBox.GetBindingExpression(ComboBox.TextProperty)?.UpdateSource();
         // T2: a prefilled record has a chosen person; enable the mobile list.
         EnableMobile(true);
         SetMobileItemsFromPerson(new VendorPeople.Person(pair.Value.Name, pair.Value.Mobile, DateTimeOffset.Now, recordVendorCode));
-        LogInstaller("prefill: resolved via " + branch + " -> " + pair.Value.Name + " / " + pair.Value.Mobile);
+        LogInstaller("prefill: vendor=" + vendorCode + " branch=" + (string.IsNullOrEmpty(branch) ? "none" : branch) + " -> name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
+        UpdatePlaceholders();
         UpdateRisk();
     }
 
@@ -1691,6 +1718,15 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// G1a: an explicit-height field with its clear disc overlaid inside the
     /// field's own row — 4 px from the right edge, never floating beside it.
     /// </summary>
+    static Grid CreateComboRowWithPlaceholder(ComboBox box, TextBlock placeholder)
+    {
+        var grid = new Grid();
+        grid.Children.Add(box);
+        // U3: the placeholder is behind the stock box; the box stays blank.
+        if (placeholder != null) grid.Children.Add(placeholder);
+        return grid;
+    }
+
     static Grid CreateComboRow(ComboBox box, Button? clear = null)
     {
         var grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
@@ -1801,8 +1837,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         {
             VendorPersonName = "";
             VendorPersonMobile = "";
+            vendorPersonNameBox.Text = "";
+            vendorPersonMobileBox.Text = "";
             vendorPersonMobileBox.ItemsSource = null;
             EnableMobile(false);
+            UpdatePlaceholders();
         }
         finally { vendorPicking = false; }
     }

@@ -245,8 +245,8 @@ internal static class Program
         // DecidePick returns Fill: a differing typed mobile would raise the
         // modal Ask question and hang the suite.
         var contactBox = installerCombos.First(c => System.Windows.Automation.AutomationProperties.GetName(c) == "Vendor Person Mobile No");
-        Assert(contactBox.ItemTemplate != null && string.IsNullOrEmpty(contactBox.DisplayMemberPath),
-            "the contact dropdown prints each row through a template, leaving the box's own text to ToString");
+        Assert(contactBox.DisplayMemberPath == "Mobile" && contactBox.IsEditable == false,
+            "the contact box is a stock combo: DisplayMemberPath=Mobile, not editable");
 
         nameBox.Text = "";
         contactBox.Text = "";
