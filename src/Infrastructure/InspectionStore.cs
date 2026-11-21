@@ -1089,6 +1089,24 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
+    /// <summary>Delete one contact for this vendor. Returns rows affected.</summary>
+    public int DeleteVendorContact(string vendorCode, string personName)
+    {
+        if (string.IsNullOrWhiteSpace(personName)) return 0;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM vendor_contacts WHERE vendor_code = @v AND person_name = @p;";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.Parameters.AddWithValue("@p", personName.Trim());
+            var n = cmd.ExecuteNonQuery();
+            System.Diagnostics.Debug.WriteLine($"vendor book {vendorCode}: removed {personName.Trim()}, {n} left");
+            return n;
+        }
+        finally { dbLock.Release(); }
+    }
+
     /// <summary>P3: the most recently used pair for this vendor, or null.</summary>
     public (string PersonName, string Mobile)? LastVendorContact(string vendorCode)
     {

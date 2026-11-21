@@ -43,6 +43,7 @@ public sealed class InstallerPickerWindow : Window
     readonly ListBox list = new() { MinHeight = 160, VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(0, 6, 0, 6) };
     readonly Button okButton = new() { Content = "OK", IsEnabled = false, MinWidth = 76, MinHeight = 0, FontSize = 12, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 6, 0) };
     readonly Button cancelButton = new() { Content = "Cancel", MinWidth = 76, MinHeight = 0, FontSize = 12, Padding = new Thickness(10, 4, 10, 4) };
+    readonly Button undoLink = new() { Content = "", Visibility = Visibility.Collapsed, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 4, 6, 4) };
     readonly TextBox addName = new() { Width = 130, Height = 28, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 0, 6, 0), ToolTip = "Installer name" };
     readonly TextBox addMobile = new() { Width = 130, Height = 28, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 0, 6, 0), ToolTip = "Mobile No (10 digits)" };
     readonly Button addButton = new() { Content = "Add", MinWidth = 54, MinHeight = 0, FontSize = 12, Padding = new Thickness(10, 4, 10, 4) };
@@ -55,6 +56,8 @@ public sealed class InstallerPickerWindow : Window
     };
 
     IReadOnlyList<PickerRow> rows = Array.Empty<PickerRow>();
+    PickerRow? lastRemoved = null;
+    ListBoxItem? lastRemovedItem = null;
     Brush mutedBrush = Brushes.Gray;
 
     /// <summary>V3: the caller passes its own store (so the picker and the record
@@ -145,6 +148,7 @@ public sealed class InstallerPickerWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 4, 0, 0)
         };
+        buttons.Children.Add(undoLink);
         buttons.Children.Add(cancelButton);
         buttons.Children.Add(okButton);
         main.Children.Add(buttons);
@@ -158,6 +162,7 @@ public sealed class InstallerPickerWindow : Window
         AutomationProperties.SetName(addName, "New installer name");
         AutomationProperties.SetName(addMobile, "New installer mobile");
         AutomationProperties.SetName(addButton, "Add installer");
+        AutomationProperties.SetName(undoLink, "Undo remove installer");
 
         // Esc closes without touching the record, wherever focus is.
         PreviewKeyDown += (_, e) =>
@@ -171,11 +176,12 @@ public sealed class InstallerPickerWindow : Window
         searchBox.TextChanged += (_, _) => { UpdateSearchHint(); ApplyFilter(); };
         list.SelectionChanged += (_, _) => okButton.IsEnabled = SelectedRow() != null;
         list.MouseDoubleClick += (_, _) => { if (SelectedRow() != null) Ok(); };
-        list.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && SelectedRow() != null) Ok(); };
+        list.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && SelectedRow() != null) Ok(); if (e.Key == Key.Delete && list.SelectedItem is ListBoxItem it) { DeleteRow(it); e.Handled = true; } };
         searchBox.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && SelectedRow() != null) Ok(); };
         okButton.Click += (_, _) => Ok();
         cancelButton.Click += (_, _) => { OkOrNull = false; Close(); };
         addButton.Click += (_, _) => DoAdd();
+        undoLink.Click += (_, _) => UndoRemove();
         addName.KeyDown += (_, e) => { if (e.Key == Key.Enter) DoAdd(); };
         addMobile.KeyDown += (_, e) => { if (e.Key == Key.Enter) DoAdd(); };
 
@@ -237,34 +243,86 @@ public sealed class InstallerPickerWindow : Window
                            || r.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)).ToList();
 
         list.Items.Clear();
+        if (filtered.Count == 0 && typed.Length == 0)
+        {
+            list.Items.Add(new ListBoxItem { Content = "No installers for this vendor — use Add new installer", IsEnabled = false });
+        }
         foreach (var row in filtered)
-            list.Items.Add(new ListBoxItem { Content = RowContent(row), Tag = row, Padding = new Thickness(2, 3, 2, 3) });
+        {
+            var item = new ListBoxItem { Tag = row, Padding = new Thickness(2, 3, 2, 3) };
+            item.Content = RowContent(row, () => DeleteRow(item));
+            list.Items.Add(item);
+        }
 
         okButton.IsEnabled = false;
         addErrorBlock.Visibility = Visibility.Collapsed;
     }
 
-    /// <summary>V2: the name on the left and the complete number on the right.</summary>
-    Grid RowContent(PickerRow row)
+    void DeleteRow(ListBoxItem item)
+    {
+        if (item.Tag is not PickerRow row) return;
+        lastRemoved = row;
+        lastRemovedItem = item;
+        rows = rows.Where(r => !string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)).ToList();
+        list.Items.Remove(item);
+        try { Store.DeleteVendorContact(VendorCode, row.Name); } catch { }
+        if (list.SelectedItem == item) { list.SelectedItem = null; okButton.IsEnabled = false; }
+        undoLink.Content = $"Removed {row.Name} — Undo";
+        undoLink.Visibility = Visibility.Visible;
+        if (list.Items.Count == 0 && searchBox.Text.Trim().Length == 0)
+        {
+            list.Items.Add(new ListBoxItem { Content = "No installers for this vendor — use Add new installer", IsEnabled = false });
+        }
+        ReloadCount();
+    }
+
+    void UndoRemove()
+    {
+        if (lastRemoved == null) return;
+        var row = lastRemoved;
+        try { Store.UpsertVendorContact(VendorCode, row.Name, row.Mobile); } catch { }
+        if (!rows.Any(r => string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)))
+            rows = rows.Append(row).OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        lastRemoved = null;
+        lastRemovedItem = null;
+        undoLink.Visibility = Visibility.Collapsed;
+        ApplyFilter();
+        // restore highlight
+        foreach (var it in list.Items.OfType<ListBoxItem>())
+        {
+            if (it.Tag is PickerRow r && string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase))
+            { list.SelectedItem = it; break; }
+        }
+        okButton.IsEnabled = list.SelectedItem != null;
+    }
+
+    void ReloadCount()
+    {
+        // no-op placeholder for future
+    }
+
+    /// <summary>V2: delete (24) | name (*) | number (Auto, right, dim).</summary>
+    Grid RowContent(PickerRow row, Action delete)
     {
         var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var name = new TextBlock
+        var del = new Button
         {
-            Text = row.Name,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            Content = "✕", Width = 20, Height = 20, FontSize = 11, Padding = new Thickness(0),
+            Background = Brushes.Transparent, BorderThickness = new Thickness(1),
+            BorderBrush = mutedBrush, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            ToolTip = "Remove from list", VerticalAlignment = VerticalAlignment.Center
         };
-        var mobile = new TextBlock
-        {
-            Text = row.Mobile,
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = mutedBrush,
-            Margin = new Thickness(12, 0, 2, 0)
-        };
-        Grid.SetColumn(mobile, 1);
+        System.Windows.Automation.AutomationProperties.SetName(del, "Remove " + row.Name);
+        del.Click += (_, _) => delete();
+        grid.Children.Add(del);
+        var name = new TextBlock { Text = row.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(6, 0, 0, 0) };
+        Grid.SetColumn(name, 1);
         grid.Children.Add(name);
+        var mobile = new TextBlock { Text = row.Mobile, VerticalAlignment = VerticalAlignment.Center, Foreground = mutedBrush, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(12, 0, 2, 0) };
+        Grid.SetColumn(mobile, 2);
         grid.Children.Add(mobile);
         return grid;
     }

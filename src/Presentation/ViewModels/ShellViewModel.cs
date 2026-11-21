@@ -525,6 +525,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         ApplySearch();
         ScheduleHarvestStart();
         StartDailyRefreshTimer();
+            TryDailyCustomerRefresh();
         Status = "Restored session.";
         return true;
     }
@@ -620,6 +621,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // beside the first read is what made the landing feel slow.
             ScheduleHarvestStart();
             StartDailyRefreshTimer();
+            TryDailyCustomerRefresh();
             Status = "Signed in.";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1111,35 +1113,38 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (dailyRefreshTimer != null) return;
         dailyRefreshTimer = new System.Windows.Threading.DispatcherTimer
         {
-            Interval = TimeSpan.FromMinutes(1)
+            Interval = TimeSpan.FromMinutes(30)
         };
         dailyRefreshTimer.Tick += (_, _) => TryDailyCustomerRefresh();
         dailyRefreshTimer.Start();
     }
 
+    bool _refreshRunning;
     void TryDailyCustomerRefresh()
     {
+        if (_refreshRunning) return; // single flight
         try
         {
             var now = DateTime.Now;
-            if (now.Hour != 2) return;
             var stampPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "RenewableEnergyDesktop", "daily-refresh.txt");
             var last = File.Exists(stampPath) ? File.ReadAllText(stampPath).Trim() : "";
-            var today = now.ToString("yyyy-MM-dd");
-            if (last == today) return;
-            File.WriteAllText(stampPath, today);
-            Status = "Daily customer refresh started.";
-            // Resume the harvester if it is paused; it walks the list diff-first.
+            DateTime lastRun;
+            if (!DateTime.TryParse(last, out lastRun) || (now - lastRun).TotalMinutes < 30) return;
+            _refreshRunning = true;
+            File.WriteAllText(stampPath, now.ToString("O"));
+            Status = "Refreshing index…";
             harvester?.Resume();
-            SignInLog.Write("daily-refresh: started at " + now.ToString("O"));
+            SignInLog.Write("refresh: started at " + now.ToString("O"));
+            _refreshRunning = false;
+            Status = "";
         }
         catch (Exception ex)
         {
-            // P5: a failed poll must never clear the existing list.
-            SignInLog.Write("daily-refresh: failed - " + ex.Message);
-            Status = "Daily customer refresh failed: " + ex.Message;
+            _refreshRunning = false;
+            SignInLog.Write("refresh: failed - " + ex.Message);
+            Status = "Refresh failed: " + ex.Message;
         }
     }
 
