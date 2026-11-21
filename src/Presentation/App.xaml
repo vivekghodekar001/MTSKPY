@@ -42,22 +42,24 @@
   <Style TargetType="ComboBoxItem"><Setter Property="Background" Value="{StaticResource Surface}"/><Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="Padding" Value="12,9"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem"><Border x:Name="ItemFrame" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="4"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="ItemFrame" Property="Background" Value="#49415F"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemFrame" Property="Background" Value="{StaticResource Accent}"/><Setter Property="Foreground" Value="#281C60"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
   </Style>
-  <Style TargetType="TabItem">
-   <Setter Property="Foreground" Value="{StaticResource Text}"/>
-   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TabItem">
-    <Border x:Name="Tab" Background="{StaticResource Surface}" CornerRadius="10,10,0,0" Padding="18,10" Margin="0,0,6,0">
-     <ContentPresenter ContentSource="Header"/>
-    </Border><ControlTemplate.Triggers><Trigger Property="IsSelected" Value="True">
-     <Setter TargetName="Tab" Property="Background" Value="{StaticResource Accent}"/><Setter Property="Foreground" Value="#281C60"/>
-    </Trigger></ControlTemplate.Triggers>
-   </ControlTemplate></Setter.Value></Setter>
-  </Style>
+   <Style TargetType="TabItem">
+    <Setter Property="Foreground" Value="{StaticResource Text}"/>
+    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TabItem">
+     <Border x:Name="Tab" Background="Transparent" BorderBrush="Transparent" BorderThickness="0,0,0,2" Padding="14,8" Margin="0,0,12,0">
+      <ContentPresenter ContentSource="Header"/>
+     </Border><ControlTemplate.Triggers><Trigger Property="IsSelected" Value="True">
+      <Setter TargetName="Tab" Property="BorderBrush" Value="{StaticResource Accent}"/><Setter Property="Foreground" Value="{StaticResource Accent}"/>
+     </Trigger><Trigger Property="IsMouseOver" Value="True">
+      <Setter TargetName="Tab" Property="BorderBrush" Value="{StaticResource Muted}"/>
+     </Trigger></ControlTemplate.Triggers>
+    </ControlTemplate></Setter.Value></Setter>
+   </Style>
   <Style TargetType="Button">
    <Setter Property="Background" Value="{StaticResource Accent}"/><Setter Property="Foreground" Value="#281C60"/>
    <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="18,12"/>
    <Setter Property="FontSize" Value="15"/><Setter Property="Cursor" Value="Hand"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-    <Border x:Name="Frame" Background="{TemplateBinding Background}" CornerRadius="18" Padding="{TemplateBinding Padding}">
+    <Border x:Name="Frame" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
      <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
     </Border><ControlTemplate.Triggers>
      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="Opacity" Value="0.88"/></Trigger>

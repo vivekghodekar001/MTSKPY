@@ -235,6 +235,48 @@ internal static class Program
         Assert(newBook.People.Count == bookCountBefore,
             "Clear does not remove anyone from the contact book");
 
+        // FP3 acceptance 4/5: picking a contact fills both fields together.
+        inspection.ApplyPickedInstallerForTest("Sandip Kale", "9000000000");
+        Assert(nameField.Text == "Sandip Kale" && contactField.Text == "9000000000",
+            "picking a contact fills both name and mobile");
+        Assert(contactField.Text.Length == 10, "mobile is exactly 10 digits");
+        inspection.ApplyPickedInstallerForTest("Vivek Kumar", "9111111111");
+        Assert(nameField.Text == "Vivek Kumar" && contactField.Text == "9111111111",
+            "changing the name replaces the mobile in the same operation");
+        Assert(nameField.Text != "Sandip Kale" && contactField.Text != "9000000000",
+            "the stale number does not survive a name change");
+        inspection.DoClear();
+        Assert(string.IsNullOrWhiteSpace(nameField.Text) && string.IsNullOrWhiteSpace(contactField.Text),
+            "Clear empties both after a pick");
+
+        // FP3 acceptance: empty fields at 1024x768 must not scroll; widths/bounds.
+        var photosTabItem = Descendants(root).OfType<TabItem>().First(t => t.Header?.ToString() == "Photos & Signatures");
+        photosTabItem.IsSelected = true;
+        root.Measure(new Size(1024, 768));
+        root.Arrange(new Rect(0, 0, 1024, 768));
+        root.UpdateLayout();
+        var bodyScroll = Descendants(root).OfType<ScrollViewer>().FirstOrDefault(s => s.Content is Grid);
+        Assert(bodyScroll != null, "the body ScrollViewer exists");
+
+        Assert(bodyScroll.ComputedVerticalScrollBarVisibility == Visibility.Collapsed,
+            "no vertical scrollbar at 1024x768 with empty fields (got " + bodyScroll.ComputedVerticalScrollBarVisibility + " extent=" + bodyScroll.ExtentHeight + " viewport=" + bodyScroll.ViewportHeight + ")");
+        Assert(nameField.ActualWidth >= 200, "name TextBox is at least 200 px wide (got " + nameField.ActualWidth + ")");
+        Assert(contactField.ActualWidth >= 200, "mobile TextBox is at least 200 px wide (got " + contactField.ActualWidth + ")");
+        var chooseBtn2 = Descendants(root).OfType<Button>().First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
+        var clearBtn2 = Descendants(root).OfType<Button>().First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Clear");
+        var nameRect = new Rect(nameField.TranslatePoint(new Point(0, 0), root), new Size(nameField.ActualWidth, nameField.ActualHeight));
+        var chooseRect = new Rect(chooseBtn2.TranslatePoint(new Point(0, 0), root), new Size(chooseBtn2.ActualWidth, chooseBtn2.ActualHeight));
+        Assert(!nameRect.IntersectsWith(chooseRect), "name TextBox and Choose button do not intersect");
+        Assert(chooseRect.Left - nameRect.Right >= 8, "Choose sits at least 8 px right of the name field (got " + (chooseRect.Left - nameRect.Right) + ")");
+        var mobileRect = new Rect(contactField.TranslatePoint(new Point(0, 0), root), new Size(contactField.ActualWidth, contactField.ActualHeight));
+        var clearRect = new Rect(clearBtn2.TranslatePoint(new Point(0, 0), root), new Size(clearBtn2.ActualWidth, clearBtn2.ActualHeight));
+        Assert(!mobileRect.IntersectsWith(clearRect), "mobile TextBox and Clear button do not intersect");
+        Assert(clearBtn2.IsEnabled && clearBtn2.Opacity == 1, "Clear is enabled and fully opaque");
+        var photoFrames = Descendants(root).OfType<Border>().Where(b => Math.Abs(b.Width - 180) < 1 && Math.Abs(b.Height - 135) < 1).ToArray();
+        Assert(photoFrames.Length == 3, "all three photo previews are 180x135 (got " + photoFrames.Length + ")");
+        var sigCanvases = Descendants(root).OfType<InkCanvas>().ToArray();
+        Assert(sigCanvases.All(c => Math.Abs(c.Height - 90) < 1), "both signature previews are 90 px high");
+
         // V4: the picker's list is the store's rows merged with this vendor's
         // book - two different names stay two rows, and a name in both keeps
         // the store's (fresher) number.
@@ -316,7 +358,6 @@ internal static class Program
 
         // G1a evidence: the installer card and the location heading as they
         // actually lay out, with the Photos tab selected.
-        var photosTabItem = Descendants(root).OfType<TabItem>().First(t => t.Header?.ToString() == "Photos & Signatures");
         photosTabItem.IsSelected = true;
         root.Measure(new Size(1100, 850));
         root.Arrange(new Rect(0, 0, 1100, 850));
@@ -337,8 +378,8 @@ internal static class Program
             "a visible Clear control remains on the page");
         Assert(contactField.ActualWidth > nameField.ActualWidth,
             "the mobile field is wider than the name field (got " + contactField.ActualWidth + " vs " + nameField.ActualWidth + ")");
-        Assert(Descendants(root).OfType<InkCanvas>().All(c => Math.Abs(c.Height - 110) < 0.5),
-            "both signature canvases keep a consistent 110 px height");
+        Assert(Descendants(root).OfType<InkCanvas>().All(c => Math.Abs(c.Height - 90) < 0.5),
+            "both signature canvases keep a consistent 90 px height");
         SaveRender(root, 1100, 850, Path.Combine(outputDir, "g1a-installer.png"));
 
         // The fault shape is real: a background thread cannot read Strokes.

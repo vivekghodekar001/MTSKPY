@@ -75,7 +75,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Visibility = Visibility.Collapsed,
         Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB))
     };
-    readonly TextBlock bodyBox = new() { Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap };
+    readonly TextBlock bodyBox = new() { Margin = new Thickness(0, 0, 0, 0), TextWrapping = TextWrapping.Wrap };
     // J1: the manifest box sizes itself to its content up to a maximum, then
     // scrolls. Signature parts are muted so "PNG present" reads at a glance.
     readonly StackPanel manifestPanel = new();
@@ -139,7 +139,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     {
         namePlaceholder.Visibility = string.IsNullOrWhiteSpace(vendorPersonNameBox.Text) ? Visibility.Visible : Visibility.Collapsed;
         mobilePlaceholder.Visibility = string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text) ? Visibility.Visible : Visibility.Collapsed;
-        installerClearLink.Visibility = Visibility.Collapsed;
+        installerClearLink.Visibility = Visibility.Visible;
+        installerClearLink.IsEnabled = true;
+        installerClearLink.Opacity = 1;
     }
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
@@ -234,7 +236,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         status.Visibility = Visibility.Collapsed;
 
         // Y2: Grid layout — header row, scrollable tabs row, footer row
-        var grid = new Grid { Margin = new Thickness(16), Background = Background };
+        var grid = new Grid { Margin = new Thickness(8), Background = Background };
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -243,17 +245,17 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var headerCard = new Border
         {
             Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(16, 12, 16, 12),
-            Margin = new Thickness(0, 0, 0, 10),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(10, 6, 10, 6),
+            Margin = new Thickness(0, 0, 0, 4),
             Child = new StackPanel { Margin = new Thickness(0) }
         };
         var headerStack = (StackPanel)headerCard.Child;
-        var line1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        var line1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
         line1.Children.Add(new TextBlock
         {
             Text = $"Name: {FieldValue("consumer_name")}   |   Application No: {FieldValue("consumer_number")}   |   Address: {FieldValue("address")}",
-            FontSize = 13,
+            FontSize = 12,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center
@@ -266,7 +268,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         line2.Children.Add(new TextBlock
         {
             Text = $"Inst Date: {instDateText}   |   Inst Latitude: {FieldValue("latitude")}   |   Inst Longitude: {FieldValue("longitude")}",
-            FontSize = 13,
+            FontSize = 11,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center
@@ -298,7 +300,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // is filled.
         riskHeader = new TextBlock
         {
-            FontSize = 13,
+            FontSize = 11,
             FontWeight = FontWeights.SemiBold,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0)
@@ -306,9 +308,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         riskBand = new Border
         {
             Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(10, 6, 10, 6),
-            Margin = new Thickness(0, 8, 0, 0),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(4, 2, 4, 2),
+            Margin = new Thickness(0, 2, 0, 0),
             Child = riskHeader
         };
         headerStack.Children.Add(riskBand);
@@ -318,7 +320,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
         // Z6: each tab owns exactly one ScrollViewer. The Photos tab's single
         // scroller is shared by both of its columns.
-        var tabControl = new TabControl { Margin = new Thickness(0, 0, 0, 10) };
+        var tabControl = new TabControl { Margin = new Thickness(0, 0, 0, 4) };
 
         // Part A tab — checks only
         var partA = SurveyRules.InspectionChecks.Where(x => x.Part == "A").ToList();
@@ -331,7 +333,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 var checkPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 4) };
                 var val = FieldValue(check.OriginalRecordField);
                 var valText = string.IsNullOrEmpty(val) ? "Not provided" : val;
-                var labelPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+                var labelPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
                 labelPanel.Children.Add(new TextBlock
                 {
                     Text = "⚠ ",
@@ -358,7 +360,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 checkPanel.Children.Add(labelPanel);
-                var radios = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+                var radios = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
                 var yes = new RadioButton { Content = "Correct", GroupName = check.Field, IsChecked = true };
                 var no = new RadioButton { Content = "Incorrect", GroupName = check.Field };
                 radios.Children.Add(yes); radios.Children.Add(no);
@@ -368,7 +370,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     Width = double.NaN,
                     HorizontalAlignment = HorizontalAlignment.Stretch,
                     MaxWidth = 760,
-                    Margin = new Thickness(0, 4, 0, 0),
+                    Margin = new Thickness(0, 0, 0, 0),
                     ToolTip = "Remark (required when Incorrect)",
                     IsEnabled = false
                 };
@@ -397,7 +399,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 var checkPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 4) };
                 var val = FieldValue(check.OriginalRecordField);
                 var valText = string.IsNullOrEmpty(val) ? "Not provided" : val;
-                var labelPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+                var labelPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
                 labelPanel.Children.Add(new TextBlock
                 {
                     Text = "⚠ ",
@@ -424,7 +426,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     VerticalAlignment = VerticalAlignment.Center
                 });
                 checkPanel.Children.Add(labelPanel);
-                var radios = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+                var radios = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
                 var yes = new RadioButton { Content = "Correct", GroupName = check.Field, IsChecked = true };
                 var no = new RadioButton { Content = "Incorrect", GroupName = check.Field };
                 radios.Children.Add(yes); radios.Children.Add(no);
@@ -434,7 +436,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     Width = double.NaN,
                     HorizontalAlignment = HorizontalAlignment.Stretch,
                     MaxWidth = 760,
-                    Margin = new Thickness(0, 4, 0, 0),
+                    Margin = new Thickness(0, 0, 0, 0),
                     ToolTip = "Remark (required when Incorrect)",
                     IsEnabled = false
                 };
@@ -452,346 +454,206 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             tabControl.Items.Add(partBTab);
         }
 
-                // Y4: Photos & Signatures tab — single scrollable page with clear sections.
+                // Y4: Photos & Signatures tab — body grid with left/right columns.
         var photosTab = new TabItem { Header = "Photos & Signatures", Margin = new Thickness(0) };
-        var photosPage = new StackPanel { Margin = new Thickness(8, 12, 8, 8) };
+        var bodyGrid = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.55, GridUnitType.Star) });
+        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        // spacing between columns
+        bodyGrid.Margin = new Thickness(0, 0, 0, 0);
 
-        // Section: site photos in three equal cards across the full width.
-        photosPage.Children.Add(SectionHeader("Site photos", "Attach one JPEG for each step. Each slot takes a single photo."));
-        var photoGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
-        photoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var leftCol = new StackPanel { Margin = new Thickness(0, 0, 6, 0) };
+        var rightCol = new StackPanel { Margin = new Thickness(6, 0, 0, 0) };
+
+        // Left: photo slots
+        leftCol.Children.Add(SectionLabel("Photos"));
+        var photoRow = new Grid();
+        photoRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        photoRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        photoRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         for (var i = 0; i < PhotoSlots.Length; i++)
         {
             var slotCard = BuildPhotoSlot(PhotoSlots[i].Suffix, PhotoSlots[i].Label);
             Grid.SetColumn(slotCard, i);
-            photoGrid.Children.Add(slotCard);
+            photoRow.Children.Add(slotCard);
         }
-        photosPage.Children.Add(photoGrid);
-
-        // Section: signatures as a clearly labelled pair.
-        photosPage.Children.Add(SectionHeader("Signatures", "Ask both people to sign. Submit refuses a blank or identical pair.", new Thickness(0, 16, 0, 2)));
-        var signGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        leftCol.Children.Add(photoRow);
+        // Left: signature pair
+        leftCol.Children.Add(SectionLabel("Signatures", new Thickness(0, 8, 0, 4)));
+        var signGrid = new Grid { Margin = new Thickness(0, 0, 0, 0) };
         signGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         signGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var benBlock = BuildSignatureBlock("Beneficiary signature", beneficiary);
         var repBlock = BuildSignatureBlock("Vendor representative signature", representative);
         Grid.SetColumn(benBlock, 0);
+        benBlock.Margin = new Thickness(0, 0, 6, 0);
         Grid.SetColumn(repBlock, 1);
+        repBlock.Margin = new Thickness(6, 0, 0, 0);
         signGrid.Children.Add(benBlock);
         signGrid.Children.Add(repBlock);
-        photosPage.Children.Add(signGrid);
+        leftCol.Children.Add(signGrid);
 
-        // Section: installer details and location side by side.
-        photosPage.Children.Add(SectionHeader("Installer and location", "The installer who attended, and the position the survey is submitted from.", new Thickness(0, 16, 0, 2)));
-        var detailsGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
-        detailsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        detailsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(leftCol, 0);
+        bodyGrid.Children.Add(leftCol);
 
-        // Installer card (right column content rebuilt as a vertical stack).
+        // Right: installer card
         var installerStack = new StackPanel();
-        // P1: installer boxes start EMPTY — the officer types whoever actually
-        // attended. The stored name is only whoever attended last time and must
-        // not block a legitimate re-inspection with a different person.
         VendorPersonName = "";
         VendorPersonMobile = "";
-        // P3: prefill last-used pair for this vendor (beneficiary's previous
-        // pair if it exists, else the vendor's most recent). Empty only when
-        // there is no history for this vendor.
         PrefillInstallerPair();
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
-        // C5: the officer's own book of installers. The boxes stay free text
-        // and stay empty; the book only offers what is already in it.
         if (vendorPeople.LoadWarning != null) LogStartupNote(vendorPeople.LoadWarning);
         var editBook = new Button
         {
             Content = "Edit…",
             Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            Margin = new Thickness(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
             ToolTip = "Add, rename or remove the people in your installer list"
         };
         System.Windows.Automation.AutomationProperties.SetName(editBook, "Edit the installer list");
         editBook.Click += (_, _) => EditVendorPeople(vendorPeople);
 
-        // Row 0 — "Installer Details" | "Clear" | "Edit…"
         var installerHeader = new Grid();
         installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        installerHeader.Children.Add(new TextBlock
-        {
-            Text = "Installer details",
-            FontWeight = FontWeights.SemiBold,
-            FontSize = 15,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        var clearLinkHeader = new Button
-        {
-            Content = "Clear",
-            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            Margin = new Thickness(8, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "Clear the chosen installer for this record only. Your installer list is kept."
-        };
-        System.Windows.Automation.AutomationProperties.SetName(clearLinkHeader, "Clear");
-        clearLinkHeader.Click += (_, _) => DoClear();
-        installerHeader.Children.Add(clearLinkHeader);
-        Grid.SetColumn(clearLinkHeader, 1);
+        installerHeader.Children.Add(new TextBlock { Text = "Installer Details", FontWeight = FontWeights.SemiBold, FontSize = 13, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
         installerHeader.Children.Add(editBook);
-        Grid.SetColumn(editBook, 2);
+        Grid.SetColumn(editBook, 1);
         installerStack.Children.Add(installerHeader);
 
-        // Rows 1–4 — label, field, label, field.
         installerStack.Children.Add(FieldLabel("Vendor Person Name"));
-        installerStack.Children.Add(CreateStringRow(vendorPersonNameBox, vendorPersonChoose, namePlaceholder));
+        // Row 3: TextBox + Choose
+        var nameRow = new Grid();
+        nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+
+        vendorPersonNameBox.Height = 30; vendorPersonNameBox.MinHeight = 0; vendorPersonNameBox.Padding = new Thickness(6, 0, 6, 0);
+        vendorPersonNameBox.TextWrapping = TextWrapping.NoWrap; vendorPersonNameBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        vendorPersonChoose.Content = "Choose…"; vendorPersonChoose.Height = 30; vendorPersonChoose.Margin = new Thickness(8, 0, 0, 0);
+        vendorPersonChoose.Style = (Style)System.Windows.Application.Current.FindResource("LinkButton");
+        // ghost style via manual
+        vendorPersonChoose.Background = Brushes.Transparent; vendorPersonChoose.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"); vendorPersonChoose.BorderThickness = new Thickness(1); vendorPersonChoose.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); vendorPersonChoose.Opacity = 1;
+        nameRow.Children.Add(vendorPersonNameBox);
+        nameRow.Children.Add(vendorPersonChoose);
+        Grid.SetColumn(vendorPersonChoose, 1);
+        installerStack.Children.Add(nameRow);
+
         installerStack.Children.Add(FieldLabel("Vendor Person Mobile No"));
-        installerStack.Children.Add(CreateStringRow(vendorPersonMobileBox, null, mobilePlaceholder));
+        var mobileRow = new Grid();
+        mobileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        mobileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+
+        vendorPersonMobileBox.Height = 30; vendorPersonMobileBox.MinHeight = 0; vendorPersonMobileBox.Padding = new Thickness(6, 0, 6, 0);
+        vendorPersonMobileBox.TextWrapping = TextWrapping.NoWrap; vendorPersonMobileBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        installerClearLink.Content = "Clear"; installerClearLink.Height = 30; installerClearLink.Margin = new Thickness(8, 0, 0, 0);
+        installerClearLink.Style = null;
+        installerClearLink.Background = Brushes.Transparent; installerClearLink.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"); installerClearLink.BorderThickness = new Thickness(1); installerClearLink.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); installerClearLink.Opacity = 1;
+        mobileRow.Children.Add(vendorPersonMobileBox);
+        mobileRow.Children.Add(installerClearLink);
+        Grid.SetColumn(installerClearLink, 1);
+        installerStack.Children.Add(mobileRow);
+
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonChoose, "Choose...");
         System.Windows.Automation.AutomationProperties.SetName(installerClearLink, "Clear");
-        System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
-        System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
         installerClearLink.Click += (_, _) => DoClear();
         vendorPersonChoose.Click += (_, _) => OpenPicker();
         UpdatePlaceholders();
-        // B3: inline note (no modal) when a typed mobile differs from the saved one.
-        installerNote = new TextBlock
-        {
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 2, 0, 0),
-            Visibility = Visibility.Collapsed
-        };
-        var useSavedLink = new System.Windows.Documents.Hyperlink(new System.Windows.Documents.Run("Use saved"));
-        useSavedLink.Click += (_, _) =>
-        {
-            // revert to the saved number
-            var people = VendorPersonsForRecord();
-            var nameText = VendorPersonName.Trim();
-            var chosen = people.FirstOrDefault(p => string.Equals(p.Name, nameText, StringComparison.OrdinalIgnoreCase));
-            if (chosen != null) VendorPersonMobile = chosen.Mobile;
-            installerNote.Visibility = Visibility.Collapsed;
-        };
-        savedMobileRun = new System.Windows.Documents.Run("");
-        installerNote.Inlines.Add(new System.Windows.Documents.Run("Saved: "));
-        installerNote.Inlines.Add(savedMobileRun);
-        installerNote.Inlines.Add(new System.Windows.Documents.Run("  "));
-        installerNote.Inlines.Add(useSavedLink);
+        installerNote = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0), Visibility = Visibility.Collapsed };
         installerStack.Children.Add(installerNote);
-
-        installerHint = new TextBlock
-        {
-            Text = "No saved installers — press Edit to add one.",
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0),
-            Visibility = vendorPeople.People.Count == 0 ? Visibility.Visible : Visibility.Collapsed
-        };
-        installerStack.Children.Add(installerHint);
-
-        vendorPersonNameBox.LostFocus += (_, _) => PersistInstallerPair();
-
-        vendorWarning = new TextBlock
-        {
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            FontSize = 13,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0),
-            Visibility = Visibility.Collapsed
-        };
+        vendorWarning = new TextBlock { Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 0), Visibility = Visibility.Collapsed };
         installerStack.Children.Add(vendorWarning);
 
-        // Keep the legacy Clear link in the tree for behaviour but hide it (header link is the visible one).
-        installerClearLink.Visibility = Visibility.Collapsed;
+        var installerCard = new Border { Background = (Brush)System.Windows.Application.Current.FindResource("Surface"), CornerRadius = new CornerRadius(4), Padding = new Thickness(8), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), Child = installerStack, Margin = new Thickness(0, 0, 0, 0) };
+        rightCol.Children.Add(installerCard);
 
-        var installerCard = new Border
-        {
-            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(14),
-            Margin = new Thickness(0, 0, 8, 0),
-            Child = installerStack
-        };
-        Grid.SetColumn(installerCard, 0);
-        detailsGrid.Children.Add(installerCard);
-
-        // Location card.
-        var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
-        var locationHeader = new Grid();
-        locationHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        locationHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        locationHeader.Children.Add(new TextBlock
-        {
-            Text = "Location",
-            FontWeight = FontWeights.SemiBold,
-            FontSize = 15,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        locationCard.Children.Add(locationHeader);
-        var clearLat = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-        clearLat.Click += (_, _) => manualLat.Text = "";
-        var clearLong = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-        clearLong.Click += (_, _) => manualLong.Text = "";
-        var clearAcc = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
-        clearAcc.Click += (_, _) => manualAcc.Text = "";
+        // Right: location card
+        var locationCard = new StackPanel();
+        locationCard.Children.Add(new TextBlock { Text = "Location", FontWeight = FontWeights.SemiBold, FontSize = 13, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
         manualRows = new StackPanel { Visibility = Visibility.Collapsed };
         manualLat.TextChanged += (_, _) => UpdateSubmitEnabled();
         manualLong.TextChanged += (_, _) => UpdateSubmitEnabled();
         manualAcc.TextChanged += (_, _) => UpdateSubmitEnabled();
+        var clearLat = new Button { Content = "✕", Height = 24, Padding = new Thickness(4,0,4,0) }; clearLat.Click += (_,_) => manualLat.Text="";
+        var clearLong = new Button { Content = "✕", Height = 24, Padding = new Thickness(4,0,4,0) }; clearLong.Click += (_,_) => manualLong.Text="";
+        var clearAcc = new Button { Content = "✕", Height = 24, Padding = new Thickness(4,0,4,0) }; clearAcc.Click += (_,_) => manualAcc.Text="";
         manualRows.Children.Add(CreateFieldRow("Manual latitude", manualLat, clearLat));
         manualRows.Children.Add(CreateFieldRow("Manual longitude", manualLong, clearLong));
         manualRows.Children.Add(CreateFieldRow("Manual accuracy (m)", manualAcc, clearAcc));
         locationCard.Children.Add(manualRows);
-        var setManually = new Button
-        {
-            Content = "set manually",
-            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 0, 0),
-            ToolTip = "Enter the coordinates by hand - for a record whose registered coordinates are plainly wrong"
-        };
+        var setManually = new Button { Content = "set manually", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 0, 4) };
         System.Windows.Automation.AutomationProperties.SetName(setManually, "set manually");
-        setManually.Click += (_, _) =>
-        {
-            manualRows.Visibility = manualRows.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-            setManually.Content = manualRows.Visibility == Visibility.Visible ? "hide the manual boxes" : "set manually";
-        };
-        locationHeader.Children.Add(setManually);
-        Grid.SetColumn(setManually, 1);
-        var locationActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-        var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(10, 4, 10, 4) };
+        setManually.Click += (_, _) => { manualRows.Visibility = manualRows.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible; setManually.Content = manualRows.Visibility == Visibility.Visible ? "hide the manual boxes" : "set manually"; };
+        locationCard.Children.Add(setManually);
+        var locationActions = new WrapPanel { Margin = new Thickness(0, 0, 0, 0) };
+        var resolveBtn = new Button { Content = "Use current location", Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(8, 4, 8, 4) };
         resolveBtn.Click += async (_, _) => await ResolveLocation();
         locationActions.Children.Add(resolveBtn);
         locationActions.Children.Add(distRestricted);
-        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) });
+        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8,0,4,0), FontSize = 12 });
         locationActions.Children.Add(allowedDist);
         locationCard.Children.Add(locationActions);
-        locationBox.TextWrapping = TextWrapping.Wrap;
-        locationBox.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
-        locationBox.Text = "Not resolved yet. A submission is made from the customer's own site; the recorded coordinates are jittered a few metres.";
+        locationBox.TextWrapping = TextWrapping.Wrap; locationBox.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); locationBox.FontSize = 12;
+        locationBox.Text = "Not resolved yet.";
         locationCard.Children.Add(locationBox);
         _ = ResolveLocation();
+        var locationCardBorder = new Border { Background = (Brush)System.Windows.Application.Current.FindResource("Surface"), CornerRadius = new CornerRadius(4), Padding = new Thickness(8), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), Child = locationCard, Margin = new Thickness(0, 0, 0, 0) };
+        rightCol.Children.Add(locationCardBorder);
 
-        var locationCardBorder = new Border
-        {
-            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(14),
-            Margin = new Thickness(8, 0, 0, 0),
-            Child = locationCard
-        };
-        Grid.SetColumn(locationCardBorder, 1);
-        detailsGrid.Children.Add(locationCardBorder);
+        // spacer
+        rightCol.Children.Add(new Border { Height = 1, Background = Brushes.Transparent, VerticalAlignment = VerticalAlignment.Stretch });
 
-        photosPage.Children.Add(detailsGrid);
+        Grid.SetColumn(rightCol, 1);
+        bodyGrid.Children.Add(rightCol);
 
         photosTab.Content = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = photosPage
+            Content = bodyGrid
         };
         tabControl.Items.Add(photosTab);
 
-        // Y2: Footer row — action bar with status, plus collapsible submission details.
-        var footerCard = new Border
-        {
-            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(14),
-            Margin = new Thickness(0, 8, 0, 0),
-            Child = new StackPanel { Margin = new Thickness(0) }
-        };
-        var footer = (StackPanel)footerCard.Child;
-        // H4: the banner is part of the fixed footer, above the status line.
-        footer.Children.Add(banner);
-        // Z5: One status line — collapses when empty, accent brush when populated.
-        SetStatus("");
-        footer.Children.Add(status);
-
-        // M2: the risk warnings, in the fixed footer.
-        riskFooter = new TextBlock
-        {
-            FontSize = 13,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0)
-        };
+        // Y2: Footer row — one row, warnings above.
+        var footer = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
+        riskFooter = new TextBlock { FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80)), TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 0, 0), Visibility = Visibility.Collapsed };
         footer.Children.Add(riskFooter);
 
-        acknowledgeBtn = new Button { Content = "Acknowledge", Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(14, 6, 14, 6), Visibility = Visibility.Collapsed };
-        footer.Children.Add(acknowledgeBtn);
+        var footerBorder = new Border { BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 8, 0, 0) };
+        var footerRow = new Grid();
+        footerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        // Action bar: status context on the left, primary actions on the right.
-        var actionBar = new Grid { Margin = new Thickness(0, 10, 0, 0) };
-        actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var actionLeft = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        actionLeft.Children.Add(new TextBlock
-        {
-            Text = "Submit only when all three photos and both signatures are attached.",
-            FontSize = 12,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            TextWrapping = TextWrapping.Wrap
-        });
-        actionBar.Children.Add(actionLeft);
-        var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-        submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 10, 0), Padding = new Thickness(16, 8, 16, 8), IsEnabled = false, FontWeight = FontWeights.SemiBold };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(12, 6, 12, 6), IsEnabled = false, FontSize = 12 };
         submitBtn.Click += async (_, _) => await Submit();
-        actions.Children.Add(submitBtn);
-        var verifyBtn = new Button { Content = "Verify (re-read)", Margin = new Thickness(0, 0, 10, 0), Padding = new Thickness(16, 8, 16, 8) };
+        buttons.Children.Add(submitBtn);
+        var verifyBtn = new Button { Content = "Verify (re-read)", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(12, 6, 12, 6), FontSize = 12 };
         verifyBtn.Click += async (_, _) => await Verify();
-        actions.Children.Add(verifyBtn);
-        var closeBtn = new Button { Content = "Close", Padding = new Thickness(16, 8, 16, 8), Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x36, 0x46)), Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
+        buttons.Children.Add(verifyBtn);
+        var closeBtn = new Button { Content = "Close", Padding = new Thickness(12, 6, 12, 6), FontSize = 12, Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x36, 0x46)), Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
         closeBtn.Click += (_, _) => Close();
-        actions.Children.Add(closeBtn);
-        actionBar.Children.Add(actions);
-        Grid.SetColumn(actions, 1);
-        footer.Children.Add(actionBar);
+        buttons.Children.Add(closeBtn);
+        footerRow.Children.Add(buttons);
+        status.FontSize = 11; status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"); status.TextTrimming = TextTrimming.CharacterEllipsis; status.Margin = new Thickness(12, 0, 0, 0);
+        footerRow.Children.Add(status);
+        Grid.SetColumn(status, 1);
+        footerBorder.Child = footerRow;
+        footer.Children.Add(footerBorder);
 
-        // J1: manifest label + a box that sizes to its content up to a maximum
-        // and then scrolls. With no parts it collapses to nothing.
-        manifestLabel.Text = "Manifest (pre-send):";
-        manifestLabel.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
-        manifestLabel.Margin = new Thickness(0, 10, 0, 2);
-        footer.Children.Add(manifestLabel);
-        manifestBox.Child = manifestPanel;
-        manifestScroll.Content = manifestBox;
-        footer.Children.Add(manifestScroll);
-        SetManifest(Array.Empty<InspectionMultipartBuilder.ManifestEntry>());
-
-        // Z4: body box with its own scroll, hidden until a submit/verify runs.
-        bodyBox.FontFamily = new FontFamily("Consolas");
-        bodyBox.FontSize = 11;
-        bodyBox.Background = Brushes.White;
-        bodyBox.Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F));
-        bodyBox.Padding = new Thickness(8);
-        bodyBox.Text = "Awaiting submission…";
-        bodyBox.TextWrapping = TextWrapping.Wrap;
-        bodyScroll = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Height = 110,
-            Visibility = Visibility.Collapsed,
-            Margin = new Thickness(0, 8, 0, 0)
-        };
+        // body box hidden until submit/verify
+        bodyBox.FontFamily = new FontFamily("Consolas"); bodyBox.FontSize = 11; bodyBox.Background = Brushes.White; bodyBox.Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F)); bodyBox.Padding = new Thickness(8); bodyBox.Text = "Awaiting submission…"; bodyBox.TextWrapping = TextWrapping.Wrap;
+        bodyScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 90, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 0) };
         bodyScroll.Content = bodyBox;
         footer.Children.Add(bodyScroll);
 
         Grid.SetRow(tabControl, 1);
         grid.Children.Add(tabControl);
-        Grid.SetRow(footerCard, 2);
-        grid.Children.Add(footerCard);
+        Grid.SetRow(footer, 2);
+        grid.Children.Add(footer);
 
         UpdateRisk();
-
         Content = grid;
         allowedDist.Text = "";
     }
@@ -1000,8 +862,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         }
         if (riskFooter != null)
         {
-            riskFooter.Text = "";
-            riskFooter.Visibility = Visibility.Collapsed;
+            var warn = reasons.Length > 0 ? string.Join("; ", reasons) : "";
+            riskFooter.Text = warn;
+            riskFooter.Visibility = string.IsNullOrWhiteSpace(warn) ? Visibility.Collapsed : Visibility.Visible;
         }
         if (acknowledgeBtn != null)
         {
@@ -1140,153 +1003,75 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
     Border BuildPhotoSlot(string suffix, string label)
     {
-        // Grouped card: label + status, preview, file name, Choose/Remove.
         Border card = null!;
-        var stack = new StackPanel { Margin = new Thickness(0) };
-        var header = new Grid();
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(new TextBlock
-        {
-            Text = label,
-            FontSize = 13,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        var status = new TextBlock
-        {
-            Text = "Not attached",
-            FontSize = 11,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 0, 0)
-        };
-        header.Children.Add(status);
-        Grid.SetColumn(status, 1);
-        stack.Children.Add(header);
+        var stack = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
+        stack.Children.Add(new TextBlock { Text = label, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), Margin = new Thickness(0, 0, 0, 0) });
 
-        var image = new Image
-        {
-            // P1: show the whole photo, never a fixed 4:3 crop.
-            Stretch = Stretch.Uniform
-        };
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+
+        var image = new Image { Stretch = Stretch.Uniform };
         var thumbFrame = new Border
         {
-            Height = 108,
-            Background = new SolidColorBrush(Color.FromRgb(0xF3, 0xF0, 0xF7)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
+            Width = 180, Height = 135,
+            Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F)),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Margin = new Thickness(0, 8, 0, 6),
+            CornerRadius = new CornerRadius(4),
             Child = image,
-            HorizontalAlignment = HorizontalAlignment.Stretch
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
         };
-        stack.Children.Add(thumbFrame);
+        Grid.SetColumn(thumbFrame, 0);
+        grid.Children.Add(thumbFrame);
 
-        var orientationNote = Hint("Portrait photo", 11);
-        orientationNote.Margin = new Thickness(0, 0, 0, 4);
-        orientationNote.Visibility = Visibility.Collapsed;
-        stack.Children.Add(orientationNote);
-
-        var fname = Hint("No photo selected", 11);
-        fname.Margin = new Thickness(0, 0, 0, 6);
-        stack.Children.Add(fname);
-
-        System.Windows.Automation.AutomationProperties.SetName(thumbFrame, label + " preview");
-
-        var row = new WrapPanel { Margin = new Thickness(0, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        var choose = CompactButton("Choose JPEG…");
+        var right = new StackPanel { VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(12, 0, 0, 0) };
+        var btnRow = new WrapPanel { Margin = new Thickness(0, 0, 0, 0) };
+        var choose = new Button { Content = "Choose JPEG…", Width = 110, Height = 28, FontSize = 12, Padding = new Thickness(4, 2, 4, 2) };
         System.Windows.Automation.AutomationProperties.SetName(choose, "Choose JPEG for " + label);
+        var remove = new Button { Content = "Remove", Width = 80, Height = 28, FontSize = 12, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(8, 0, 0, 0), IsEnabled = false, Opacity = 0.45 };
+        System.Windows.Automation.AutomationProperties.SetName(remove, "Remove " + label);
+        btnRow.Children.Add(choose); btnRow.Children.Add(remove);
+        right.Children.Add(btnRow);
+        var state = new TextBlock { Text = "No photo selected", FontSize = 11, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), TextWrapping = TextWrapping.Wrap };
+        right.Children.Add(state);
+        Grid.SetColumn(right, 1);
+        grid.Children.Add(right);
+
+        stack.Children.Add(grid);
+
         choose.Click += (_, _) =>
         {
-            var picker = new Microsoft.Win32.OpenFileDialog
-            {
-                Filter = "JPEG images|*.jpg;*.jpeg",
-                Title = label,
-                Multiselect = false
-            };
+            var picker = new Microsoft.Win32.OpenFileDialog { Filter = "JPEG images|*.jpg;*.jpeg", Title = label, Multiselect = false };
             if (picker.ShowDialog(this) != true) return;
             try
             {
                 var path = picker.FileName;
-                if (IsStampedFile(path) || IsSlotFile(path))
-                    throw new InvalidDataException("Pick the original photo, not a file the app has already prepared.");
+                if (IsStampedFile(path) || IsSlotFile(path)) throw new InvalidDataException("Pick the original photo, not a file the app has already prepared.");
                 ValidatePhotoSource(path);
                 Directory.CreateDirectory(PhotoSlotDirectory);
-
                 var slotPath = SlotPhotoPath(suffix, ComputeSha1(path));
-                var produced = JpegExifStamper.Stamp(
-                    path,
-                    ResolveCoordinate("latitude", manualLat.Text),
-                    ResolveCoordinate("longitude", manualLong.Text),
-                    DateTime.UtcNow,
-                    slotPath,
-                    LogStartupNote);
-
-                if (photos.TryGetValue(suffix, out var previous)
-                    && !string.Equals(previous, produced, StringComparison.OrdinalIgnoreCase))
-                    DeleteSlotFile(previous);
-
-                photos[suffix] = produced;
-                photoSources[suffix] = path;
-                photoHashes[suffix] = ComputeSha256(path);
-
-                try
-                {
-                    image.Source = Thumbnail(produced);
-                    orientationNote.Visibility = IsPortrait(produced) ? Visibility.Visible : Visibility.Collapsed;
-                }
-                catch (Exception ex)
-                {
-                    image.Source = null;
-                    orientationNote.Visibility = Visibility.Collapsed;
-                    SetStatus($"Cannot read {Path.GetFileName(produced)}: {ex.Message}");
-                }
-                fname.Text = Path.GetFileName(produced);
-                fname.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
-                status.Text = "Attached";
-                status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Accent");
-                card.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Accent");
+                var produced = JpegExifStamper.Stamp(path, ResolveCoordinate("latitude", manualLat.Text), ResolveCoordinate("longitude", manualLong.Text), DateTime.UtcNow, slotPath, LogStartupNote);
+                if (photos.TryGetValue(suffix, out var previous) && !string.Equals(previous, produced, StringComparison.OrdinalIgnoreCase)) DeleteSlotFile(previous);
+                photos[suffix] = produced; photoSources[suffix] = path; photoHashes[suffix] = ComputeSha256(path);
+                try { image.Source = Thumbnail(produced); state.Text = Path.GetFileName(produced) + "  (attached)"; }
+                catch (Exception ex) { image.Source = null; state.Text = "Cannot read: " + ex.Message; }
+                remove.IsEnabled = true; remove.Opacity = 1;
                 RefreshManifestPreview();
             }
-            catch (Exception ex)
-            {
-                SetStatus("Photo could not be loaded: " + ex.Message);
-            }
+            catch (Exception ex) { SetStatus("Photo could not be loaded: " + ex.Message); }
         };
-        var remove = CompactButton("Remove");
-        System.Windows.Automation.AutomationProperties.SetName(remove, "Remove " + label);
-        remove.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x36, 0x46));
-        remove.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         remove.Click += (_, _) =>
         {
             if (photos.TryGetValue(suffix, out var slotFile)) DeleteSlotFile(slotFile);
-            photos.Remove(suffix);
-            photoSources.Remove(suffix);
-            photoHashes.Remove(suffix);
-            image.Source = null;
-            orientationNote.Visibility = Visibility.Collapsed;
-            fname.Text = "No photo selected";
-            fname.Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted");
-            status.Text = "Not attached";
-            status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted");
-            card.BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6));
+            photos.Remove(suffix); photoSources.Remove(suffix); photoHashes.Remove(suffix);
+            image.Source = null; state.Text = "No photo selected"; remove.IsEnabled = false; remove.Opacity = 0.45;
             RefreshManifestPreview();
         };
-        row.Children.Add(choose); row.Children.Add(remove);
-        stack.Children.Add(row);
 
-        card = new Border
-        {
-            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12),
-            Margin = new Thickness(0, 0, 8, 12),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
-            BorderThickness = new Thickness(1),
-            Child = stack
-        };
+        card = new Border { Background = (Brush)System.Windows.Application.Current.FindResource("Surface"), CornerRadius = new CornerRadius(4), Padding = new Thickness(8), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), Child = stack, Margin = new Thickness(0, 0, 0, 0) };
         return card;
     }
 
@@ -1374,71 +1159,43 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         catch { return false; }
     }
 
-    /// <summary>Z3: a signature block — label, 110 px canvas, and an obvious Clear link.</summary>
+    /// <summary>Z3: a signature block — label row with 16 px clear X, 90 px preview.</summary>
     Border BuildSignatureBlock(string title, InkCanvas canvas)
     {
         var autoName = title.StartsWith("Beneficiary", StringComparison.Ordinal) ? "Clear beneficiary signature" : "Clear representative signature";
         var stack = new StackPanel { Margin = new Thickness(0) };
-        // Header row: label on the left, Clear link on the right.
         var header = new Grid();
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(new TextBlock
-        {
-            Text = title,
-            FontSize = 14,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        var clear = new Button
-        {
-            Content = "Clear",
-            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "Clear this signature"
-        };
+        header.Children.Add(new TextBlock { Text = title, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
+        var clear = new Button { Content = "✕", Width = 16, Height = 16, FontSize = 11, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), Opacity = 0.8 };
         System.Windows.Automation.AutomationProperties.SetName(clear, autoName);
         clear.Click += (_, _) => canvas.Strokes.Clear();
         header.Children.Add(clear);
         Grid.SetColumn(clear, 1);
         stack.Children.Add(header);
 
-        // Name the canvas so it is reachable by assistive tech and by UI automation.
         System.Windows.Automation.AutomationProperties.SetName(canvas, title + " canvas");
         canvas.DefaultDrawingAttributes.Color = Colors.Black;
         canvas.DefaultDrawingAttributes.Width = canvas.DefaultDrawingAttributes.Height = 2.5;
-        canvas.Height = 110;
+        canvas.Height = 90;
         canvas.HorizontalAlignment = HorizontalAlignment.Stretch;
-        canvas.Margin = new Thickness(0, 6, 0, 0);
-        var state = new TextBlock
-        {
-            Text = "Not signed yet",
-            FontSize = 11,
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            Margin = new Thickness(0, 4, 0, 0)
-        };
+        canvas.Margin = new Thickness(0, 0, 0, 0);
+        var state = new TextBlock { Text = "Not signed", FontSize = 11, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), Margin = new Thickness(0, 0, 0, 0) };
         canvas.Strokes.StrokesChanged += (_, _) =>
         {
-            // T2: at attach time, only report signed/not signed — no refusal here.
-            SetStatus(canvas.Strokes.Count == 0
-                ? $"Blank signature: '{title}' has no strokes. Draw a signature."
-                : $"Signed: '{title}'.");
-            state.Text = canvas.Strokes.Count == 0 ? "Not signed yet" : "Signed";
-            state.Foreground = canvas.Strokes.Count == 0
-                ? (Brush)System.Windows.Application.Current.FindResource("Muted")
-                : (Brush)System.Windows.Application.Current.FindResource("Accent");
-            // T3: debounced duplicate check at attach time.
+            SetStatus(canvas.Strokes.Count == 0 ? $"Blank signature: '{title}' has no strokes. Draw a signature." : $"Signed: '{title}'.");
+            state.Text = canvas.Strokes.Count == 0 ? "Not signed" : "Signed";
             signatureDebounceTimer.Change(400, Timeout.Infinite);
         };
-        // White drawing surface so ink is visible on the dark theme.
         var surface = new Border
         {
             Background = Brushes.White,
-            CornerRadius = new CornerRadius(8),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
+            CornerRadius = new CornerRadius(4),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(2),
+            Height = 90,
             Child = canvas
         };
         stack.Children.Add(surface);
@@ -1446,13 +1203,14 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         return new Border
         {
             Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12),
-            Margin = new Thickness(0, 0, 8, 0),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8),
+            Margin = new Thickness(0, 0, 0, 0),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            BorderThickness = new Thickness(1),
             Child = stack
         };
     }
-
     static BitmapImage Thumbnail(string path)
     {
         var image = new BitmapImage();
@@ -1482,6 +1240,16 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Margin = margin ?? new Thickness(0, 4, 0, 7)
     };
 
+    /// <summary>Section label, 13 px semibold, used across the Photos tab.</summary>
+    static TextBlock SectionLabel(string title, Thickness? margin = null) => new()
+    {
+        Text = title,
+        FontSize = 13,
+        FontWeight = FontWeights.SemiBold,
+        Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+        Margin = margin ?? new Thickness(0, 0, 0, 4)
+    };
+
     /// <summary>Consistent section heading used across the Photos tab.</summary>
     static StackPanel SectionHeader(string title, string? hint = null, Thickness? margin = null)
     {
@@ -1492,7 +1260,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             FontSize = 16,
             FontWeight = FontWeights.SemiBold,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
-            Margin = new Thickness(0, 0, 0, 2)
+            Margin = new Thickness(0, 0, 0, 0)
         });
         if (!string.IsNullOrWhiteSpace(hint))
         {
@@ -1502,7 +1270,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 FontSize = 12,
                 Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
                 TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 2)
+                Margin = new Thickness(0, 0, 0, 0)
             });
         }
         return stack;
@@ -1515,7 +1283,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         FontSize = size,
         Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
         TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 0, 0, 2)
+        Margin = new Thickness(0, 0, 0, 0)
     };
 
     /// <summary>
@@ -1535,7 +1303,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             rows.Children.Clear();
             foreach (var person in book.People.ToList())
             {
-                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
                 var name = new TextBox { Text = person.Name, Width = 220, Margin = new Thickness(0, 0, 8, 0) };
                 var mobile = new TextBox { Text = person.Mobile, Width = 160, Margin = new Thickness(0, 0, 8, 0) };
                 var delete = new Button { Content = "remove", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
@@ -1577,7 +1345,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         };
 
         var content = new StackPanel { Margin = new Thickness(16) };
-        content.Children.Add(new TextBlock { Text = "Your installer list", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 4) });
+        content.Children.Add(new TextBlock { Text = "Your installer list", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 0) });
         content.Children.Add(new TextBlock
         {
             Text = "Yours alone. It stays in this machine's app folder and is never sent anywhere.",
@@ -1791,6 +1559,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             .ToList();
     }
 
+    /// <summary>Test hook for the picker flow: apply a picked pair without opening the dialog.</summary>
+    internal void ApplyPickedInstallerForTest(string name, string mobile) =>
+        PickVendorPerson(new Mskpy.Infrastructure.VendorPeople.Person(name, mobile, DateTimeOffset.Now, recordVendorCode ?? ""));
+
     /// <summary>V1: the Clear link empties the pair on this record only. The
     /// contact book and the vendor_contacts table are not touched.</summary>
     internal void DoClear()
@@ -1836,7 +1608,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
     static StackPanel CreateFieldRow(string label, FrameworkElement box, Button clear)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
         row.Children.Add(new TextBlock
         {
             Text = label + ": ",
