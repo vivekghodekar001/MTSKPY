@@ -57,11 +57,21 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     bool _pickerOpen;
     bool pickerImported;
     Grid? pickerOverlay;
+    Border? pickerCard;
     TextBox pickerSearchBox = null!;
     ListBox pickerListBox = null!;
     Button pickerOkButton = null!;
     Button pickerCancelButton = null!;
     Button pickerChooseButton => vendorPersonChoose;
+    readonly List<PickerRow> pickerRows = new();
+    TextBox pickerAddName = null!;
+    TextBox pickerAddMobile = null!;
+    TextBlock pickerAddError = null!;
+    StackPanel pickerAddForm = null!;
+    TextBlock pickerAddLinkText = null!;
+    Button pickerUndoLink = null!;
+    PickerRow? lastDeletedRow;
+    int lastDeletedIndex = -1;
     private sealed record PickerRow(long RowId, string Name, string Mobile);
     // H-A: survey start is held from form open; end is captured at submit.
     readonly DateTimeOffset formOpenTime = DateTimeOffset.UtcNow;
@@ -159,7 +169,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
     TextBlock? riskHeader;
     Border? riskBand;
-    TextBlock? riskFooter;
     ScrollViewer? bodyScroll;
     readonly Mskpy.Infrastructure.VendorPeople vendorPeople = null!;
     TextBlock? installerNote;
@@ -245,13 +254,16 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         PreviewKeyDown += (_, e) =>
         {
-            if (_pickerOpen && e.Key == Key.Escape)
+            if (!_pickerOpen || e.Key != Key.Escape) return;
+            if (pickerAddForm != null && pickerAddForm.Visibility == Visibility.Visible)
             {
-                if (pickerOverlay != null) pickerOverlay.Visibility = Visibility.Collapsed;
-                _pickerOpen = false;
-                pickerChooseButton.Focus();
-                e.Handled = true;
+                CollapseAddForm();
             }
+            else
+            {
+                CollapsePickerOverlay();
+            }
+            e.Handled = true;
         };
 
         // Z5: the status line uses the accent brush and collapses when empty.
@@ -263,6 +275,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.ColumnDefinitions.Clear();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
 
         // Y1: Read-only header card (record info), Row 0 — two compact lines.
         var headerCard = new Border
@@ -343,6 +358,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Grid.SetColumn(navBtn, 1);
 
         Grid.SetRow(headerCard, 0);
+        Grid.SetColumn(headerCard, 0);
+        Grid.SetColumnSpan(headerCard, grid.ColumnDefinitions.Count);
 
         grid.Children.Add(headerCard);
 
@@ -485,27 +502,39 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 // Y4: Photos & Signatures tab — body grid with left/right columns.
         var photosTab = new TabItem { Header = "Photos & Signatures", Margin = new Thickness(0) };
         var bodyGrid = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        bodyGrid.ColumnDefinitions.Clear();
         bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
-        // spacing between columns
-        bodyGrid.Margin = new Thickness(0, 0, 0, 0);
 
-        var leftCol = new StackPanel { Margin = new Thickness(0, 0, 6, 0) };
+        // Left column: photos row, then signatures in their own row below it.
+        var leftCol = new Grid { Margin = new Thickness(0, 0, 6, 0) };
+        leftCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        leftCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        leftCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        leftCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var rightCol = new StackPanel { Margin = new Thickness(6, 0, 0, 0) };
 
-        // Left: photo slots
-        leftCol.Children.Add(SectionLabel("Photos"));
-        var photoRow = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Margin = new Thickness(0, 0, 0, 0) };
+        var photosLabel = SectionLabel("Photos");
+        Grid.SetRow(photosLabel, 0);
+        leftCol.Children.Add(photosLabel);
+
+        var photoRow = new System.Windows.Controls.Primitives.UniformGrid { Rows = 1, Columns = 3, Margin = new Thickness(0, 0, 0, 8) };
         for (var i = 0; i < PhotoSlots.Length; i++)
         {
             var slotCard = BuildPhotoSlot(PhotoSlots[i].Suffix, PhotoSlots[i].Label);
             slotCard.Margin = new Thickness(0, 0, 8, 0);
+            slotCard.VerticalAlignment = VerticalAlignment.Top;
             photoRow.Children.Add(slotCard);
         }
+        Grid.SetRow(photoRow, 1);
         leftCol.Children.Add(photoRow);
-        // Left: signature pair
-        leftCol.Children.Add(SectionLabel("Signatures", new Thickness(0, 8, 0, 4)));
-        var signGrid = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+
+        var signaturesLabel = SectionLabel("Signatures", new Thickness(0, 8, 0, 4));
+        Grid.SetRow(signaturesLabel, 2);
+        leftCol.Children.Add(signaturesLabel);
+
+        // The signature preview canvas is 90 px; the grid sizes to its label + preview + state.
+        var signGrid = new Grid { Margin = new Thickness(0), Height = double.NaN };
         signGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         signGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var benBlock = BuildSignatureBlock("Beneficiary signature", beneficiary);
@@ -516,6 +545,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         repBlock.Margin = new Thickness(6, 0, 0, 0);
         signGrid.Children.Add(benBlock);
         signGrid.Children.Add(repBlock);
+        Grid.SetRow(signGrid, 3);
         leftCol.Children.Add(signGrid);
 
         Grid.SetColumn(leftCol, 0);
@@ -541,10 +571,13 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var nameRow = new Grid();
         nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        // WPF Grid has no ColumnSpacing property; an 8 px right margin on the
+        // star column gives the same 8 px gutter before the fixed button.
+        nameRow.Margin = new Thickness(0);
 
-        vendorPersonNameBox.Height = 30; vendorPersonNameBox.MinHeight = 0; vendorPersonNameBox.Padding = new Thickness(6, 0, 6, 0);
+        vendorPersonNameBox.Height = 30; vendorPersonNameBox.MinHeight = 0; vendorPersonNameBox.Padding = new Thickness(6, 0, 6, 0); vendorPersonNameBox.Margin = new Thickness(0, 0, 8, 0);
         vendorPersonNameBox.TextWrapping = TextWrapping.NoWrap; vendorPersonNameBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        vendorPersonChoose.Content = "Choose…"; vendorPersonChoose.Height = 30; vendorPersonChoose.Margin = new Thickness(8, 0, 0, 0); vendorPersonChoose.VerticalAlignment = VerticalAlignment.Center;
+        vendorPersonChoose.Content = "Choose…"; vendorPersonChoose.Height = 30; vendorPersonChoose.Width = 96; vendorPersonChoose.Margin = new Thickness(0); vendorPersonChoose.HorizontalAlignment = HorizontalAlignment.Stretch; vendorPersonChoose.VerticalAlignment = VerticalAlignment.Center;
         vendorPersonChoose.Style = (Style)System.Windows.Application.Current.FindResource("LinkButton");
         // ghost style via manual
         vendorPersonChoose.Background = Brushes.Transparent; vendorPersonChoose.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"); vendorPersonChoose.BorderThickness = new Thickness(1); vendorPersonChoose.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); vendorPersonChoose.Opacity = 1;
@@ -557,10 +590,12 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var mobileRow = new Grid();
         mobileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         mobileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+        // Same 8 px gutter as the name row, without an extra Grid column.
+        mobileRow.Margin = new Thickness(0);
 
-        vendorPersonMobileBox.Height = 30; vendorPersonMobileBox.MinHeight = 0; vendorPersonMobileBox.Padding = new Thickness(6, 0, 6, 0);
+        vendorPersonMobileBox.Height = 30; vendorPersonMobileBox.MinHeight = 0; vendorPersonMobileBox.Padding = new Thickness(6, 0, 6, 0); vendorPersonMobileBox.Margin = new Thickness(0, 0, 8, 0);
         vendorPersonMobileBox.TextWrapping = TextWrapping.NoWrap; vendorPersonMobileBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        installerClearLink.Content = "Clear"; installerClearLink.Height = 30; installerClearLink.Margin = new Thickness(4, 0, 4, 0); installerClearLink.VerticalAlignment = VerticalAlignment.Center;
+        installerClearLink.Content = "Clear"; installerClearLink.Height = 30; installerClearLink.Width = 72; installerClearLink.Margin = new Thickness(0); installerClearLink.HorizontalAlignment = HorizontalAlignment.Stretch; installerClearLink.VerticalAlignment = VerticalAlignment.Center;
         installerClearLink.Style = null;
         installerClearLink.Background = Brushes.Transparent; installerClearLink.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"); installerClearLink.BorderThickness = new Thickness(1); installerClearLink.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); installerClearLink.Opacity = 1;
         mobileRow.Children.Add(vendorPersonMobileBox);
@@ -642,9 +677,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
         // Y2: Footer row — one row, warnings above.
         var footer = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
-        riskFooter = new TextBlock { FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80)), TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 0, 0), Visibility = Visibility.Collapsed };
-        footer.Children.Add(riskFooter);
-
         var footerBorder = new Border { BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(0, 8, 0, 0) };
         var footerRow = new Grid();
         footerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -674,86 +706,157 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         footer.Children.Add(bodyScroll);
 
         Grid.SetRow(tabControl, 1);
+        Grid.SetColumn(tabControl, 0);
+        Grid.SetColumnSpan(tabControl, grid.ColumnDefinitions.Count);
         grid.Children.Add(tabControl);
         Grid.SetRow(footer, 2);
+        Grid.SetColumn(footer, 0);
+        Grid.SetColumnSpan(footer, grid.ColumnDefinitions.Count);
         grid.Children.Add(footer);
 
-        // K1: in-window picker overlay
+        // Picker overlay: search, inline Add form, list, then action row.
         var pickerOverlayControl = new Grid { Visibility = Visibility.Collapsed, Background = new SolidColorBrush(Color.FromArgb(0x73, 0, 0, 0)) };
         Grid.SetZIndex(pickerOverlayControl, 100);
         Grid.SetRowSpan(pickerOverlayControl, grid.RowDefinitions.Count);
-        Grid.SetColumnSpan(pickerOverlayControl, Math.Max(1, grid.ColumnDefinitions.Count));
+        Grid.SetColumn(pickerOverlayControl, 0);
+        Grid.SetColumnSpan(pickerOverlayControl, grid.ColumnDefinitions.Count);
         pickerOverlayControl.Visibility = Visibility.Collapsed;
         var scrim = new System.Windows.Shapes.Rectangle { Fill = Brushes.Transparent };
         scrim.MouseLeftButtonDown += (_, __) => CollapsePickerOverlay();
         pickerOverlayControl.Children.Add(scrim);
-        var card = new Border { Width = 420, Height = 460, Background = Brushes.White, BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(12), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+
+        var card = new Border
+        {
+            Width = 420,
+            Height = double.NaN,
+            MaxHeight = Math.Max(320, Height - 120),
+            Background = Brushes.White,
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(12),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(40, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        pickerCard = card;
         var cardGrid = new Grid();
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // header
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // search
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // add link
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // add form
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // list
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // actions
+
         var overlayHeaderGrid = new Grid();
         overlayHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         overlayHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         overlayHeaderGrid.Children.Add(new TextBlock { Text = "Select installer", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.Black, VerticalAlignment = VerticalAlignment.Center });
-        var closeX = new Button { Content = "✕", Width = 20, Height = 20, FontSize = 12, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.Black };
+        var closeX = new Button { Content = "✕", Width = 20, Height = 20, MinHeight = 0, FontSize = 12, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.Black };
         closeX.Click += (_, __) => CollapsePickerOverlay();
         overlayHeaderGrid.Children.Add(closeX);
         Grid.SetColumn(closeX, 1);
         cardGrid.Children.Add(overlayHeaderGrid);
-        var mid = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
-        pickerSearchBox = new TextBox { Height = 30, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 0, 0, 6) };
-        mid.Children.Add(pickerSearchBox);
-        pickerListBox = new ListBox { VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 6) };
-        mid.Children.Add(pickerListBox);
-        cardGrid.Children.Add(mid);
-        Grid.SetRow(mid, 1);
-        var bottom = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
-        var addLink = new Button { Content = "Add new installer", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"), HorizontalAlignment = HorizontalAlignment.Left };
-        bottom.Children.Add(addLink);
+
+        pickerSearchBox = new TextBox { Height = 30, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 8, 0, 4) };
+        Grid.SetRow(pickerSearchBox, 1);
+        cardGrid.Children.Add(pickerSearchBox);
+
+        pickerAddLinkText = new TextBlock { Text = "Add new installer", FontSize = 12, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
+        var addLink = new Button
+        {
+            Content = pickerAddLinkText,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            MinHeight = 0,
+            Height = 18,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 0, 4)
+        };
+        addLink.MouseEnter += (_, __) => pickerAddLinkText.TextDecorations = TextDecorations.Underline;
+        addLink.MouseLeave += (_, __) => pickerAddLinkText.TextDecorations = null;
+        addLink.Click += (_, __) =>
+        {
+            if (pickerAddForm.Visibility == Visibility.Visible) { CollapseAddForm(); return; }
+            pickerAddForm.Visibility = Visibility.Visible;
+            pickerAddName.Focus();
+        };
+        Grid.SetRow(addLink, 2);
+        cardGrid.Children.Add(addLink);
+
+        pickerAddForm = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 6) };
+        var nameField = PickerInputField("Name", 0);
+        pickerAddName = nameField.Box;
+        pickerAddForm.Children.Add(nameField.Host);
+        var mobileField = PickerInputField("Mobile (10 digits)", 10);
+        pickerAddMobile = mobileField.Box;
+        pickerAddMobile.PreviewTextInput += (_, e) =>
+        {
+            if ((e.Text ?? "").Any(ch => !char.IsDigit(ch))) e.Handled = true;
+        };
+        pickerAddForm.Children.Add(mobileField.Host);
+        var addActionRow = new Grid { Margin = new Thickness(0, 6, 0, 0) };
+        addActionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+        addActionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var addButton = new Button { Content = "Add", Width = 80, Height = 30, MinHeight = 0, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Left };
+        addButton.Click += (_, __) => DoPickerAdd();
+        addActionRow.Children.Add(addButton);
+        var cancelAddText = new TextBlock { Text = "Cancel add", FontSize = 12, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
+        var cancelAdd = new Button
+        {
+            Content = cancelAddText,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(6, 0, 0, 0),
+            MinHeight = 0,
+            Height = 18,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        cancelAdd.MouseEnter += (_, __) => cancelAddText.TextDecorations = TextDecorations.Underline;
+        cancelAdd.MouseLeave += (_, __) => cancelAddText.TextDecorations = null;
+        cancelAdd.Click += (_, __) => CollapseAddForm();
+        Grid.SetColumn(cancelAdd, 1);
+        addActionRow.Children.Add(cancelAdd);
+        pickerAddForm.Children.Add(addActionRow);
+        pickerAddError = new TextBlock { Foreground = Brushes.DarkRed, FontSize = 11, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 4, 0, 0) };
+        pickerAddForm.Children.Add(pickerAddError);
+        Grid.SetRow(pickerAddForm, 3);
+        cardGrid.Children.Add(pickerAddForm);
+
+        pickerListBox = new ListBox { MinHeight = 0, VerticalAlignment = VerticalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 6) };
+        pickerListBox.SelectionChanged += (_, _) => pickerOkButton.IsEnabled = SelectedPickerRow() != null;
+        pickerListBox.MouseDoubleClick += (_, _) => { if (SelectedPickerRow() != null) AcceptPickerSelection(); };
+        Grid.SetRow(pickerListBox, 4);
+        cardGrid.Children.Add(pickerListBox);
+
         var btnRow = new Grid();
         btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var undoLink = new Button { Content = "", Visibility = Visibility.Collapsed, Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
-        btnRow.Children.Add(undoLink);
+        pickerUndoLink = new Button { Content = "", Visibility = Visibility.Collapsed, FontSize = 12, Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0), MinHeight = 0, Height = 18, HorizontalAlignment = HorizontalAlignment.Left, Cursor = System.Windows.Input.Cursors.Hand };
+        pickerUndoLink.Click += (_, __) => UndoPickerDelete();
+        btnRow.Children.Add(pickerUndoLink);
         var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        pickerCancelButton = new Button { Content = "Cancel", Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(12, 6, 12, 6), FontSize = 12 };
-        pickerCancelButton.Click += (_, __) => { if (pickerOverlayControl != null) pickerOverlayControl.Visibility = Visibility.Collapsed; _pickerOpen = false; pickerChooseButton.Focus(); };
-        pickerOkButton = new Button { Content = "OK", Padding = new Thickness(12, 6, 12, 6), FontSize = 12, IsEnabled = false };
-        pickerListBox.SelectionChanged += (_, _) => pickerOkButton.IsEnabled = SelectedPickerRow() != null;
-        pickerOkButton.Click += (_, __) =>
-        {
-            if (SelectedPickerRow() is not PickerRow row) return;
-            VendorPersonName = row.Name;
-            VendorPersonMobile = row.Mobile;
-            PersistInstallerPair();
-            if (pickerOverlayControl != null) pickerOverlayControl.Visibility = Visibility.Collapsed;
-            _pickerOpen = false;
-            pickerChooseButton.Focus();
-        };
+        pickerCancelButton = new Button { Content = "Cancel", Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(12, 6, 12, 6), MinHeight = 0, Height = 30, FontSize = 12 };
+        pickerCancelButton.Click += (_, __) => CollapsePickerOverlay();
+        pickerOkButton = new Button { Content = "OK", Padding = new Thickness(12, 6, 12, 6), MinHeight = 0, Height = 30, FontSize = 12, IsEnabled = false };
+        pickerOkButton.Click += (_, __) => AcceptPickerSelection();
         btns.Children.Add(pickerCancelButton);
         btns.Children.Add(pickerOkButton);
         btnRow.Children.Add(btns);
         Grid.SetColumn(btns, 1);
-        bottom.Children.Add(btnRow);
-        cardGrid.Children.Add(bottom);
-        Grid.SetRow(bottom, 2);
+        Grid.SetRow(btnRow, 5);
+        cardGrid.Children.Add(btnRow);
+
         card.Child = cardGrid;
         pickerOverlayControl.Children.Add(card);
         grid.Children.Add(pickerOverlayControl);
         this.pickerOverlay = pickerOverlayControl;
 
-        pickerSearchBox.TextChanged += (_, __) =>
-        {
-            var typed = (pickerSearchBox.Text ?? "").Trim();
-            // filter in-memory items
-            foreach (var it in pickerListBox.Items.OfType<ListBoxItem>())
-            {
-                if (it.Tag is not PickerRow r) { it.Visibility = Visibility.Visible; continue; }
-                it.Visibility = (typed.Length == 0 || r.Name.Contains(typed, StringComparison.OrdinalIgnoreCase) || r.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase))
-                    ? Visibility.Visible : Visibility.Collapsed;
-            }
-        };
+        pickerSearchBox.TextChanged += (_, __) => ApplyPickerFilter();
 
         UpdateRisk();
 
@@ -963,12 +1066,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                             : (Brush)System.Windows.Application.Current.FindResource("Surface");
             }
         }
-        if (riskFooter != null)
-        {
-            var warn = reasons.Length > 0 ? string.Join("; ", reasons) : "";
-            riskFooter.Text = warn;
-            riskFooter.Visibility = string.IsNullOrWhiteSpace(warn) ? Visibility.Collapsed : Visibility.Visible;
-        }
         if (acknowledgeBtn != null)
         {
             acknowledgeBtn.Visibility = Visibility.Collapsed;
@@ -1107,7 +1204,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     Border BuildPhotoSlot(string suffix, string label)
     {
         Border card = null!;
-        var stack = new StackPanel { Margin = new Thickness(0) };
+        var stack = new StackPanel { Margin = new Thickness(0), Height = double.NaN };
         stack.Children.Add(new TextBlock { Text = label, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 0, 4) });
 
         var image = new Image { Stretch = Stretch.Uniform };
@@ -1220,7 +1317,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
             BorderThickness = new Thickness(1),
             Child = stack,
-            Margin = new Thickness(0, 0, 0, 0)
+            Margin = new Thickness(0, 0, 0, 0),
+            Height = double.NaN,
+            VerticalAlignment = VerticalAlignment.Top
         };
         return card;
     }
@@ -1488,16 +1587,252 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     }
 
     /// <summary>Test hook for the picker flow: apply a picked pair without opening the dialog.</summary>
-    void CollapsePickerOverlay() { if (pickerOverlay != null) pickerOverlay.Visibility = Visibility.Collapsed; _pickerOpen = false; pickerChooseButton.Focus(); }
+    void CollapsePickerOverlay()
+    {
+        CollapseAddForm();
+        if (pickerOverlay != null) pickerOverlay.Visibility = Visibility.Collapsed;
+        _pickerOpen = false;
+        pickerOkButton.IsEnabled = false;
+        pickerChooseButton.Focus();
+    }
+
+    static (TextBox Box, Grid Host) PickerInputField(string placeholder, int maxLength)
+    {
+        var box = new TextBox
+        {
+            Height = 30,
+            MinHeight = 0,
+            FontSize = 12,
+            Padding = new Thickness(6, 2, 6, 2),
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        if (maxLength > 0) box.MaxLength = maxLength;
+        var host = new Grid();
+        host.Children.Add(box);
+        var hint = new TextBlock
+        {
+            Text = placeholder,
+            FontSize = 12,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        host.Children.Add(hint);
+        box.TextChanged += (_, _) => hint.Visibility = string.IsNullOrEmpty(box.Text) ? Visibility.Visible : Visibility.Collapsed;
+        return (box, host);
+    }
+
+    void CollapseAddForm()
+    {
+        if (pickerAddForm != null) pickerAddForm.Visibility = Visibility.Collapsed;
+        if (pickerAddName != null) pickerAddName.Text = "";
+        if (pickerAddMobile != null) pickerAddMobile.Text = "";
+        if (pickerAddError != null)
+        {
+            pickerAddError.Text = "";
+            pickerAddError.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    void ShowPickerAddError(string message)
+    {
+        pickerAddError.Text = message;
+        pickerAddError.Visibility = Visibility.Visible;
+    }
 
     PickerRow? SelectedPickerRow() => (pickerListBox.SelectedItem as ListBoxItem)?.Tag as PickerRow;
+
+    void AcceptPickerSelection()
+    {
+        if (SelectedPickerRow() is not PickerRow row) return;
+        VendorPersonName = row.Name;
+        VendorPersonMobile = row.Mobile;
+        if (string.IsNullOrWhiteSpace(recordVendorCode)) recordVendorCode = consumerNumber;
+        UpdatePlaceholders();
+        PersistInstallerPair();
+        CollapsePickerOverlay();
+    }
+
+    Grid PickerRowContent(PickerRow row, ListBoxItem item)
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var del = new Button
+        {
+            Content = "✕", Width = 20, Height = 20, FontSize = 11, Padding = new Thickness(0),
+            Background = Brushes.Transparent, BorderThickness = new Thickness(1),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            ToolTip = "Remove from list", VerticalAlignment = VerticalAlignment.Center
+        };
+        System.Windows.Automation.AutomationProperties.SetName(del, "Remove " + row.Name);
+        del.Click += (_, e) => { DeletePickerRow(item); e.Handled = true; };
+        grid.Children.Add(del);
+        var name = new TextBlock { Text = row.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(6, 0, 0, 0) };
+        Grid.SetColumn(name, 1);
+        grid.Children.Add(name);
+        var mobile = new TextBlock { Text = row.Mobile, VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(12, 0, 2, 0) };
+        Grid.SetColumn(mobile, 2);
+        grid.Children.Add(mobile);
+        return grid;
+    }
+
+    void ApplyPickerFilter()
+    {
+        pickerListBox.Items.Clear();
+        pickerOkButton.IsEnabled = false;
+        var typed = (pickerSearchBox?.Text ?? "").Trim();
+        var filtered = pickerRows
+            .Where(r => typed.Length == 0
+                || (r.Name ?? "").Contains(typed, StringComparison.OrdinalIgnoreCase)
+                || (r.Mobile ?? "").Contains(typed, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (filtered.Count == 0)
+        {
+            pickerListBox.Items.Add(new ListBoxItem
+            {
+                Content = typed.Length == 0 ? "No installers for this vendor — use Add new installer" : "No matching installer",
+                IsEnabled = false
+            });
+            return;
+        }
+        foreach (var row in filtered)
+        {
+            ListBoxItem item = new() { Tag = row, Padding = new Thickness(2, 3, 2, 3) };
+            item.Content = PickerRowContent(row, item);
+            pickerListBox.Items.Add(item);
+        }
+    }
+
+    void DeletePickerRow(ListBoxItem item)
+    {
+        if (item.Tag is not PickerRow row) return;
+        var wasSelected = ReferenceEquals(pickerListBox.SelectedItem, item);
+        var vendorCode = string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode!;
+        int removed = 0;
+        bool stillPresent = false;
+        try { removed = store?.DeleteVendorContactByRowId(row.RowId, out _, out _) ?? 0; } catch { }
+        try { stillPresent = store?.VendorContactRows(vendorCode).Any(r => r.RowId == row.RowId) ?? false; } catch { }
+        if (removed == 0 || stillPresent)
+        {
+            SetStatus("Not removed — row still present after delete");
+            return;
+        }
+        lastDeletedIndex = pickerRows.IndexOf(row);
+        pickerRows.Remove(row);
+        lastDeletedRow = row;
+        if (pickerUndoLink != null)
+        {
+            pickerUndoLink.Content = $"Removed {row.Name} — Undo";
+            pickerUndoLink.Visibility = Visibility.Visible;
+        }
+        if (wasSelected) pickerOkButton.IsEnabled = false;
+        ApplyPickerFilter();
+    }
+
+    void UndoPickerDelete()
+    {
+        if (lastDeletedRow is not PickerRow row) return;
+        var vendorCode = string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode!;
+        try
+        {
+            store?.UpsertVendorContact(vendorCode, row.Name, row.Mobile);
+            store?.ClearTombstone(vendorCode, row.Name);
+        }
+        catch { }
+        long restoredRowId = 0;
+        try
+        {
+            var found = store?.VendorContactRows(vendorCode)
+                .FirstOrDefault(r => string.Equals(r.PersonName, row.Name, StringComparison.OrdinalIgnoreCase));
+            if (found.HasValue) restoredRowId = found.Value.RowId;
+        }
+        catch { }
+        var restored = new PickerRow(restoredRowId, row.Name, row.Mobile);
+        if (!pickerRows.Any(r => string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            var index = lastDeletedIndex >= 0 && lastDeletedIndex <= pickerRows.Count ? lastDeletedIndex : pickerRows.Count;
+            pickerRows.Insert(index, restored);
+        }
+        lastDeletedRow = null;
+        lastDeletedIndex = -1;
+        if (pickerUndoLink != null) pickerUndoLink.Visibility = Visibility.Collapsed;
+        ApplyPickerFilter();
+        foreach (var item in pickerListBox.Items.OfType<ListBoxItem>())
+        {
+            if (item.Tag is PickerRow r && string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                pickerListBox.SelectedItem = item;
+                pickerListBox.ScrollIntoView(item);
+                break;
+            }
+        }
+        pickerOkButton.IsEnabled = SelectedPickerRow() != null;
+    }
+
+    void DoPickerAdd()
+    {
+        var name = (pickerAddName.Text ?? "").Trim();
+        var mobile = (pickerAddMobile.Text ?? "").Trim();
+        if (name.Length == 0) { ShowPickerAddError("Name is required."); return; }
+        if (mobile.Length != 10 || mobile.Any(ch => !char.IsDigit(ch)))
+        {
+            ShowPickerAddError("Mobile No must be exactly 10 digits.");
+            return;
+        }
+        var vendorCode = recordVendorCode ?? "";
+        if (string.IsNullOrWhiteSpace(vendorCode))
+        {
+            Log("picker add: vendorCode EMPTY");
+            vendorCode = consumerNumber;
+            recordVendorCode = vendorCode;
+        }
+        try { store?.UpsertVendorContact(vendorCode, name, mobile); }
+        catch (Exception ex) { ShowPickerAddError("Could not save: " + ex.Message); return; }
+
+        long rowId = 0;
+        try
+        {
+            var found = store?.VendorContactRows(vendorCode)
+                .FirstOrDefault(r => string.Equals(r.PersonName, name, StringComparison.OrdinalIgnoreCase));
+            if (found.HasValue) rowId = found.Value.RowId;
+        }
+        catch { }
+
+        var existing = pickerRows.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (existing != null) pickerRows.Remove(existing);
+        var row = new PickerRow(rowId, name, mobile);
+        pickerRows.Add(row);
+
+        CollapseAddForm();
+        ApplyPickerFilter();
+        foreach (var item in pickerListBox.Items.OfType<ListBoxItem>())
+        {
+            if (item.Tag is PickerRow r && r.RowId == row.RowId && string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                pickerListBox.SelectedItem = item;
+                pickerListBox.ScrollIntoView(item);
+                break;
+            }
+        }
+        pickerOkButton.IsEnabled = SelectedPickerRow() != null;
+        Log($"picker add: {name}/{mobile} total={pickerRows.Count}");
+    }
 
     void LoadPickerRows()
     {
         var vendorCode = recordVendorCode ?? "";
+        if (string.IsNullOrWhiteSpace(vendorCode))
+        {
+            Log("picker open: vendorCode EMPTY — resolved to '" + consumerNumber + "'");
+            vendorCode = consumerNumber;
+            recordVendorCode = vendorCode;
+        }
         // Import the officer's book once per window. Importing again after a pick
-        // re-enters the store's non-reentrant lock (the same guard the old picker
-        // used) and would hang the second Choose click.
+        // re-enters the store's non-reentrant lock and would hang the second open.
         if (!pickerImported)
         {
             try
@@ -1510,35 +1845,17 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             }
             catch { }
         }
-        pickerListBox.Items.Clear();
+        pickerRows.Clear();
         try
         {
             var stored = store != null ? store.VendorContactRows(vendorCode) : Array.Empty<(long, string, string)>();
-            foreach (var c in stored)
-            {
-                var grid = new Grid();
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                var del = new Button { Content = "✕", Width = 20, Height = 20, FontSize = 11, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(1), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), ToolTip = "Remove from list" };
-                del.Click += (_, e) => { e.Handled = true; };
-                grid.Children.Add(del);
-                var name = new TextBlock { Text = c.PersonName, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(6, 0, 0, 0) };
-                Grid.SetColumn(name, 1);
-                grid.Children.Add(name);
-                var mobile = new TextBlock { Text = c.Mobile, VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(12, 0, 2, 0) };
-                Grid.SetColumn(mobile, 2);
-                grid.Children.Add(mobile);
-                var item = new ListBoxItem { Tag = new PickerRow(c.RowId, c.PersonName, c.Mobile), Padding = new Thickness(2, 3, 2, 3) };
-                item.Content = grid;
-                pickerListBox.Items.Add(item);
-            }
-            if (pickerListBox.Items.Count == 0)
-            {
-                pickerListBox.Items.Add(new ListBoxItem { Content = "No installers for this vendor — use Add new installer", IsEnabled = false });
-            }
+            foreach (var c in stored) pickerRows.Add(new PickerRow(c.RowId, c.PersonName, c.Mobile));
         }
         catch { }
+        lastDeletedRow = null;
+        lastDeletedIndex = -1;
+        if (pickerUndoLink != null) pickerUndoLink.Visibility = Visibility.Collapsed;
+        ApplyPickerFilter();
     }
 
     internal void ApplyPickedInstallerForTest(string name, string mobile) =>
@@ -1554,6 +1871,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         vendorPersonMobileBox.Text = "";
         if (vendorWarning != null) vendorWarning.Visibility = Visibility.Collapsed;
         if (installerNote != null) installerNote.Visibility = Visibility.Collapsed;
+        pickerOkButton.IsEnabled = false;
         UpdatePlaceholders();
         UpdateRisk();
     }
