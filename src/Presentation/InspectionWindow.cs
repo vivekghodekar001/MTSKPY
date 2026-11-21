@@ -53,6 +53,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly InspectionStore? store; // W1
     readonly Action<InspectionRecord, SubmitOutcome>? onSubmitComplete;
     readonly Action<InspectionRecord, VerifyOutcome>? onVerifyComplete;
+    InstallerPickerWindow? _pickerInstance;
+    bool _pickerOpen;
     // H-A: survey start is held from form open; end is captured at submit.
     readonly DateTimeOffset formOpenTime = DateTimeOffset.UtcNow;
 
@@ -1943,8 +1945,12 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             .Where(p => string.IsNullOrWhiteSpace(p.Vendor)
                      || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
             .Select(p => (p.Name, p.Mobile));
+        if (_pickerOpen) return;
+        _pickerOpen = true;
         var dlg = new InstallerPickerWindow(vendorCode, store, bookRows);
+        _pickerInstance = dlg;
         dlg.Owner = this;
+        dlg.Closed += (_, __) => { _pickerOpen = false; _pickerInstance = null; };
         dlg.ShowDialog();
         if (dlg.OkOrNull != true || string.IsNullOrWhiteSpace(dlg.ChosenName)) return;
         var person = new VendorPeople.Person(

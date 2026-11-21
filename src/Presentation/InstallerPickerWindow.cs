@@ -89,12 +89,18 @@ public sealed class InstallerPickerWindow : Window
         this.bookRows = (bookRows ?? Array.Empty<(string, string)>()).ToList();
 
         Title = "Select installer";
-        Width = 380;
-        Height = 420;
+        Width = 420;
+        Height = 460;
+        MinWidth = 380;
+        MinHeight = 420;
+        SizeToContent = SizeToContent.Manual;
+        ResizeMode = ResizeMode.NoResize;
         MinWidth = 380;
         MinHeight = 420;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Loaded += (_, __) => { try { Left -= 30; } catch { } };
+        Closing += (_, __) => { _busy = false; };
         ShowInTaskbar = false;
         var owner = System.Windows.Application.Current?.MainWindow;
         if (owner != null) Owner = owner;
@@ -117,72 +123,9 @@ public sealed class InstallerPickerWindow : Window
         list.BorderThickness = new Thickness(1);
         list.Padding = new Thickness(2);
 
-        var main = new Grid { Margin = new Thickness(12) };
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // search
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add link/panel
-        main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });   // list
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // buttons
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // inline error
+        BuildContent();
+        ContentRendered += (_, __) => LogJ1();
 
-        var searchHost = new Grid();
-        searchHost.Children.Add(searchBox);
-        searchHost.Children.Add(searchHint);
-        main.Children.Add(searchHost);
-        Grid.SetRow(searchHost, 0);
-
-        var addLink = new Button
-        {
-            Content = "Add new installer",
-            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 4, 0, 4)
-        };
-        main.Children.Add(addLink);
-        Grid.SetRow(addLink, 1);
-
-        var addPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8), Visibility = Visibility.Collapsed };
-        var nameHost = new Grid { Width = 130, Margin = new Thickness(0, 0, 6, 0) };
-        nameHost.Children.Add(addName);
-        var nameHint = new TextBlock { Text = "Name", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), IsHitTestVisible = false };
-        nameHost.Children.Add(nameHint);
-        addName.TextChanged += (_, _) => nameHint.Visibility = string.IsNullOrWhiteSpace(addName.Text) ? Visibility.Visible : Visibility.Collapsed;
-        var mobileHost = new Grid { Width = 130, Margin = new Thickness(0, 0, 6, 0) };
-        mobileHost.Children.Add(addMobile);
-        var mobileHint = new TextBlock { Text = "Mobile (10 digits)", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), IsHitTestVisible = false };
-        mobileHost.Children.Add(mobileHint);
-        addMobile.TextChanged += (_, _) => mobileHint.Visibility = string.IsNullOrWhiteSpace(addMobile.Text) ? Visibility.Visible : Visibility.Collapsed;
-        var addRow = new WrapPanel();
-        addRow.Children.Add(nameHost);
-        addRow.Children.Add(mobileHost);
-        addRow.Children.Add(addButton);
-        addPanel.Children.Add(addRow);
-        addPanel.Children.Add(addErrorBlock);
-        main.Children.Add(addPanel);
-        Grid.SetRow(addPanel, 1);
-
-        addLink.Click += (_, _) =>
-        {
-            addPanel.Visibility = addPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-            addLink.Content = addPanel.Visibility == Visibility.Visible ? "Hide new installer" : "Add new installer";
-        };
-
-        main.Children.Add(list);
-        Grid.SetRow(list, 2);
-
-        var buttons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 4, 0, 0)
-        };
-        buttons.Children.Add(undoLink);
-        buttons.Children.Add(cancelButton);
-        buttons.Children.Add(okButton);
-        main.Children.Add(buttons);
-        Grid.SetRow(buttons, 3);
-        main.Children.Add(inlineError);
-        Grid.SetRow(inlineError, 4);
-        Content = main;
 
         AutomationProperties.SetName(searchBox, "Search installer");
         AutomationProperties.SetName(list, "Installer contacts");
@@ -297,6 +240,105 @@ public sealed class InstallerPickerWindow : Window
 
     /// <summary>V2/V4: read the book once per open (and after each Add). The
     /// store rows win over the officer's book when a name appears in both.</summary>
+    void BuildContent()
+    {
+        try
+        {
+            var main = new Grid { Margin = new Thickness(12) };
+            main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // search
+            main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add link/panel
+            main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });   // list
+            main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // buttons
+            main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // inline error
+
+            var searchHost = new Grid();
+            searchHost.Children.Add(searchBox);
+            searchHost.Children.Add(searchHint);
+            main.Children.Add(searchHost);
+            Grid.SetRow(searchHost, 0);
+
+            var addLink = new Button
+            {
+                Content = "Add new installer",
+                Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(0, 4, 0, 4)
+            };
+            main.Children.Add(addLink);
+            Grid.SetRow(addLink, 1);
+
+            var addPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8), Visibility = Visibility.Collapsed };
+            var nameHost = new Grid { Width = 130, Margin = new Thickness(0, 0, 6, 0) };
+            nameHost.Children.Add(addName);
+            var nameHint = new TextBlock { Text = "Name", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), IsHitTestVisible = false };
+            nameHost.Children.Add(nameHint);
+            addName.TextChanged += (_, _) => nameHint.Visibility = string.IsNullOrWhiteSpace(addName.Text) ? Visibility.Visible : Visibility.Collapsed;
+            var mobileHost = new Grid { Width = 130, Margin = new Thickness(0, 0, 6, 0) };
+            mobileHost.Children.Add(addMobile);
+            var mobileHint = new TextBlock { Text = "Mobile (10 digits)", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), IsHitTestVisible = false };
+            mobileHost.Children.Add(mobileHint);
+            addMobile.TextChanged += (_, _) => mobileHint.Visibility = string.IsNullOrWhiteSpace(addMobile.Text) ? Visibility.Visible : Visibility.Collapsed;
+            var addRow = new WrapPanel();
+            addRow.Children.Add(nameHost);
+            addRow.Children.Add(mobileHost);
+            addRow.Children.Add(addButton);
+            addPanel.Children.Add(addRow);
+            addPanel.Children.Add(addErrorBlock);
+            main.Children.Add(addPanel);
+            Grid.SetRow(addPanel, 1);
+
+            addLink.Click += (_, _) =>
+            {
+                addPanel.Visibility = addPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+                addLink.Content = addPanel.Visibility == Visibility.Visible ? "Hide new installer" : "Add new installer";
+            };
+
+            main.Children.Add(list);
+            Grid.SetRow(list, 2);
+
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 4, 0, 0)
+            };
+            buttons.Children.Add(undoLink);
+            buttons.Children.Add(cancelButton);
+            buttons.Children.Add(okButton);
+            main.Children.Add(buttons);
+            Grid.SetRow(buttons, 3);
+            main.Children.Add(inlineError);
+            Grid.SetRow(inlineError, 4);
+            Content = main;
+            LogJ1();
+        }
+        catch (Exception ex)
+        {
+            LogInstaller("BuildContent failed: " + ex);
+            var err = new TextBlock { Text = ex.Message, Foreground = Brushes.Red, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12) };
+            Content = err;
+        }
+    }
+
+    void LogJ1()
+    {
+        try
+        {
+            int count = 0;
+            if (Content is DependencyObject d) count = CountDescendants(d);
+            LogInstaller($"J1: ContentType={Content?.GetType().FullName} childCount={count} dialog={ActualWidth}x{ActualHeight} root={(Content as FrameworkElement)?.ActualWidth}x{(Content as FrameworkElement)?.ActualHeight} SizeToContent={SizeToContent}");
+        }
+        catch (Exception ex) { LogInstaller("J1 failed: " + ex.Message); }
+    }
+
+    static int CountDescendants(DependencyObject parent)
+    {
+        int n = 0;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            n += 1 + CountDescendants(VisualTreeHelper.GetChild(parent, i));
+        return n;
+    }
+
     void Reload()
     {
         try
