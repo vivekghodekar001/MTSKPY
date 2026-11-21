@@ -281,7 +281,7 @@ internal static class Program
         // book - two different names stay two rows, and a name in both keeps
         // the store's (fresher) number.
         var merged = InstallerPickerWindow.MergeContacts(
-            new (string PersonName, string Mobile)[] { ("Sandip Kale", "9000000000") },
+            new (long RowId, string PersonName, string Mobile)[] { (1, "Sandip Kale", "9000000000") },
             new (string Name, string Mobile)[] { ("Vivek Kumar", "9111111111"), ("Sandip Kale", "9999999999") });
         Assert(merged.Count == 2, "the picker lists both installers (got " + merged.Count + ")");
         Assert(merged.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,

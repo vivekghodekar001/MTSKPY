@@ -18,7 +18,7 @@ namespace Mskpy.Windows;
 public sealed class InstallerPickerWindow : Window
 {
     /// <summary>V2/V4: one row of the picker - the name and the full number.</summary>
-    public sealed record PickerRow(string Name, string Mobile);
+    public sealed record PickerRow(long RowId, string Name, string Mobile);
 
     public string VendorCode { get; }
     public string? ChosenName { get; private set; }
@@ -66,6 +66,7 @@ public sealed class InstallerPickerWindow : Window
     ObservableCollection<PickerRow> rows = new();
     PickerRow? lastRemoved = null;
     ListBoxItem? lastRemovedItem = null;
+    int lastRemovedIndex = -1;
     Brush mutedBrush = Brushes.Gray;
 
     /// <summary>V3: the caller passes its own store (so the picker and the record
@@ -213,10 +214,19 @@ public sealed class InstallerPickerWindow : Window
     /// store rows win over the officer's book when a name appears in both.</summary>
     void Reload()
     {
-        IReadOnlyList<(string PersonName, string Mobile)> stored;
-        try { stored = Store.VendorContacts(VendorCode); }
-        catch { stored = Array.Empty<(string, string)>(); }
-        rows = new ObservableCollection<PickerRow>(MergeContacts(stored, bookRows));
+        try
+        {
+            if (bookRows.Any())
+            {
+                var imported = Store.ImportVendorContacts(VendorCode, bookRows);
+                LogInstaller($"picker import: vendor='{VendorCode}' imported={imported}");
+            }
+        }
+        catch { }
+        IReadOnlyList<(long RowId, string PersonName, string Mobile)> stored;
+        try { stored = Store.VendorContactRows(VendorCode); }
+        catch { stored = Array.Empty<(long, string, string)>(); }
+        rows = new ObservableCollection<PickerRow>(stored.Select(c => new PickerRow(c.RowId, c.PersonName, c.Mobile)));
         LogInstaller($"vendor book {VendorCode}: {rows.Count} rows");
         ApplyFilter();
     }
@@ -224,7 +234,7 @@ public sealed class InstallerPickerWindow : Window
     /// <summary>V4: one row per person name, alphabetical. No DISTINCT / TOP /
     /// grouping that could collapse two different names.</summary>
     internal static List<PickerRow> MergeContacts(
-        IEnumerable<(string PersonName, string Mobile)> fromStore,
+        IEnumerable<(long RowId, string PersonName, string Mobile)> fromStore,
         IEnumerable<(string Name, string Mobile)> fromBook)
     {
         var byName = new Dictionary<string, PickerRow>(StringComparer.OrdinalIgnoreCase);
@@ -232,13 +242,13 @@ public sealed class InstallerPickerWindow : Window
         {
             var name = (c.PersonName ?? "").Trim();
             if (name.Length == 0) continue;
-            byName[name] = new PickerRow(name, (c.Mobile ?? "").Trim());
+            byName[name] = new PickerRow(c.RowId, name, (c.Mobile ?? "").Trim());
         }
         foreach (var p in fromBook)
         {
             var name = (p.Name ?? "").Trim();
             if (name.Length == 0 || byName.ContainsKey(name)) continue;
-            byName[name] = new PickerRow(name, (p.Mobile ?? "").Trim());
+            byName[name] = new PickerRow(0, name, (p.Mobile ?? "").Trim());
         }
         return byName.Values
             .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
@@ -272,30 +282,28 @@ public sealed class InstallerPickerWindow : Window
     void DeleteRow(ListBoxItem item)
     {
         if (item.Tag is not PickerRow row) return;
-        // capture scroll offset
         var sv = FindScrollViewer(list);
         var offset = sv?.VerticalOffset ?? 0;
-        // log
         System.Diagnostics.Debug.WriteLine($"delete: vendor='{VendorCode}' name='{row.Name}'");
         int n = 0;
-        try { n = Store.DeleteVendorContact(VendorCode, row.Name); } catch { }
-        System.Diagnostics.Debug.WriteLine($"delete: {n} rows");
-        if (n == 0)
+        try { n = Store.DeleteVendorContactByRowId(row.RowId); } catch { }
+        // post-delete proof: re-query rowid
+        bool stillPresent = Store.VendorContactRows(VendorCode).Any(r => r.RowId == row.RowId);
+        System.Diagnostics.Debug.WriteLine($"delete: rowid={row.RowId} name='{row.Name}' removed={(stillPresent?"no":"yes")}, {Store.VendorContactRows(VendorCode).Count} left");
+        if (stillPresent || n == 0)
         {
-            // put row back (it never left collection) and show inline error
-            inlineError.Text = "Not removed — no matching book row";
+            inlineError.Text = "Not removed — row still present after delete";
             inlineError.Visibility = Visibility.Visible;
             undoLink.Visibility = Visibility.Collapsed;
             lastRemoved = null;
             return;
         }
-        // remove from collection only
+        lastRemovedIndex = rows.IndexOf(row);
         rows.Remove(row);
         lastRemoved = row;
         lastRemovedItem = item;
         list.Items.Remove(item);
         if (list.SelectedItem == item) { list.SelectedItem = null; okButton.IsEnabled = false; }
-        // reapply filter to mutated collection
         ApplyFilter();
         if (sv != null) { sv.ScrollToVerticalOffset(offset); }
         undoLink.Content = $"Removed {row.Name} — Undo";
@@ -319,7 +327,7 @@ public sealed class InstallerPickerWindow : Window
         catch { }
         if (!rows.Any(r => string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)))
         {
-            int idx = rows.TakeWhile(r => string.Compare(r.Name, row.Name, StringComparison.OrdinalIgnoreCase) < 0).Count();
+            int idx = lastRemovedIndex >= 0 && lastRemovedIndex <= rows.Count ? lastRemovedIndex : rows.TakeWhile(r => string.Compare(r.Name, row.Name, StringComparison.OrdinalIgnoreCase) < 0).Count();
             rows.Insert(idx, row);
         }
         lastRemoved = null;

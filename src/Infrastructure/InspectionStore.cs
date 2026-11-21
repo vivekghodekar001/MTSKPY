@@ -1147,6 +1147,68 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
+    /// <summary>V4: every contact for this vendor, ordered by person name, with rowid.</summary>
+    public IReadOnlyList<(long RowId, string PersonName, string Mobile)> VendorContactRows(string vendorCode)
+    {
+        var result = new List<(long, string, string)>();
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT rowid, person_name, mobile FROM vendor_contacts
+                WHERE vendor_code = @v
+                ORDER BY person_name;
+            ";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) result.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2)));
+            return result;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>Import book rows if missing (INSERT OR IGNORE).</summary>
+    public int ImportVendorContacts(string vendorCode, IEnumerable<(string Name, string Mobile)> rows)
+    {
+        int imported = 0;
+        dbLock.Wait();
+        try
+        {
+            foreach (var (name, mobile) in rows)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = "INSERT OR IGNORE INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at) VALUES (@v, @p, @m, @t);";
+                cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+                cmd.Parameters.AddWithValue("@p", name.Trim());
+                cmd.Parameters.AddWithValue("@m", (mobile ?? "").Trim());
+                cmd.Parameters.AddWithValue("@t", DateTimeOffset.Now.ToString("O"));
+                imported += cmd.ExecuteNonQuery();
+            }
+            return imported;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    /// <summary>Delete by rowid.</summary>
+    public int DeleteVendorContactByRowId(long rowid)
+    {
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM vendor_contacts WHERE rowid = @r;";
+            cmd.Parameters.AddWithValue("@r", rowid);
+            var n = cmd.ExecuteNonQuery();
+            using var commit = connection.CreateCommand();
+            commit.CommandText = "COMMIT;";
+            try { commit.ExecuteNonQuery(); } catch { }
+            return n;
+        }
+        finally { dbLock.Release(); }
+    }
+
     /// <summary>V4: every contact for this vendor, ordered by person name. No
     /// DISTINCT, TOP or grouping - two different names are two rows; a repeated
     /// name is one row, updated in place by UpsertVendorContact.</summary>

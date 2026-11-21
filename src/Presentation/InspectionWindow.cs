@@ -1934,6 +1934,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     void OpenPicker()
     {
         var vendorCode = recordVendorCode ?? "";
+        if (string.IsNullOrWhiteSpace(vendorCode)) { vendorCode = consumerNumber; LogInstaller("vendorCode EMPTY — resolved to '" + vendorCode + "'"); }
+        var tableCount = store != null ? store.VendorContacts(vendorCode).Count : 0;
+        var bookCount = vendorPeople.People.Count(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase));
+        LogInstaller($"picker open: record={consumerNumber} vendorCode='{vendorCode}' table={tableCount} book={bookCount}");
+        recordVendorCode = vendorCode;
         var bookRows = vendorPeople.People
             .Where(p => string.IsNullOrWhiteSpace(p.Vendor)
                      || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
