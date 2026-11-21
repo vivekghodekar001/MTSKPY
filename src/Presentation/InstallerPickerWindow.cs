@@ -100,10 +100,9 @@ public sealed class InstallerPickerWindow : Window
 
         var main = new Grid { Margin = new Thickness(12) };
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // search
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add link/panel
         main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });   // list
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add error
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // buttons
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add row
 
         var searchHost = new Grid();
         searchHost.Children.Add(searchBox);
@@ -111,10 +110,34 @@ public sealed class InstallerPickerWindow : Window
         main.Children.Add(searchHost);
         Grid.SetRow(searchHost, 0);
 
+        var addLink = new Button
+        {
+            Content = "Add new installer",
+            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 4, 0, 4)
+        };
+        main.Children.Add(addLink);
+        Grid.SetRow(addLink, 1);
+
+        var addPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8), Visibility = Visibility.Collapsed };
+        var addRow = new WrapPanel();
+        addRow.Children.Add(addName);
+        addRow.Children.Add(addMobile);
+        addRow.Children.Add(addButton);
+        addPanel.Children.Add(addRow);
+        addPanel.Children.Add(addErrorBlock);
+        main.Children.Add(addPanel);
+        Grid.SetRow(addPanel, 1);
+
+        addLink.Click += (_, _) =>
+        {
+            addPanel.Visibility = addPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+            addLink.Content = addPanel.Visibility == Visibility.Visible ? "Hide new installer" : "Add new installer";
+        };
+
         main.Children.Add(list);
-        Grid.SetRow(list, 1);
-        main.Children.Add(addErrorBlock);
-        Grid.SetRow(addErrorBlock, 2);
+        Grid.SetRow(list, 2);
 
         var buttons = new StackPanel
         {
@@ -126,21 +149,6 @@ public sealed class InstallerPickerWindow : Window
         buttons.Children.Add(okButton);
         main.Children.Add(buttons);
         Grid.SetRow(buttons, 3);
-
-        var addArea = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
-        addArea.Children.Add(new TextBlock
-        {
-            Text = "Add new",
-            Foreground = mutedBrush,
-            Margin = new Thickness(0, 0, 0, 4)
-        });
-        var addRow = new WrapPanel();
-        addRow.Children.Add(addName);
-        addRow.Children.Add(addMobile);
-        addRow.Children.Add(addButton);
-        addArea.Children.Add(addRow);
-        main.Children.Add(addArea);
-        Grid.SetRow(addArea, 4);
         Content = main;
 
         AutomationProperties.SetName(searchBox, "Search installer");

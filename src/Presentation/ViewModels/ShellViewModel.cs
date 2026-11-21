@@ -1078,7 +1078,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public string IndexAge => indexLastWrite == null
         ? "missing"
         : $"{(DateTime.Now - indexLastWrite.Value).TotalHours:F1} h old";
-    public bool IsIndexStale => indexLastWrite == null || (DateTime.Now - indexLastWrite.Value) > TimeSpan.FromHours(24);
+    public static bool IsIndexStaleForAge(TimeSpan age) => age > TimeSpan.FromHours(12);
+    public bool IsIndexStale => indexLastWrite == null || IsIndexStaleForAge(DateTime.Now - indexLastWrite.Value);
 
     void RefreshIndexAge()
     {

@@ -91,7 +91,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly TextBox manualLat = new() { Width = 140, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox manualLong = new() { Width = 140, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
     readonly TextBox manualAcc = new() { Width = 100, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
-    readonly TextBox allowedDist = new() { Width = 100, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
+    readonly TextBox allowedDist = new() { Width = 100, MinWidth = 90, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
     // V1: the row is plain strings. Name = read-only TextBox + Choose button;
     // mobile = read-only full-width TextBox. Placeholders behind each.
@@ -151,6 +151,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     Border? riskBand;
     TextBlock? riskFooter;
     ScrollViewer? bodyScroll;
+    readonly Mskpy.Infrastructure.VendorPeople vendorPeople = null!;
+    TextBlock? installerNote;
+    TextBlock? vendorWarning;
+    System.Windows.Documents.Run? savedMobileRun;
     bool locationResolved;
     bool submitBusy;
     Button? submitBtn;
@@ -248,19 +252,22 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(10, 6, 10, 6),
             Margin = new Thickness(0, 0, 0, 4),
-            Child = new StackPanel { Margin = new Thickness(0) }
+            Child = new Grid()
         };
-        var headerStack = (StackPanel)headerCard.Child;
+        var headerGrid = (Grid)headerCard.Child;
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var headerLeft = new StackPanel { Margin = new Thickness(0) };
         var line1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
         line1.Children.Add(new TextBlock
         {
-            Text = $"Name: {FieldValue("consumer_name")}   |   Application No: {FieldValue("consumer_number")}   |   Address: {FieldValue("address")}",
+            Text = $"Name: {FieldValue("consumer_name")}   |   Application No: {FieldValue("consumer_number")}   |   Address: {FieldValue("address").Trim()}",
             FontSize = 12,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center
         });
-        headerStack.Children.Add(line1);
+        headerLeft.Children.Add(line1);
 
         var line2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
         var instDate = FieldValue("inst_date");
@@ -273,31 +280,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center
         });
-        var navBtn = new Button
-        {
-            Content = "Navigate to Inst Location",
-            Margin = new Thickness(12, 0, 0, 0),
-            Padding = new Thickness(10, 4, 10, 4),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        navBtn.Click += (_, _) =>
-        {
-            var lat = FieldValue("latitude");
-            var lon = FieldValue("longitude");
-            if (!string.IsNullOrEmpty(lat) && !string.IsNullOrEmpty(lon))
-            {
-                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = $"https://www.google.com/maps?q={lat},{lon}",
-                    UseShellExecute = true
-                }); } catch { }
-            }
-        };
-        line2.Children.Add(navBtn);
-        headerStack.Children.Add(line2);
+        headerLeft.Children.Add(line2);
 
-        // M2: the pre-submit risk band and its reasons, shown before the form
-        // is filled.
         riskHeader = new TextBlock
         {
             FontSize = 11,
@@ -313,9 +297,34 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             Margin = new Thickness(0, 2, 0, 0),
             Child = riskHeader
         };
-        headerStack.Children.Add(riskBand);
+        headerLeft.Children.Add(riskBand);
+
+        headerGrid.Children.Add(headerLeft);
+        var navBtn = new Button
+        {
+            Content = "Navigate to Inst Location",
+            Padding = new Thickness(10, 4, 10, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0)
+        };
+        navBtn.Click += (_, _) =>
+        {
+            var lat = FieldValue("latitude");
+            var lon = FieldValue("longitude");
+            if (!string.IsNullOrEmpty(lat) && !string.IsNullOrEmpty(lon))
+            {
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = $"https://www.google.com/maps?q={lat},{lon}",
+                    UseShellExecute = true
+                }); } catch { }
+            }
+        };
+        headerGrid.Children.Add(navBtn);
+        Grid.SetColumn(navBtn, 1);
 
         Grid.SetRow(headerCard, 0);
+
         grid.Children.Add(headerCard);
 
         // Z6: each tab owns exactly one ScrollViewer. The Photos tab's single
@@ -505,22 +514,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
         if (vendorPeople.LoadWarning != null) LogStartupNote(vendorPeople.LoadWarning);
-        var editBook = new Button
-        {
-            Content = "Edit…",
-            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = "Add, rename or remove the people in your installer list"
-        };
-        System.Windows.Automation.AutomationProperties.SetName(editBook, "Edit the installer list");
-        editBook.Click += (_, _) => EditVendorPeople(vendorPeople);
 
         var installerHeader = new Grid();
         installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         installerHeader.Children.Add(new TextBlock { Text = "Installer Details", FontWeight = FontWeights.SemiBold, FontSize = 13, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
-        installerHeader.Children.Add(editBook);
-        Grid.SetColumn(editBook, 1);
         installerStack.Children.Add(installerHeader);
 
         installerStack.Children.Add(FieldLabel("Vendor Person Name"));
@@ -1286,220 +1283,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Margin = new Thickness(0, 0, 0, 0)
     };
 
-    /// <summary>
-    /// C5: the officer's own book of installers - a small dialog with the
-    /// list, an add box, rename and delete.
-    /// </summary>
-    void EditVendorPeople(VendorPeople book)
-    {
-        var rows = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
-        var nameBox = new TextBox { Width = 220, Margin = new Thickness(0, 0, 8, 0) };
-        var mobileBox = new TextBox { Width = 160, Margin = new Thickness(0, 0, 8, 0) };
-        System.Windows.Automation.AutomationProperties.SetName(nameBox, "New installer name");
-        System.Windows.Automation.AutomationProperties.SetName(mobileBox, "New installer mobile");
-
-        void Rebuild()
-        {
-            rows.Children.Clear();
-            foreach (var person in book.People.ToList())
-            {
-                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
-                var name = new TextBox { Text = person.Name, Width = 220, Margin = new Thickness(0, 0, 8, 0) };
-                var mobile = new TextBox { Text = person.Mobile, Width = 160, Margin = new Thickness(0, 0, 8, 0) };
-                var delete = new Button { Content = "remove", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
-                System.Windows.Automation.AutomationProperties.SetName(delete, "Remove " + person.Name);
-                delete.Click += (_, _) =>
-                {
-                    book.Remove(person.Name);
-                    book.Save();
-                    Rebuild();
-                };
-                var save = new Button { Content = "save", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
-                System.Windows.Automation.AutomationProperties.SetName(save, "Save " + person.Name);
-                save.Click += (_, _) =>
-                {
-                    // C5: a rename keeps the mobile unless it is changed too.
-                    book.Rename(person.Name, name.Text, mobile.Text);
-                    book.Save();
-                    Rebuild();
-                };
-                row.Children.Add(name);
-                row.Children.Add(mobile);
-                row.Children.Add(save);
-                row.Children.Add(delete);
-                rows.Children.Add(row);
-            }
-        }
-        Rebuild();
-
-        var addButton = new Button { Content = "Add", Padding = new Thickness(14, 6, 14, 6) };
-        System.Windows.Automation.AutomationProperties.SetName(addButton, "Add to the installer list");
-        addButton.Click += (_, _) =>
-        {
-            if (string.IsNullOrWhiteSpace(nameBox.Text)) return;
-            book.Add(nameBox.Text, mobileBox.Text);
-            book.Save();
-            nameBox.Text = "";
-            mobileBox.Text = "";
-            Rebuild();
-        };
-
-        var content = new StackPanel { Margin = new Thickness(16) };
-        content.Children.Add(new TextBlock { Text = "Your installer list", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 0) });
-        content.Children.Add(new TextBlock
-        {
-            Text = "Yours alone. It stays in this machine's app folder and is never sent anywhere.",
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
-            FontSize = 13,
-            Margin = new Thickness(0, 0, 0, 12)
-        });
-        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
-        addRow.Children.Add(nameBox);
-        addRow.Children.Add(mobileBox);
-        addRow.Children.Add(addButton);
-        content.Children.Add(addRow);
-        content.Children.Add(rows);
-
-        var window = new Window
-        {
-            Title = "Installer list",
-            Width = 580,
-            Height = 460,
-            Background = (Brush)System.Windows.Application.Current.FindResource("Bg"),
-            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
-            FontFamily = new FontFamily("Segoe UI"),
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Owner = this,
-            ShowInTaskbar = false
-        };
-        var closeButton = new Button { Content = "Close", HorizontalAlignment = HorizontalAlignment.Right, Padding = new Thickness(14, 6, 14, 6) };
-        closeButton.Click += (_, _) => window.Close();
-        content.Children.Add(closeButton);
-        window.Content = content;
-        window.ShowDialog();
-        RefreshSuggestions();
-    }
-
-    /// <summary>C5: the officer's own book of installers.</summary>
-    readonly VendorPeople vendorPeople;
-    TextBlock? vendorWarning;
-    TextBlock? installerHint;
-    TextBlock? installerNote;
-    System.Windows.Documents.Run? savedMobileRun;
-
-    /// <summary>C5: open the modal picker for this record's vendor.</summary>
-    void OpenPicker()
-    {
-        var vendorCode = recordVendorCode ?? "";
-        var bookRows = vendorPeople.People
-            .Where(p => string.IsNullOrWhiteSpace(p.Vendor)
-                     || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
-            .Select(p => (p.Name, p.Mobile));
-        var dlg = new InstallerPickerWindow(vendorCode, store, bookRows);
-        dlg.Owner = this;
-        dlg.ShowDialog();
-        if (dlg.OkOrNull != true || string.IsNullOrWhiteSpace(dlg.ChosenName)) return;
-        var person = new VendorPeople.Person(
-            dlg.ChosenName.Trim(), (dlg.ChosenMobile ?? "").Trim(), DateTimeOffset.Now, vendorCode);
-        PickVendorPerson(person);
-    }
-
-    void PickVendorPerson(VendorPeople.Person person)
-    {
-        // V3: nothing is written until OK; here we commit the chosen pair.
-        VendorPersonName = person.Name;
-        VendorPersonMobile = person.Mobile;
-        // Write the two cells explicitly as well as through the binding - a pick
-        // must never leave the read-only field looking empty.
-        vendorPersonNameBox.Text = person.Name;
-        vendorPersonMobileBox.Text = person.Mobile;
-        if (string.IsNullOrWhiteSpace(recordVendorCode) && !string.IsNullOrWhiteSpace(person.Vendor))
-            recordVendorCode = person.Vendor;
-        UpdateRisk();
-        UpdatePlaceholders();
-        PersistInstallerPair();
-        var recordVendor = recordVendorCode ?? "";
-        var warning = vendorWarning;
-        if (warning == null) return;
-        if (!string.IsNullOrWhiteSpace(person.Vendor) && !string.IsNullOrWhiteSpace(recordVendor)
-            && !string.Equals(person.Vendor, recordVendor, StringComparison.OrdinalIgnoreCase))
-        {
-            warning.Text = person.Name + " was last used with vendor " + person.Vendor
-                + "; this record's vendor is " + recordVendor + ". The submitted vendor is the record's.";
-            warning.Visibility = Visibility.Visible;
-        }
-        else { warning.Visibility = Visibility.Collapsed; }
-        LogInstaller("pick: name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
-    }
-
-    /// <summary>P3: prefill the last-used pair for this vendor on open.</summary>
-    void PrefillInstallerPair()
-    {
-        if (!string.IsNullOrWhiteSpace(VendorPersonName) || !string.IsNullOrWhiteSpace(VendorPersonMobile)) return;
-        var vendorCode = recordVendorCode ?? "";
-        (string Name, string Mobile)? pair = null;
-        string branch = "";
-        if (store != null)
-        {
-            // (a) this beneficiary's previous inspection pair
-            // We don't have a per-beneficiary pair store beyond vendor_contacts;
-            // vendor_contacts is keyed by (vendor, person), so the "beneficiary's
-            // prior pair" is approximated by the most recently used pair for
-            // this vendor (same as (b)). Branch (a) is reported when a row
-            // exists for this consumer in the store.
-            var prior = store.LastVendorContact(vendorCode);
-            if (prior.HasValue) { pair = (prior.Value.PersonName, prior.Value.Mobile); branch = "beneficiary-prior/vendor-last"; }
-        }
-        if (pair == null)
-        {
-            var book = vendorPeople.People
-                .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(p => p.LastUsedAt)
-                .FirstOrDefault();
-            if (book != null) { pair = (book.Name, book.Mobile); branch = "book-last"; }
-        }
-        if (pair == null && store != null)
-        {
-            var contacts = store.VendorContacts(vendorCode);
-            if (contacts.Count == 1) { pair = (contacts[0].PersonName, contacts[0].Mobile); branch = "single-person"; }
-        }
-        if (pair == null)
-        {
-            LogInstaller("prefill: nothing found for vendor=" + (string.IsNullOrWhiteSpace(vendorCode) ? "(record VendorCode empty)" : vendorCode) + " record=" + consumerNumber + " (store=" + (store != null) + ", book=" + vendorPeople.People.Count + ")");
-            UpdatePlaceholders();
-            return;
-        }
-        // V3: prefill the two plain strings; the list stays closed.
-        VendorPersonName = pair.Value.Name;
-        VendorPersonMobile = pair.Value.Mobile;
-        vendorPersonNameBox.Text = pair.Value.Name;
-        vendorPersonMobileBox.Text = pair.Value.Mobile;
-        // V4: prove the prefill actually populated the fields.
-        LogInstaller("prefill: vendor=" + vendorCode + " branch=" + (string.IsNullOrEmpty(branch) ? "none" : branch) + " -> name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
-        UpdatePlaceholders();
-        UpdateRisk();
-    }
-
-    void PersistInstallerPair()
-    {
-        var name = VendorPersonName.Trim();
-        var mobile = VendorPersonMobile.Trim();
-        if (name.Length == 0 || mobile.Length == 0) return;
-        var vendorCode = recordVendorCode ?? "";
-        store?.UpsertVendorContact(vendorCode, name, mobile);
-        vendorPeople.Add(name, mobile, vendorCode);
-        try { vendorPeople.Save(); } catch { }
-    }
-
-    /// <summary>C5: the entries that match what has been typed.</summary>
-    void RefreshSuggestions()
-    {
-        // G1a: the dropdown is the offer (F1 opens it on a match); the only
-        // chrome left under the fields is the empty-book hint.
-        var hint = installerHint;
-        if (hint == null) return;
-        hint.Visibility = vendorPeople.People.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
 
     /// <summary>G1a: a 12 px muted caption above a field.</summary>
     static TextBlock FieldLabel(string text) => new()
@@ -2013,5 +1796,121 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         using (var stream = File.Create(path)) png.Save(stream);
         return path;
     }
-}
+    void PickVendorPerson(VendorPeople.Person person)
+    {
+        // V3: nothing is written until OK; here we commit the chosen pair.
+        VendorPersonName = person.Name;
+        VendorPersonMobile = person.Mobile;
+        // Write the two cells explicitly as well as through the binding - a pick
+        // must never leave the read-only field looking empty.
+        vendorPersonNameBox.Text = person.Name;
+        vendorPersonMobileBox.Text = person.Mobile;
+        if (string.IsNullOrWhiteSpace(recordVendorCode) && !string.IsNullOrWhiteSpace(person.Vendor))
+            recordVendorCode = person.Vendor;
+        UpdateRisk();
+        UpdatePlaceholders();
+        PersistInstallerPair();
+        var recordVendor = recordVendorCode ?? "";
+        var warning = vendorWarning;
+        if (warning == null) return;
+        if (!string.IsNullOrWhiteSpace(person.Vendor) && !string.IsNullOrWhiteSpace(recordVendor)
+            && !string.Equals(person.Vendor, recordVendor, StringComparison.OrdinalIgnoreCase))
+        {
+            warning.Text = person.Name + " was last used with vendor " + person.Vendor
+                + "; this record's vendor is " + recordVendor + ". The submitted vendor is the record's.";
+            warning.Visibility = Visibility.Visible;
+        }
+        else { warning.Visibility = Visibility.Collapsed; }
+        LogInstaller("pick: name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
+    }
 
+    /// <summary>P3: prefill the last-used pair for this vendor on open.</summary>
+
+
+    void PersistInstallerPair()
+    {
+        var name = VendorPersonName.Trim();
+        var mobile = VendorPersonMobile.Trim();
+        if (name.Length == 0 || mobile.Length == 0) return;
+        var vendorCode = recordVendorCode ?? "";
+        store?.UpsertVendorContact(vendorCode, name, mobile);
+        vendorPeople.Add(name, mobile, vendorCode);
+        try { vendorPeople.Save(); } catch { }
+    }
+
+    /// <summary>C5: the entries that match what has been typed.</summary>
+
+
+    /// <summary>P3: prefill the last-used pair for this vendor on open.</summary>
+    void PrefillInstallerPair()
+    {
+        if (!string.IsNullOrWhiteSpace(VendorPersonName) || !string.IsNullOrWhiteSpace(VendorPersonMobile)) return;
+        var vendorCode = recordVendorCode ?? "";
+        (string Name, string Mobile)? pair = null;
+        string branch = "";
+        if (store != null)
+        {
+            // (a) this beneficiary's previous inspection pair
+            // We don't have a per-beneficiary pair store beyond vendor_contacts;
+            // vendor_contacts is keyed by (vendor, person), so the "beneficiary's
+            // prior pair" is approximated by the most recently used pair for
+            // this vendor (same as (b)). Branch (a) is reported when a row
+            // exists for this consumer in the store.
+            var prior = store.LastVendorContact(vendorCode);
+            if (prior.HasValue) { pair = (prior.Value.PersonName, prior.Value.Mobile); branch = "beneficiary-prior/vendor-last"; }
+        }
+        if (pair == null)
+        {
+            var book = vendorPeople.People
+                .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(p => p.LastUsedAt)
+                .FirstOrDefault();
+            if (book != null) { pair = (book.Name, book.Mobile); branch = "book-last"; }
+        }
+        if (pair == null && store != null)
+        {
+            var contacts = store.VendorContacts(vendorCode);
+            if (contacts.Count == 1) { pair = (contacts[0].PersonName, contacts[0].Mobile); branch = "single-person"; }
+        }
+        if (pair == null)
+        {
+            LogInstaller("prefill: nothing found for vendor=" + (string.IsNullOrWhiteSpace(vendorCode) ? "(record VendorCode empty)" : vendorCode) + " record=" + consumerNumber + " (store=" + (store != null) + ", book=" + vendorPeople.People.Count + ")");
+            UpdatePlaceholders();
+            return;
+        }
+        // V3: prefill the two plain strings; the list stays closed.
+        VendorPersonName = pair.Value.Name;
+        VendorPersonMobile = pair.Value.Mobile;
+        vendorPersonNameBox.Text = pair.Value.Name;
+        vendorPersonMobileBox.Text = pair.Value.Mobile;
+        // V4: prove the prefill actually populated the fields.
+        LogInstaller("prefill: vendor=" + vendorCode + " branch=" + (string.IsNullOrEmpty(branch) ? "none" : branch) + " -> name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
+        UpdatePlaceholders();
+        UpdateRisk();
+    }
+
+
+
+    /// <summary>C5: open the modal picker for this record's vendor.</summary>
+    void OpenPicker()
+    {
+        var vendorCode = recordVendorCode ?? "";
+        var bookRows = vendorPeople.People
+            .Where(p => string.IsNullOrWhiteSpace(p.Vendor)
+                     || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
+            .Select(p => (p.Name, p.Mobile));
+        var dlg = new InstallerPickerWindow(vendorCode, store, bookRows);
+        dlg.Owner = this;
+        dlg.ShowDialog();
+        if (dlg.OkOrNull != true || string.IsNullOrWhiteSpace(dlg.ChosenName)) return;
+        var person = new VendorPeople.Person(
+            dlg.ChosenName.Trim(), (dlg.ChosenMobile ?? "").Trim(), DateTimeOffset.Now, vendorCode);
+        PickVendorPerson(person);
+    }
+
+
+
+    /// <summary>V1: the Clear link empties the pair on this record only. The
+    /// contact book and the vendor_contacts table are not touched.</summary>
+
+}

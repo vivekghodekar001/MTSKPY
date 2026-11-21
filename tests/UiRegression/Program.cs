@@ -380,6 +380,18 @@ internal static class Program
             "the mobile field is wider than the name field (got " + contactField.ActualWidth + " vs " + nameField.ActualWidth + ")");
         Assert(Descendants(root).OfType<InkCanvas>().All(c => Math.Abs(c.Height - 90) < 0.5),
             "both signature canvases keep a consistent 90 px height");
+        var photoFrames2 = Descendants(root).OfType<Border>().Where(b => Math.Abs(b.Width - 180) < 1 && Math.Abs(b.Height - 135) < 1).ToArray();
+        var photoTops = photoFrames2.Select(b => b.TranslatePoint(new Point(0, 0), root).Y).ToArray();
+        Assert(photoTops.Length == 3 && photoTops.Max() - photoTops.Min() <= 1,
+            "all three photo previews share one top edge (spread " + (photoTops.Length>0? photoTops.Max()-photoTops.Min() : 0) + ")");
+        var sigClearBtns = Descendants(root).OfType<Button>().Where(b => b.Content?.ToString() == "✕" && Math.Abs(b.Width - 16) < 1).ToArray();
+        var sigClearTops = sigClearBtns.Select(b => b.TranslatePoint(new Point(0, 0), root).Y).ToArray();
+        Assert(sigClearBtns.Length == 2 && sigClearTops.Max() - sigClearTops.Min() <= 2,
+            "signature X buttons share a baseline (spread " + (sigClearTops.Length>0? sigClearTops.Max()-sigClearTops.Min() : 0) + ")");
+        var bad = Descendants(root).OfType<TextBlock>().Where(t => (t.Text ?? "").Contains("All checks left at default")
+            && !(t.Text ?? "").Contains("Installer name or mobile")
+            && !(t.Text ?? "").Contains("Risk:")).Select(t => t.Text).ToList();
+        Assert(bad.Count == 0, "footer status does not contain 'All checks left at default'");
         SaveRender(root, 1100, 850, Path.Combine(outputDir, "g1a-installer.png"));
 
         // The fault shape is real: a background thread cannot read Strokes.
