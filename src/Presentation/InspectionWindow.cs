@@ -55,6 +55,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly Action<InspectionRecord, VerifyOutcome>? onVerifyComplete;
     InstallerPickerWindow? _pickerInstance;
     bool _pickerOpen;
+    Grid? _pickerOverlay;
     // H-A: survey start is held from form open; end is captured at submit.
     readonly DateTimeOffset formOpenTime = DateTimeOffset.UtcNow;
 
@@ -226,7 +227,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         signatureDebounceTimer = new System.Threading.Timer(_ => CheckSignatureDuplicates(), null, Timeout.Infinite, Timeout.Infinite);
 
         Title = $"Pump Inspection — {consumerNumber}";
-        Width = 1000; MinWidth = 760; MinHeight = 560;
+        Width = 1200; MinWidth = 1180; MinHeight = 560;
         // Z7: use the full work area so the Photos tab shows all three photo slots
         // and both signature canvases without scrolling. Still no SizeToContent.
         Height = Math.Min(1000, System.Windows.SystemParameters.WorkArea.Height - 60);
@@ -468,8 +469,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 // Y4: Photos & Signatures tab — body grid with left/right columns.
         var photosTab = new TabItem { Header = "Photos & Signatures", Margin = new Thickness(0) };
         var bodyGrid = new Grid { Margin = new Thickness(0, 0, 0, 0) };
-        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.55, GridUnitType.Star) });
         bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
         // spacing between columns
         bodyGrid.Margin = new Thickness(0, 0, 0, 0);
 
@@ -478,14 +479,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
         // Left: photo slots
         leftCol.Children.Add(SectionLabel("Photos"));
-        var photoRow = new Grid();
-        photoRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photoRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photoRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var photoRow = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Margin = new Thickness(0, 0, 0, 0) };
         for (var i = 0; i < PhotoSlots.Length; i++)
         {
             var slotCard = BuildPhotoSlot(PhotoSlots[i].Suffix, PhotoSlots[i].Label);
-            Grid.SetColumn(slotCard, i);
+            slotCard.Margin = new Thickness(0, 0, 8, 0);
             photoRow.Children.Add(slotCard);
         }
         leftCol.Children.Add(photoRow);
@@ -652,7 +650,59 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Grid.SetRow(footer, 2);
         grid.Children.Add(footer);
 
+        // K1: in-window picker overlay
+        var pickerOverlay = new Grid { Visibility = Visibility.Collapsed, Background = new SolidColorBrush(Color.FromArgb(0x73, 0, 0, 0)) };
+        Grid.SetRowSpan(pickerOverlay, 3);
+        Panel.SetZIndex(pickerOverlay, 100);
+        var scrim = new System.Windows.Shapes.Rectangle { Fill = Brushes.Transparent };
+        scrim.MouseLeftButtonDown += (_, __) => CollapsePickerOverlay();
+        pickerOverlay.Children.Add(scrim);
+        var card = new Border { Width = 420, Height = 460, Background = Brushes.White, BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(12), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var cardGrid = new Grid();
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var overlayHeaderGrid = new Grid();
+        overlayHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        overlayHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        overlayHeaderGrid.Children.Add(new TextBlock { Text = "Select installer", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.Black, VerticalAlignment = VerticalAlignment.Center });
+        var closeX = new Button { Content = "✕", Width = 20, Height = 20, FontSize = 12, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.Black };
+        closeX.Click += (_, __) => CollapsePickerOverlay();
+        overlayHeaderGrid.Children.Add(closeX);
+        Grid.SetColumn(closeX, 1);
+        cardGrid.Children.Add(overlayHeaderGrid);
+        var mid = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var searchBox = new TextBox { Height = 30, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 0, 0, 6) };
+        mid.Children.Add(searchBox);
+        var list = new ListBox { VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 6) };
+        mid.Children.Add(list);
+        cardGrid.Children.Add(mid);
+        Grid.SetRow(mid, 1);
+        var bottom = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var addLink = new Button { Content = "Add new installer", Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"), HorizontalAlignment = HorizontalAlignment.Left };
+        bottom.Children.Add(addLink);
+        var btnRow = new Grid();
+        btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var undoLink = new Button { Content = "", Visibility = Visibility.Collapsed, Style = (Style)System.Windows.Application.Current.FindResource("LinkButton") };
+        btnRow.Children.Add(undoLink);
+        var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancelBtn = new Button { Content = "Cancel", Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(12, 6, 12, 6), FontSize = 12 };
+        var okBtn = new Button { Content = "OK", Padding = new Thickness(12, 6, 12, 6), FontSize = 12, IsEnabled = false };
+        btns.Children.Add(cancelBtn);
+        btns.Children.Add(okBtn);
+        btnRow.Children.Add(btns);
+        Grid.SetColumn(btns, 1);
+        bottom.Children.Add(btnRow);
+        cardGrid.Children.Add(bottom);
+        Grid.SetRow(bottom, 2);
+        card.Child = cardGrid;
+        pickerOverlay.Children.Add(card);
+        grid.Children.Add(pickerOverlay);
+        _pickerOverlay = pickerOverlay;
+
         UpdateRisk();
+
         Content = grid;
         allowedDist.Text = "";
     }
@@ -1384,6 +1434,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     }
 
     /// <summary>Test hook for the picker flow: apply a picked pair without opening the dialog.</summary>
+    void CollapsePickerOverlay() { if (_pickerOverlay != null) _pickerOverlay.Visibility = Visibility.Collapsed; _pickerOpen = false; vendorPersonChoose.Focus(); }
+
     internal void ApplyPickedInstallerForTest(string name, string mobile) =>
         PickVendorPerson(new Mskpy.Infrastructure.VendorPeople.Person(name, mobile, DateTimeOffset.Now, recordVendorCode ?? ""));
 
