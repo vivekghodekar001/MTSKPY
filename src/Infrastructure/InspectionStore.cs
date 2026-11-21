@@ -155,6 +155,13 @@ public sealed class InspectionStore : IDisposable
 
         // B2 (0.9.12): migrate vendor_contacts to (vendor_code, person_name) PK.
         MigrateVendorContacts();
+        try
+        {
+            using var idx = connection.CreateCommand();
+            idx.CommandText = "CREATE INDEX IF NOT EXISTS idx_vendor_contacts_vendor_person ON vendor_contacts(vendor_code, person_name);";
+            idx.ExecuteNonQuery();
+        }
+        catch { }
 
         // J3: a store written by an earlier build has no seen_cpfs column at
         // all. Add it before the backfill reads it.
@@ -1097,11 +1104,22 @@ public sealed class InspectionStore : IDisposable
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM vendor_contacts WHERE vendor_code = @v AND person_name = @p;";
+            cmd.CommandText = "DELETE FROM vendor_contacts WHERE vendor_code = @v AND TRIM(person_name) = TRIM(@p) COLLATE NOCASE;";
             cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             var n = cmd.ExecuteNonQuery();
-            System.Diagnostics.Debug.WriteLine($"vendor book {vendorCode}: removed {personName.Trim()}, {n} left");
+            // commit immediately
+            using var commit = connection.CreateCommand();
+            commit.CommandText = "COMMIT;";
+            try { commit.ExecuteNonQuery(); } catch { }
+            var remaining = 0;
+            using (var c2 = connection.CreateCommand())
+            {
+                c2.CommandText = "SELECT COUNT(*) FROM vendor_contacts WHERE vendor_code = @v;";
+                c2.Parameters.AddWithValue("@v", vendorCode ?? "");
+                remaining = Convert.ToInt32(c2.ExecuteScalar());
+            }
+            System.Diagnostics.Debug.WriteLine($"vendor book {vendorCode}: removed {personName.Trim()}, {remaining} left");
             return n;
         }
         finally { dbLock.Release(); }

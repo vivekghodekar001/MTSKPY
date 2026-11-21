@@ -528,7 +528,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
         vendorPersonNameBox.Height = 30; vendorPersonNameBox.MinHeight = 0; vendorPersonNameBox.Padding = new Thickness(6, 0, 6, 0);
         vendorPersonNameBox.TextWrapping = TextWrapping.NoWrap; vendorPersonNameBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        vendorPersonChoose.Content = "Choose…"; vendorPersonChoose.Height = 30; vendorPersonChoose.Margin = new Thickness(8, 0, 0, 0);
+        vendorPersonChoose.Content = "Choose…"; vendorPersonChoose.Height = 30; vendorPersonChoose.Margin = new Thickness(8, 0, 0, 0); vendorPersonChoose.VerticalAlignment = VerticalAlignment.Center;
         vendorPersonChoose.Style = (Style)System.Windows.Application.Current.FindResource("LinkButton");
         // ghost style via manual
         vendorPersonChoose.Background = Brushes.Transparent; vendorPersonChoose.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"); vendorPersonChoose.BorderThickness = new Thickness(1); vendorPersonChoose.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); vendorPersonChoose.Opacity = 1;
@@ -544,7 +544,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
         vendorPersonMobileBox.Height = 30; vendorPersonMobileBox.MinHeight = 0; vendorPersonMobileBox.Padding = new Thickness(6, 0, 6, 0);
         vendorPersonMobileBox.TextWrapping = TextWrapping.NoWrap; vendorPersonMobileBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        installerClearLink.Content = "Clear"; installerClearLink.Height = 30; installerClearLink.Margin = new Thickness(8, 0, 0, 0);
+        installerClearLink.Content = "Clear"; installerClearLink.Height = 30; installerClearLink.Margin = new Thickness(4, 0, 4, 0); installerClearLink.VerticalAlignment = VerticalAlignment.Center;
         installerClearLink.Style = null;
         installerClearLink.Background = Brushes.Transparent; installerClearLink.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"); installerClearLink.BorderThickness = new Thickness(1); installerClearLink.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"); installerClearLink.Opacity = 1;
         mobileRow.Children.Add(vendorPersonMobileBox);
@@ -562,7 +562,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         vendorWarning = new TextBlock { Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 0), Visibility = Visibility.Collapsed };
         installerStack.Children.Add(vendorWarning);
 
-        var installerCard = new Border { Background = (Brush)System.Windows.Application.Current.FindResource("Surface"), CornerRadius = new CornerRadius(4), Padding = new Thickness(8), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), Child = installerStack, Margin = new Thickness(0, 0, 0, 0) };
+        var installerCard = new Border { Background = (Brush)System.Windows.Application.Current.FindResource("Surface"), CornerRadius = new CornerRadius(4), Padding = new Thickness(8, 8, 12, 8), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), Child = installerStack, Margin = new Thickness(0, 0, 0, 0) };
         rightCol.Children.Add(installerCard);
 
         // Right: location card

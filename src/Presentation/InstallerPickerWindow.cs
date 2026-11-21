@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Collections.ObjectModel;
 using System.Windows.Media;
 using Mskpy.Infrastructure;
 
@@ -54,8 +55,15 @@ public sealed class InstallerPickerWindow : Window
         Margin = new Thickness(0, 2, 0, 0),
         Visibility = Visibility.Collapsed
     };
+    readonly TextBlock inlineError = new()
+    {
+        Foreground = Brushes.Red,
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 2, 0, 0),
+        Visibility = Visibility.Collapsed
+    };
 
-    IReadOnlyList<PickerRow> rows = Array.Empty<PickerRow>();
+    ObservableCollection<PickerRow> rows = new();
     PickerRow? lastRemoved = null;
     ListBoxItem? lastRemovedItem = null;
     Brush mutedBrush = Brushes.Gray;
@@ -106,6 +114,7 @@ public sealed class InstallerPickerWindow : Window
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add link/panel
         main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });   // list
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // buttons
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // inline error
 
         var searchHost = new Grid();
         searchHost.Children.Add(searchBox);
@@ -153,6 +162,8 @@ public sealed class InstallerPickerWindow : Window
         buttons.Children.Add(okButton);
         main.Children.Add(buttons);
         Grid.SetRow(buttons, 3);
+        main.Children.Add(inlineError);
+        Grid.SetRow(inlineError, 4);
         Content = main;
 
         AutomationProperties.SetName(searchBox, "Search installer");
@@ -205,7 +216,7 @@ public sealed class InstallerPickerWindow : Window
         IReadOnlyList<(string PersonName, string Mobile)> stored;
         try { stored = Store.VendorContacts(VendorCode); }
         catch { stored = Array.Empty<(string, string)>(); }
-        rows = MergeContacts(stored, bookRows);
+        rows = new ObservableCollection<PickerRow>(MergeContacts(stored, bookRows));
         LogInstaller($"vendor book {VendorCode}: {rows.Count} rows");
         ApplyFilter();
     }
@@ -238,7 +249,7 @@ public sealed class InstallerPickerWindow : Window
     {
         var typed = (searchBox.Text ?? "").Trim();
         var filtered = typed.Length == 0
-            ? rows
+            ? rows.ToList()
             : rows.Where(r => r.Name.Contains(typed, StringComparison.OrdinalIgnoreCase)
                            || r.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)).ToList();
 
@@ -261,39 +272,78 @@ public sealed class InstallerPickerWindow : Window
     void DeleteRow(ListBoxItem item)
     {
         if (item.Tag is not PickerRow row) return;
+        // capture scroll offset
+        var sv = FindScrollViewer(list);
+        var offset = sv?.VerticalOffset ?? 0;
+        // log
+        System.Diagnostics.Debug.WriteLine($"delete: vendor='{VendorCode}' name='{row.Name}'");
+        int n = 0;
+        try { n = Store.DeleteVendorContact(VendorCode, row.Name); } catch { }
+        System.Diagnostics.Debug.WriteLine($"delete: {n} rows");
+        if (n == 0)
+        {
+            // put row back (it never left collection) and show inline error
+            inlineError.Text = "Not removed — no matching book row";
+            inlineError.Visibility = Visibility.Visible;
+            undoLink.Visibility = Visibility.Collapsed;
+            lastRemoved = null;
+            return;
+        }
+        // remove from collection only
+        rows.Remove(row);
         lastRemoved = row;
         lastRemovedItem = item;
-        rows = rows.Where(r => !string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)).ToList();
         list.Items.Remove(item);
-        try { Store.DeleteVendorContact(VendorCode, row.Name); } catch { }
         if (list.SelectedItem == item) { list.SelectedItem = null; okButton.IsEnabled = false; }
+        // reapply filter to mutated collection
+        ApplyFilter();
+        if (sv != null) { sv.ScrollToVerticalOffset(offset); }
         undoLink.Content = $"Removed {row.Name} — Undo";
         undoLink.Visibility = Visibility.Visible;
-        if (list.Items.Count == 0 && searchBox.Text.Trim().Length == 0)
+        inlineError.Visibility = Visibility.Collapsed;
+        if (list.Items.Count == 0 && (searchBox.Text ?? "").Trim().Length == 0)
         {
             list.Items.Add(new ListBoxItem { Content = "No installers for this vendor — use Add new installer", IsEnabled = false });
         }
-        ReloadCount();
     }
 
     void UndoRemove()
     {
         if (lastRemoved == null) return;
         var row = lastRemoved;
-        try { Store.UpsertVendorContact(VendorCode, row.Name, row.Mobile); } catch { }
+        try
+        {
+            Store.UpsertVendorContact(VendorCode, row.Name, row.Mobile);
+            System.Diagnostics.Debug.WriteLine($"undo: restored {row.Name}, {Store.VendorContacts(VendorCode).Count} left");
+        }
+        catch { }
         if (!rows.Any(r => string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)))
-            rows = rows.Append(row).OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        {
+            int idx = rows.TakeWhile(r => string.Compare(r.Name, row.Name, StringComparison.OrdinalIgnoreCase) < 0).Count();
+            rows.Insert(idx, row);
+        }
         lastRemoved = null;
         lastRemovedItem = null;
         undoLink.Visibility = Visibility.Collapsed;
+        inlineError.Visibility = Visibility.Collapsed;
         ApplyFilter();
-        // restore highlight
         foreach (var it in list.Items.OfType<ListBoxItem>())
         {
             if (it.Tag is PickerRow r && string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase))
             { list.SelectedItem = it; break; }
         }
         okButton.IsEnabled = list.SelectedItem != null;
+    }
+
+    static ScrollViewer? FindScrollViewer(DependencyObject parent)
+    {
+        if (parent is ScrollViewer sv) return sv;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var r = FindScrollViewer(VisualTreeHelper.GetChild(parent, i));
+            if (r != null) return r;
+        }
+        return null;
     }
 
     void ReloadCount()
@@ -316,7 +366,7 @@ public sealed class InstallerPickerWindow : Window
             ToolTip = "Remove from list", VerticalAlignment = VerticalAlignment.Center
         };
         System.Windows.Automation.AutomationProperties.SetName(del, "Remove " + row.Name);
-        del.Click += (_, _) => delete();
+        del.Click += (_, e) => { delete(); e.Handled = true; };
         grid.Children.Add(del);
         var name = new TextBlock { Text = row.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(6, 0, 0, 0) };
         Grid.SetColumn(name, 1);
