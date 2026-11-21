@@ -134,9 +134,19 @@ public sealed class InstallerPickerWindow : Window
         Grid.SetRow(addLink, 1);
 
         var addPanel = new StackPanel { Margin = new Thickness(0, 4, 0, 8), Visibility = Visibility.Collapsed };
+        var nameHost = new Grid { Width = 130, Margin = new Thickness(0, 0, 6, 0) };
+        nameHost.Children.Add(addName);
+        var nameHint = new TextBlock { Text = "Name", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), IsHitTestVisible = false };
+        nameHost.Children.Add(nameHint);
+        addName.TextChanged += (_, _) => nameHint.Visibility = string.IsNullOrWhiteSpace(addName.Text) ? Visibility.Visible : Visibility.Collapsed;
+        var mobileHost = new Grid { Width = 130, Margin = new Thickness(0, 0, 6, 0) };
+        mobileHost.Children.Add(addMobile);
+        var mobileHint = new TextBlock { Text = "Mobile (10 digits)", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), IsHitTestVisible = false };
+        mobileHost.Children.Add(mobileHint);
+        addMobile.TextChanged += (_, _) => mobileHint.Visibility = string.IsNullOrWhiteSpace(addMobile.Text) ? Visibility.Visible : Visibility.Collapsed;
         var addRow = new WrapPanel();
-        addRow.Children.Add(addName);
-        addRow.Children.Add(addMobile);
+        addRow.Children.Add(nameHost);
+        addRow.Children.Add(mobileHost);
         addRow.Children.Add(addButton);
         addPanel.Children.Add(addRow);
         addPanel.Children.Add(addErrorBlock);
@@ -285,9 +295,9 @@ public sealed class InstallerPickerWindow : Window
         var sv = FindScrollViewer(list);
         var offset = sv?.VerticalOffset ?? 0;
         System.Diagnostics.Debug.WriteLine($"delete: vendor='{VendorCode}' name='{row.Name}'");
+        string deletedName = row.Name, deletedVendor = VendorCode;
         int n = 0;
-        try { n = Store.DeleteVendorContactByRowId(row.RowId); } catch { }
-        // post-delete proof: re-query rowid
+        try { n = Store.DeleteVendorContactByRowId(row.RowId, out deletedName, out deletedVendor); } catch { }
         bool stillPresent = Store.VendorContactRows(VendorCode).Any(r => r.RowId == row.RowId);
         System.Diagnostics.Debug.WriteLine($"delete: rowid={row.RowId} name='{row.Name}' removed={(stillPresent?"no":"yes")}, {Store.VendorContactRows(VendorCode).Count} left");
         if (stillPresent || n == 0)
@@ -298,8 +308,10 @@ public sealed class InstallerPickerWindow : Window
             lastRemoved = null;
             return;
         }
+        int before = rows.Count;
         lastRemovedIndex = rows.IndexOf(row);
         rows.Remove(row);
+        System.Diagnostics.Debug.WriteLine($"picker rows {before} -> {rows.Count}");
         lastRemoved = row;
         lastRemovedItem = item;
         list.Items.Remove(item);
@@ -322,6 +334,8 @@ public sealed class InstallerPickerWindow : Window
         try
         {
             Store.UpsertVendorContact(VendorCode, row.Name, row.Mobile);
+            Store.ClearTombstone(VendorCode, row.Name);
+            System.Diagnostics.Debug.WriteLine($"tombstone clear {VendorCode}/{row.Name}");
             System.Diagnostics.Debug.WriteLine($"undo: restored {row.Name}, {Store.VendorContacts(VendorCode).Count} left");
         }
         catch { }

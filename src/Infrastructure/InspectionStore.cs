@@ -149,8 +149,14 @@ public sealed class InspectionStore : IDisposable
                  PRIMARY KEY (vendor_code, person_name)
              );
              CREATE INDEX IF NOT EXISTS ix_vendor_contacts_vendor ON vendor_contacts(vendor_code);
-             CREATE INDEX IF NOT EXISTS ix_vendor_contacts_lastused ON vendor_contacts(last_used_at);
-        ";
+              CREATE INDEX IF NOT EXISTS ix_vendor_contacts_lastused ON vendor_contacts(last_used_at);
+              CREATE TABLE IF NOT EXISTS vendor_contact_deleted (
+                  vendor_code TEXT NOT NULL,
+                  person_name TEXT NOT NULL,
+                  deleted_at TEXT NOT NULL,
+                  PRIMARY KEY (vendor_code, person_name)
+              );
+         ";
         cmd.ExecuteNonQuery();
 
         // B2 (0.9.12): migrate vendor_contacts to (vendor_code, person_name) PK.
@@ -1169,6 +1175,55 @@ public sealed class InspectionStore : IDisposable
     }
 
     /// <summary>Import book rows if missing (INSERT OR IGNORE).</summary>
+    public bool IsTombstoned(string vendorCode, string personName)
+    {
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM vendor_contact_deleted WHERE vendor_code=@v AND person_name=@p;";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.Parameters.AddWithValue("@p", personName.Trim());
+            return cmd.ExecuteScalar() != null;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    public void AddTombstone(string vendorCode, string personName)
+    {
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "INSERT OR REPLACE INTO vendor_contact_deleted (vendor_code, person_name, deleted_at) VALUES (@v, @p, @t);";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.Parameters.AddWithValue("@p", personName.Trim());
+            cmd.Parameters.AddWithValue("@t", DateTimeOffset.Now.ToString("O"));
+            cmd.ExecuteNonQuery();
+            using var commit = connection.CreateCommand();
+            commit.CommandText = "COMMIT;";
+            try { commit.ExecuteNonQuery(); } catch { }
+        }
+        finally { dbLock.Release(); }
+    }
+
+    public void ClearTombstone(string vendorCode, string personName)
+    {
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM vendor_contact_deleted WHERE vendor_code=@v AND person_name=@p;";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.Parameters.AddWithValue("@p", personName.Trim());
+            cmd.ExecuteNonQuery();
+            using var commit = connection.CreateCommand();
+            commit.CommandText = "COMMIT;";
+            try { commit.ExecuteNonQuery(); } catch { }
+        }
+        finally { dbLock.Release(); }
+    }
+
     public int ImportVendorContacts(string vendorCode, IEnumerable<(string Name, string Mobile)> rows)
     {
         int imported = 0;
@@ -1178,6 +1233,7 @@ public sealed class InspectionStore : IDisposable
             foreach (var (name, mobile) in rows)
             {
                 if (string.IsNullOrWhiteSpace(name)) continue;
+                if (IsTombstoned(vendorCode, name)) continue;
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText = "INSERT OR IGNORE INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at) VALUES (@v, @p, @m, @t);";
                 cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
@@ -1192,18 +1248,38 @@ public sealed class InspectionStore : IDisposable
     }
 
     /// <summary>Delete by rowid.</summary>
-    public int DeleteVendorContactByRowId(long rowid)
+    public int DeleteVendorContactByRowId(long rowid, out string deletedName, out string deletedVendor)
     {
+        deletedName = ""; deletedVendor = "";
         dbLock.Wait();
         try
         {
+            string name = "", vendor = "";
+            using (var q = connection.CreateCommand())
+            {
+                q.CommandText = "SELECT vendor_code, person_name FROM vendor_contacts WHERE rowid = @r;";
+                q.Parameters.AddWithValue("@r", rowid);
+                using var r = q.ExecuteReader();
+                if (r.Read()) { vendor = r.GetString(0); name = r.GetString(1); }
+            }
+            if (string.IsNullOrWhiteSpace(name)) return 0;
             using var cmd = connection.CreateCommand();
             cmd.CommandText = "DELETE FROM vendor_contacts WHERE rowid = @r;";
             cmd.Parameters.AddWithValue("@r", rowid);
             var n = cmd.ExecuteNonQuery();
+            // tombstone
+            using var t = connection.CreateCommand();
+            t.CommandText = "INSERT OR REPLACE INTO vendor_contact_deleted (vendor_code, person_name, deleted_at) VALUES (@v, @p, @d);";
+            t.Parameters.AddWithValue("@v", vendor);
+            t.Parameters.AddWithValue("@p", name.Trim());
+            t.Parameters.AddWithValue("@d", DateTimeOffset.Now.ToString("O"));
+            t.ExecuteNonQuery();
             using var commit = connection.CreateCommand();
             commit.CommandText = "COMMIT;";
             try { commit.ExecuteNonQuery(); } catch { }
+            deletedName = name;
+            deletedVendor = vendor;
+            System.Diagnostics.Debug.WriteLine($"tombstone add {vendor}/{name.Trim()}");
             return n;
         }
         finally { dbLock.Release(); }
