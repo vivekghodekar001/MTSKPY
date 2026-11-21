@@ -122,6 +122,8 @@ public sealed class InspectionStore : IDisposable
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_records_status ON inspection_records(status);
+            CREATE INDEX IF NOT EXISTS idx_records_vendor_code ON inspection_records(vendor_code);
+            CREATE INDEX IF NOT EXISTS idx_records_consumer_number ON inspection_records(consumer_number);
             CREATE INDEX IF NOT EXISTS idx_records_first_time ON inspection_records(is_first_time);
             CREATE TABLE IF NOT EXISTS photo_hashes (
                 sha256 TEXT NOT NULL,
@@ -141,6 +143,7 @@ public sealed class InspectionStore : IDisposable
                 PRIMARY KEY (consumer_number, cpf_no)
             );
             CREATE INDEX IF NOT EXISTS ix_record_cpfs_cpf ON record_cpfs(cpf_no);
+            CREATE INDEX IF NOT EXISTS ix_record_cpfs_consumer ON record_cpfs(consumer_number);
              CREATE TABLE IF NOT EXISTS vendor_contacts (
                  vendor_code TEXT NOT NULL,
                  person_name TEXT NOT NULL,
@@ -1280,6 +1283,14 @@ public sealed class InspectionStore : IDisposable
             deletedName = name;
             deletedVendor = vendor;
             System.Diagnostics.Debug.WriteLine($"tombstone add {vendor}/{name.Trim()}");
+            int tc = 0;
+            using (var tcCmd = connection.CreateCommand())
+            {
+                tcCmd.CommandText = "SELECT COUNT(*) FROM vendor_contact_deleted WHERE vendor_code=@v;";
+                tcCmd.Parameters.AddWithValue("@v", vendor);
+                tc = Convert.ToInt32(tcCmd.ExecuteScalar());
+            }
+            System.Diagnostics.Debug.WriteLine($"tombstone count for vendor={vendor}: {tc}");
             return n;
         }
         finally { dbLock.Release(); }
