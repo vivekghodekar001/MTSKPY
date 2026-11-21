@@ -272,8 +272,8 @@ internal static class Program
         var clearRect = new Rect(clearBtn2.TranslatePoint(new Point(0, 0), root), new Size(clearBtn2.ActualWidth, clearBtn2.ActualHeight));
         Assert(!mobileRect.IntersectsWith(clearRect), "mobile TextBox and Clear button do not intersect");
         Assert(clearBtn2.IsEnabled && clearBtn2.Opacity == 1, "Clear is enabled and fully opaque");
-        var photoFrames = Descendants(root).OfType<Border>().Where(b => Math.Abs(b.Width - 180) < 1 && Math.Abs(b.Height - 135) < 1).ToArray();
-        Assert(photoFrames.Length == 3, "all three photo previews are 180x135 (got " + photoFrames.Length + ")");
+        var photoFrames = Descendants(root).OfType<Border>().Where(b => Math.Abs(b.Height - 120) < 1).ToArray();
+        Assert(photoFrames.Length == 3, "all three photo previews are 120 px high (got " + photoFrames.Length + ")");
         var sigCanvases = Descendants(root).OfType<InkCanvas>().ToArray();
         Assert(sigCanvases.All(c => Math.Abs(c.Height - 90) < 1), "both signature previews are 90 px high");
 
@@ -370,6 +370,8 @@ internal static class Program
         var photoRemoveButtons = Descendants(root).OfType<Button>()
             .Where(b => (System.Windows.Automation.AutomationProperties.GetName(b) ?? "").StartsWith("Remove ", StringComparison.Ordinal)).ToArray();
         Assert(photoRemoveButtons.Length == 3, "each of the three photo slots has its own Remove button (got " + photoRemoveButtons.Length + ")");
+        Assert(photoChooseButtons.All(b => b.ActualWidth > 0) && photoRemoveButtons.All(b => b.ActualWidth > 0),
+            "every photo slot button has a positive width");
         var signatureClears = Descendants(root).OfType<Button>()
             .Where(b => (System.Windows.Automation.AutomationProperties.GetName(b) ?? "").StartsWith("Clear ", StringComparison.Ordinal)).ToArray();
         Assert(signatureClears.Length >= 2, "both signatures expose an obvious Clear action (got " + signatureClears.Length + ")");
@@ -380,7 +382,7 @@ internal static class Program
             "the mobile field is wider than the name field (got " + contactField.ActualWidth + " vs " + nameField.ActualWidth + ")");
         Assert(Descendants(root).OfType<InkCanvas>().All(c => Math.Abs(c.Height - 90) < 0.5),
             "both signature canvases keep a consistent 90 px height");
-        var photoFrames2 = Descendants(root).OfType<Border>().Where(b => Math.Abs(b.Width - 180) < 1 && Math.Abs(b.Height - 135) < 1).ToArray();
+        var photoFrames2 = Descendants(root).OfType<Border>().Where(b => Math.Abs(b.Height - 120) < 1).ToArray();
         var photoTops = photoFrames2.Select(b => b.TranslatePoint(new Point(0, 0), root).Y).ToArray();
         Assert(photoTops.Length == 3 && photoTops.Max() - photoTops.Min() <= 1,
             "all three photo previews share one top edge (spread " + (photoTops.Length>0? photoTops.Max()-photoTops.Min() : 0) + ")");

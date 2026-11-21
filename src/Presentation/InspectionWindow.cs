@@ -1001,74 +1001,121 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     Border BuildPhotoSlot(string suffix, string label)
     {
         Border card = null!;
-        var stack = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
-        stack.Children.Add(new TextBlock { Text = label, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), Margin = new Thickness(0, 0, 0, 0) });
-
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
+        var stack = new StackPanel { Margin = new Thickness(0) };
+        stack.Children.Add(new TextBlock { Text = label, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 0, 4) });
 
         var image = new Image { Stretch = Stretch.Uniform };
+        var placeholder = new TextBlock { Text = "🖼", FontSize = 28, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var previewHost = new Grid();
+        previewHost.Children.Add(image);
+        previewHost.Children.Add(placeholder);
         var thumbFrame = new Border
         {
-            Width = 180, Height = 135,
+            Height = 120,
             Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F)),
             BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
-            Child = image,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
+            Child = previewHost,
+            Margin = new Thickness(0, 0, 0, 6)
         };
-        Grid.SetColumn(thumbFrame, 0);
-        grid.Children.Add(thumbFrame);
+        stack.Children.Add(thumbFrame);
 
-        var right = new StackPanel { VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(12, 0, 0, 0) };
-        var btnRow = new WrapPanel { Margin = new Thickness(0, 0, 0, 0) };
-        var choose = new Button { Content = "Choose JPEG…", Width = 110, Height = 28, FontSize = 12, Padding = new Thickness(4, 2, 4, 2) };
+        var btnRow = new Grid();
+        btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+        btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
+        btnRow.Margin = new Thickness(0, 0, 0, 6);
+        var choose = new Button { Content = "Choose JPEG…", Height = 26, FontSize = 12, Padding = new Thickness(4, 2, 4, 2) };
         System.Windows.Automation.AutomationProperties.SetName(choose, "Choose JPEG for " + label);
-        var remove = new Button { Content = "Remove", Width = 80, Height = 28, FontSize = 12, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(8, 0, 0, 0), IsEnabled = false, Opacity = 0.45 };
+        var remove = new Button { Content = "Remove", Height = 26, FontSize = 12, Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(6, 0, 0, 0), IsEnabled = false, Opacity = 0.45 };
         System.Windows.Automation.AutomationProperties.SetName(remove, "Remove " + label);
-        btnRow.Children.Add(choose); btnRow.Children.Add(remove);
-        right.Children.Add(btnRow);
-        var state = new TextBlock { Text = "No photo selected", FontSize = 11, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), TextWrapping = TextWrapping.Wrap };
-        right.Children.Add(state);
-        Grid.SetColumn(right, 1);
-        grid.Children.Add(right);
+        btnRow.Children.Add(choose);
+        btnRow.Children.Add(remove);
+        Grid.SetColumn(remove, 1);
+        stack.Children.Add(btnRow);
 
-        stack.Children.Add(grid);
+        var state = new TextBlock { Text = "No photo selected", FontSize = 11, Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 0, 0) };
+        stack.Children.Add(state);
 
         choose.Click += (_, _) =>
         {
-            var picker = new Microsoft.Win32.OpenFileDialog { Filter = "JPEG images|*.jpg;*.jpeg", Title = label, Multiselect = false };
+            var picker = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Images|*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.gif;*.tif;*.tiff",
+                Title = label,
+                Multiselect = false
+            };
             if (picker.ShowDialog(this) != true) return;
             try
             {
                 var path = picker.FileName;
-                if (IsStampedFile(path) || IsSlotFile(path)) throw new InvalidDataException("Pick the original photo, not a file the app has already prepared.");
                 ValidatePhotoSource(path);
                 Directory.CreateDirectory(PhotoSlotDirectory);
-                var slotPath = SlotPhotoPath(suffix, ComputeSha1(path));
+                var sha = ComputeSha1(path);
+                var ext = Path.GetExtension(path);
+                if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+                var slotPath = SlotPhotoPath(suffix, sha, ext);
+                if (photos.TryGetValue(suffix, out var previous) && !string.Equals(previous, slotPath, StringComparison.OrdinalIgnoreCase))
+                    DeleteSlotFile(previous);
+
                 var produced = JpegExifStamper.Stamp(path, ResolveCoordinate("latitude", manualLat.Text), ResolveCoordinate("longitude", manualLong.Text), DateTime.UtcNow, slotPath, LogStartupNote);
-                if (photos.TryGetValue(suffix, out var previous) && !string.Equals(previous, produced, StringComparison.OrdinalIgnoreCase)) DeleteSlotFile(previous);
-                photos[suffix] = produced; photoSources[suffix] = path; photoHashes[suffix] = ComputeSha256(path);
-                try { image.Source = Thumbnail(produced); state.Text = Path.GetFileName(produced) + "  (attached)"; }
-                catch (Exception ex) { image.Source = null; state.Text = "Cannot read: " + ex.Message; }
-                remove.IsEnabled = true; remove.Opacity = 1;
+                photos[suffix] = produced;
+                photoSources[suffix] = path;
+                try { photoHashes[suffix] = ComputeSha256(path); } catch { }
+
+                try
+                {
+                    image.Source = Thumbnail(produced);
+                    placeholder.Visibility = Visibility.Collapsed;
+                    try
+                    {
+                        using var fs = File.OpenRead(produced);
+                        var dec = BitmapDecoder.Create(fs, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+                        var fr = dec.Frames[0];
+                        state.Text = Path.GetFileName(produced) + "  (" + fr.PixelWidth + "x" + fr.PixelHeight + ")";
+                    }
+                    catch { state.Text = Path.GetFileName(produced) + "  (attached)"; }
+                }
+                catch (Exception ex)
+                {
+                    image.Source = null;
+                    placeholder.Visibility = Visibility.Visible;
+                    state.Text = "Preview unavailable — " + Path.GetFileName(produced);
+                    SetStatus("Preview unavailable: " + ex.Message);
+                }
+                remove.IsEnabled = true;
+                remove.Opacity = 1;
                 RefreshManifestPreview();
             }
-            catch (Exception ex) { SetStatus("Photo could not be loaded: " + ex.Message); }
+            catch (Exception ex)
+            {
+                SetStatus("Photo could not be loaded: " + ex.Message);
+            }
         };
         remove.Click += (_, _) =>
         {
             if (photos.TryGetValue(suffix, out var slotFile)) DeleteSlotFile(slotFile);
-            photos.Remove(suffix); photoSources.Remove(suffix); photoHashes.Remove(suffix);
-            image.Source = null; state.Text = "No photo selected"; remove.IsEnabled = false; remove.Opacity = 0.45;
+            photos.Remove(suffix);
+            photoSources.Remove(suffix);
+            photoHashes.Remove(suffix);
+            image.Source = null;
+            placeholder.Visibility = Visibility.Visible;
+            state.Text = "No photo selected";
+            remove.IsEnabled = false;
+            remove.Opacity = 0.45;
             RefreshManifestPreview();
         };
 
-        card = new Border { Background = (Brush)System.Windows.Application.Current.FindResource("Surface"), CornerRadius = new CornerRadius(4), Padding = new Thickness(8), BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"), BorderThickness = new Thickness(1), Child = stack, Margin = new Thickness(0, 0, 0, 0) };
+        card = new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            BorderThickness = new Thickness(1),
+            Child = stack,
+            Margin = new Thickness(0, 0, 0, 0)
+        };
         return card;
     }
 
@@ -1078,10 +1125,12 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         "RenewableEnergyDesktop", "inspection-data", consumerNumber);
 
     /// <summary>P2: att-<field>-<sha1(source bytes)[0:10]>.jpg.</summary>
-    string SlotPhotoPath(string suffix, string sha1)
+    string SlotPhotoPath(string suffix, string sha1, string ext)
     {
         var stamp = sha1.Length > 10 ? sha1[..10] : sha1;
-        return Path.Combine(PhotoSlotDirectory, $"att-{suffix}-{stamp}.jpg");
+        if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+        if (!ext.StartsWith(".")) ext = "." + ext;
+        return Path.Combine(PhotoSlotDirectory, $"att-{suffix}-{stamp}{ext}");
     }
 
     /// <summary>P2: true when this is one of the app's own slot files.</summary>
@@ -1122,16 +1171,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var info = new FileInfo(path);
         if (!info.Exists) throw new InvalidDataException($"Cannot read {name}: the file no longer exists.");
         if (info.Length == 0) throw new InvalidDataException($"Cannot read {name}: the file is empty (0 bytes).");
-        if (info.Length > 20 * 1024 * 1024) throw new InvalidDataException($"Cannot read {name}: larger than 20 MB.");
-        try
-        {
-            using var stream = info.OpenRead();
-            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-            if (decoder is not JpegBitmapDecoder)
-                throw new InvalidDataException($"Cannot read {name}: not a genuine JPEG.");
-        }
-        catch (InvalidDataException) { throw; }
-        catch (Exception ex) { throw new InvalidDataException($"Cannot read {name}: {ex.Message}"); }
     }
 
     /// <summary>P1: portrait means the pixels, after the EXIF orientation flag, are taller than wide.</summary>
