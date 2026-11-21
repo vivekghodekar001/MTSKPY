@@ -316,6 +316,7 @@ internal static class Program
                 pickerStore.UpsertVendorContact("V-PICK", "Zed", "9000000001");
                 pickerStore.UpsertVendorContact("V-PICK", "Amit", "9000000002");
                 var picker = new InstallerPickerWindow("V-PICK", pickerStore);
+                picker.OpenAsync().GetAwaiter().GetResult();
                 var pickerRoot = (FrameworkElement)picker.Content;
                 pickerRoot.Measure(new Size(380, 420));
                 pickerRoot.Arrange(new Rect(0, 0, 380, 420));

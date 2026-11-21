@@ -64,6 +64,13 @@ public sealed class InstallerPickerWindow : Window
     };
 
     ObservableCollection<PickerRow> rows = new();
+    DateTime _openStart = DateTime.UtcNow;
+    string _lastStep = "none";
+    DateTime _lastStepTime = DateTime.UtcNow;
+    bool _busy;
+    bool _rebuilding;
+    bool _imported;
+    bool _watchdogFired;
     PickerRow? lastRemoved = null;
     ListBoxItem? lastRemovedItem = null;
     int lastRemovedIndex = -1;
@@ -195,7 +202,7 @@ public sealed class InstallerPickerWindow : Window
             e.Handled = true;
         };
 
-        searchBox.TextChanged += (_, _) => { UpdateSearchHint(); ApplyFilter(); };
+        searchBox.TextChanged += (_, _) => { if (_rebuilding) return; UpdateSearchHint(); if (_rebuilding) return; ApplyFilter(); };
         list.SelectionChanged += (_, _) => okButton.IsEnabled = SelectedRow() != null;
         list.MouseDoubleClick += (_, _) => { if (SelectedRow() != null) Ok(); };
         list.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && SelectedRow() != null) Ok(); if (e.Key == Key.Delete && list.SelectedItem is ListBoxItem it) { DeleteRow(it); e.Handled = true; } };
@@ -208,7 +215,75 @@ public sealed class InstallerPickerWindow : Window
         addMobile.KeyDown += (_, e) => { if (e.Key == Key.Enter) DoAdd(); };
 
         UpdateSearchHint();
-        Reload();
+        Loaded += (_, __) => OpenSequenceAsync();
+        StartWatchdog();
+    }
+
+    void Step(string name)
+    {
+        _lastStep = name;
+        _lastStepTime = DateTime.UtcNow;
+        var ms = (int)(_lastStepTime - _openStart).TotalMilliseconds;
+        LogInstaller($"pick {name} t={ms}");
+    }
+
+    void StartWatchdog()
+    {
+        var t = new System.Threading.Thread(() =>
+        {
+            while (true)
+            {
+                System.Threading.Thread.Sleep(500);
+                if (_busy && (DateTime.UtcNow - _lastStepTime).TotalMilliseconds > 3000 && !_watchdogFired)
+                {
+                    _watchdogFired = true;
+                    LogInstaller($"pick WATCHDOG hung at {_lastStep}");
+                    LogInstaller(Environment.StackTrace);
+                }
+            }
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    public System.Threading.Tasks.Task OpenAsync() { OpenSequenceAsync(); return System.Threading.Tasks.Task.CompletedTask; }
+    void OpenSequenceAsync()
+    {
+        _openStart = DateTime.UtcNow;
+        Step("open-enter");
+        _busy = true;
+        Step("busy-on");
+        try
+        {
+            Step("vendor-resolve");
+            rows.Clear();
+            LogInstaller($"pick mutate count={rows.Count}");
+            Step("import-enter");
+            if (!_imported && bookRows.Any())
+            {
+                try { Store.ImportVendorContacts(VendorCode, bookRows); } catch { }
+                _imported = true;
+            }
+            Step("import-exit");
+            Step("load-enter");
+            IReadOnlyList<(long RowId, string PersonName, string Mobile)> stored;
+            try { stored = Store.VendorContactRows(VendorCode); }
+            catch { stored = Array.Empty<(long, string, string)>(); }
+            var loaded = stored.Select(c => new PickerRow(c.RowId, c.PersonName, c.Mobile)).ToList();
+            rows.Clear();
+            foreach (var r in loaded) rows.Add(r);
+            Step("load-exit");
+            Step("filter-enter");
+            ApplyFilter();
+            Step("filter-exit");
+            Step("render-enter");
+            Step("render-exit");
+        }
+        finally
+        {
+            _busy = false;
+            Step("busy-off");
+            Step("open-exit");
+        }
     }
 
     InspectionStore Store
