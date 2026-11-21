@@ -1111,7 +1111,9 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
-    /// <summary>P3: all distinct (person, mobile) pairs for this vendor, newest first.</summary>
+    /// <summary>V4: every contact for this vendor, ordered by person name. No
+    /// DISTINCT, TOP or grouping - two different names are two rows; a repeated
+    /// name is one row, updated in place by UpsertVendorContact.</summary>
     public IReadOnlyList<(string PersonName, string Mobile)> VendorContacts(string vendorCode)
     {
         var result = new List<(string, string)>();

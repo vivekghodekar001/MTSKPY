@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -7,50 +8,113 @@ using Mskpy.Infrastructure;
 
 namespace Mskpy.Windows;
 
-/// <summary>V5/V2: modal picker for a vendor person and their number. One row per
-/// person, alphabetical. OK returns the chosen person; nothing is written to the
-/// record until OK.</summary>
+/// <summary>
+/// V2: modal installer picker. One row per contact (name left, number right),
+/// filtered live by name or number. OK returns the chosen pair; nothing is
+/// written to the record until the caller sees <see cref="OkOrNull"/> true.
+/// The contact book itself is only changed by the Add new area.
+/// </summary>
 public sealed class InstallerPickerWindow : Window
 {
-    public string? VendorCode { get; set; }
+    /// <summary>V2/V4: one row of the picker - the name and the full number.</summary>
+    public sealed record PickerRow(string Name, string Mobile);
+
+    public string VendorCode { get; }
     public string? ChosenName { get; private set; }
     public string? ChosenMobile { get; private set; }
     public bool? OkOrNull { get; private set; }
 
-    readonly TextBox searchBox = new() { Margin = new Thickness(0, 0, 0, 6) };
-    readonly ListBox list = new() { MinHeight = 160, VerticalAlignment = VerticalAlignment.Stretch };
-    readonly Button okButton = new() { Content = "_OK", IsEnabled = false, Margin = new Thickness(0, 0, 6, 0) };
-    readonly Button cancelButton = new() { Content = "_Cancel" };
-    readonly TextBox addName = new() { Width = 140 };
-    readonly TextBox addMobile = new() { Width = 140 };
-    readonly Button addButton = new() { Content = "Add" };
+    readonly InspectionStore? sharedStore;
+    InspectionStore? ownedStore;
+    readonly IReadOnlyList<(string Name, string Mobile)> bookRows;
+
+    readonly TextBox searchBox = new()
+    {
+        Height = 28, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 2, 6, 2)
+    };
+    readonly TextBlock searchHint = new()
+    {
+        Text = "Search name or number",
+        Foreground = Brushes.Gray,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(6, 0, 0, 0),
+        IsHitTestVisible = false
+    };
+    readonly ListBox list = new() { MinHeight = 160, VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(0, 6, 0, 6) };
+    readonly Button okButton = new() { Content = "OK", IsEnabled = false, MinWidth = 76, MinHeight = 0, FontSize = 12, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 6, 0) };
+    readonly Button cancelButton = new() { Content = "Cancel", MinWidth = 76, MinHeight = 0, FontSize = 12, Padding = new Thickness(10, 4, 10, 4) };
+    readonly TextBox addName = new() { Width = 130, Height = 28, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 0, 6, 0), ToolTip = "Installer name" };
+    readonly TextBox addMobile = new() { Width = 130, Height = 28, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 0, 6, 0), ToolTip = "Mobile No (10 digits)" };
+    readonly Button addButton = new() { Content = "Add", MinWidth = 54, MinHeight = 0, FontSize = 12, Padding = new Thickness(10, 4, 10, 4) };
     readonly TextBlock addErrorBlock = new()
     {
-        Foreground = Brushes.DarkRed, TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 2, 0, 0), Visibility = Visibility.Collapsed
+        Foreground = Brushes.DarkRed,
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 2, 0, 0),
+        Visibility = Visibility.Collapsed
     };
 
-    readonly Dictionary<string, (string Name, string Mobile)[]> cache = new();
+    IReadOnlyList<PickerRow> rows = Array.Empty<PickerRow>();
+    Brush mutedBrush = Brushes.Gray;
 
-    public InstallerPickerWindow(string vendorCode)
+    /// <summary>V3: the caller passes its own store (so the picker and the record
+    /// share one connection) plus the officer's book for this vendor, which is
+    /// merged in so a person added through Edit… is offered too.</summary>
+    public InstallerPickerWindow(
+        string vendorCode,
+        InspectionStore? store = null,
+        IEnumerable<(string Name, string Mobile)>? bookRows = null)
     {
-        VendorCode = vendorCode;
+        VendorCode = vendorCode ?? "";
+        this.sharedStore = store;
+        this.bookRows = (bookRows ?? Array.Empty<(string, string)>()).ToList();
+
         Title = "Select installer";
-        Width = 380; Height = 420;
+        Width = 380;
+        Height = 420;
+        MinWidth = 380;
+        MinHeight = 420;
+        ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
-        Owner = System.Windows.Application.Current.MainWindow;
+        var owner = System.Windows.Application.Current?.MainWindow;
+        if (owner != null) Owner = owner;
 
-        var main = new Grid();
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });               // search
-        main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // list
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });               // add error
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });               // buttons
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });               // add row
+        // Match the app's surface: the default white dialog with the theme's
+        // dark fields looked like a broken form.
+        var app = System.Windows.Application.Current;
+        var bg = app?.TryFindResource("Bg") as Brush ?? Brushes.White;
+        var surface = app?.TryFindResource("Surface") as Brush ?? Brushes.White;
+        var text = app?.TryFindResource("Text") as Brush ?? Brushes.Black;
+        var muted = app?.TryFindResource("Muted") as Brush ?? Brushes.Gray;
+        mutedBrush = muted;
+        Background = bg;
+        Foreground = text;
+        FontFamily = new FontFamily("Segoe UI");
+        searchHint.Foreground = muted;
+        list.Background = surface;
+        list.Foreground = text;
+        list.BorderBrush = muted;
+        list.BorderThickness = new Thickness(1);
+        list.Padding = new Thickness(2);
 
-        main.Children.Add(searchBox); Grid.SetRow(searchBox, 0);
-        main.Children.Add(list); Grid.SetRow(list, 1);
-        main.Children.Add(addErrorBlock); Grid.SetRow(addErrorBlock, 2);
+        var main = new Grid { Margin = new Thickness(12) };
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // search
+        main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });   // list
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add error
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // buttons
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                         // add row
+
+        var searchHost = new Grid();
+        searchHost.Children.Add(searchBox);
+        searchHost.Children.Add(searchHint);
+        main.Children.Add(searchHost);
+        Grid.SetRow(searchHost, 0);
+
+        main.Children.Add(list);
+        Grid.SetRow(list, 1);
+        main.Children.Add(addErrorBlock);
+        Grid.SetRow(addErrorBlock, 2);
 
         var buttons = new StackPanel
         {
@@ -60,82 +124,153 @@ public sealed class InstallerPickerWindow : Window
         };
         buttons.Children.Add(cancelButton);
         buttons.Children.Add(okButton);
-        main.Children.Add(buttons); Grid.SetRow(buttons, 3);
+        main.Children.Add(buttons);
+        Grid.SetRow(buttons, 3);
 
-        var addRow = new WrapPanel { Margin = new Thickness(0, 4, 0, 4) };
-        addRow.Children.Add(new TextBlock { Text = "Add new:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 2, 4, 0) });
+        var addArea = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        addArea.Children.Add(new TextBlock
+        {
+            Text = "Add new",
+            Foreground = mutedBrush,
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+        var addRow = new WrapPanel();
         addRow.Children.Add(addName);
         addRow.Children.Add(addMobile);
         addRow.Children.Add(addButton);
-        main.Children.Add(addRow); Grid.SetRow(addRow, 4);
+        addArea.Children.Add(addRow);
+        main.Children.Add(addArea);
+        Grid.SetRow(addArea, 4);
         Content = main;
 
-        list.PreviewKeyDown += (_, e) =>
+        AutomationProperties.SetName(searchBox, "Search installer");
+        AutomationProperties.SetName(list, "Installer contacts");
+        AutomationProperties.SetName(okButton, "OK");
+        AutomationProperties.SetName(cancelButton, "Cancel");
+        AutomationProperties.SetName(addName, "New installer name");
+        AutomationProperties.SetName(addMobile, "New installer mobile");
+        AutomationProperties.SetName(addButton, "Add installer");
+
+        // Esc closes without touching the record, wherever focus is.
+        PreviewKeyDown += (_, e) =>
         {
-            if (e.Key == Key.Enter && list.SelectedItem != null) Ok();
-            else if (e.Key == Key.Escape) { OkOrNull = false; Close(); }
+            if (e.Key != Key.Escape) return;
+            OkOrNull = false;
+            Close();
+            e.Handled = true;
         };
-        list.MouseDoubleClick += (_, _) => { if (list.SelectedItem != null) Ok(); };
-        searchBox.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && list.SelectedItem != null) Ok(); };
+
+        searchBox.TextChanged += (_, _) => { UpdateSearchHint(); ApplyFilter(); };
+        list.SelectionChanged += (_, _) => okButton.IsEnabled = SelectedRow() != null;
+        list.MouseDoubleClick += (_, _) => { if (SelectedRow() != null) Ok(); };
+        list.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && SelectedRow() != null) Ok(); };
+        searchBox.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && SelectedRow() != null) Ok(); };
         okButton.Click += (_, _) => Ok();
         cancelButton.Click += (_, _) => { OkOrNull = false; Close(); };
-        searchBox.TextChanged += (_, _) => RefreshList();
-        list.SelectionChanged += (_, _) => okButton.IsEnabled = list.SelectedItem != null;
         addButton.Click += (_, _) => DoAdd();
         addName.KeyDown += (_, e) => { if (e.Key == Key.Enter) DoAdd(); };
         addMobile.KeyDown += (_, e) => { if (e.Key == Key.Enter) DoAdd(); };
 
-        RefreshList();
+        UpdateSearchHint();
+        Reload();
     }
 
-    void Ok()
+    InspectionStore Store
     {
-        OkOrNull = true;
-        if (list.SelectedItem is string chosen && !string.IsNullOrWhiteSpace(chosen))
+        get
         {
-            var row = GetRowByName(chosen);
-            ChosenName = row.Item1;
-            ChosenMobile = row.Item2;
+            if (sharedStore != null) return sharedStore;
+            return ownedStore ??= new InspectionStore();
         }
-        Close();
     }
 
-    (string Name, string Mobile) GetRowByName(string name)
+    /// <summary>V2/V4: read the book once per open (and after each Add). The
+    /// store rows win over the officer's book when a name appears in both.</summary>
+    void Reload()
     {
-        foreach (var row in GetRows(VendorCode ?? ""))
-            if (string.Equals(row.Name, name, StringComparison.Ordinal)) return row;
-        return (name, "");
+        IReadOnlyList<(string PersonName, string Mobile)> stored;
+        try { stored = Store.VendorContacts(VendorCode); }
+        catch { stored = Array.Empty<(string, string)>(); }
+        rows = MergeContacts(stored, bookRows);
+        LogInstaller($"vendor book {VendorCode}: {rows.Count} rows");
+        ApplyFilter();
     }
 
-    void RefreshList()
+    /// <summary>V4: one row per person name, alphabetical. No DISTINCT / TOP /
+    /// grouping that could collapse two different names.</summary>
+    internal static List<PickerRow> MergeContacts(
+        IEnumerable<(string PersonName, string Mobile)> fromStore,
+        IEnumerable<(string Name, string Mobile)> fromBook)
     {
-        var vendorCode = VendorCode ?? "";
-        var rows = GetRows(vendorCode);
-        LogInstaller("vendor book " + vendorCode + ": " + rows.Length + " rows");
+        var byName = new Dictionary<string, PickerRow>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in fromStore)
+        {
+            var name = (c.PersonName ?? "").Trim();
+            if (name.Length == 0) continue;
+            byName[name] = new PickerRow(name, (c.Mobile ?? "").Trim());
+        }
+        foreach (var p in fromBook)
+        {
+            var name = (p.Name ?? "").Trim();
+            if (name.Length == 0 || byName.ContainsKey(name)) continue;
+            byName[name] = new PickerRow(name, (p.Mobile ?? "").Trim());
+        }
+        return byName.Values
+            .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 
+    void ApplyFilter()
+    {
         var typed = (searchBox.Text ?? "").Trim();
         var filtered = typed.Length == 0
             ? rows
             : rows.Where(r => r.Name.Contains(typed, StringComparison.OrdinalIgnoreCase)
-                           || r.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)).ToArray();
+                           || r.Mobile.Contains(typed, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        list.ItemsSource = filtered.Select(r => r.Name);
-        if (filtered.Length > 0 && list.SelectedItem == null) list.SelectedIndex = 0;
+        list.Items.Clear();
+        foreach (var row in filtered)
+            list.Items.Add(new ListBoxItem { Content = RowContent(row), Tag = row, Padding = new Thickness(2, 3, 2, 3) });
+
+        okButton.IsEnabled = false;
         addErrorBlock.Visibility = Visibility.Collapsed;
     }
 
-    (string Name, string Mobile)[] GetRows(string vendorCode)
+    /// <summary>V2: the name on the left and the complete number on the right.</summary>
+    Grid RowContent(PickerRow row)
     {
-        if (cache.TryGetValue(vendorCode, out var cached)) return cached;
-        var rows = new (string, string)[0];
-        try
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var name = new TextBlock
         {
-            using var store = new InspectionStore();
-            rows = store.VendorContacts(vendorCode).Select(c => (c.PersonName, c.Mobile)).ToArray();
-        }
-        catch { rows = new (string, string)[0]; }
-        cache[vendorCode] = rows;
-        return rows;
+            Text = row.Name,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        var mobile = new TextBlock
+        {
+            Text = row.Mobile,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = mutedBrush,
+            Margin = new Thickness(12, 0, 2, 0)
+        };
+        Grid.SetColumn(mobile, 1);
+        grid.Children.Add(name);
+        grid.Children.Add(mobile);
+        return grid;
+    }
+
+    PickerRow? SelectedRow() => (list.SelectedItem as ListBoxItem)?.Tag as PickerRow;
+
+    void Ok()
+    {
+        var row = SelectedRow();
+        if (row == null) return;
+        ChosenName = row.Name;
+        ChosenMobile = row.Mobile;
+        OkOrNull = true;
+        Close();
     }
 
     void DoAdd()
@@ -144,23 +279,48 @@ public sealed class InstallerPickerWindow : Window
         var mobile = (addMobile.Text ?? "").Trim();
         addErrorBlock.Visibility = Visibility.Collapsed;
         if (name.Length == 0) { ShowAddError("Name is required."); return; }
-        if (!Regex.IsMatch(mobile, @"^[1-9]\d{9,}$")) { ShowAddError("Mobile No must be 10+ digits starting with a non-zero digit."); return; }
-        try
+        if (!Regex.IsMatch(mobile, @"^[0-9]{10}$"))
         {
-            using var store = new InspectionStore();
-            store.UpsertVendorContact(VendorCode ?? "", name, mobile);
+            ShowAddError("Mobile No must be exactly 10 digits.");
+            return;
         }
+        try { Store.UpsertVendorContact(VendorCode, name, mobile); }
         catch (Exception ex) { ShowAddError("Could not save: " + ex.Message); return; }
-        cache.Clear();
-        addName.Text = ""; addMobile.Text = "";
-        RefreshList();
-        if (list.Items.Count > 0) list.SelectedIndex = list.Items.Count - 1;
+
+        addName.Text = "";
+        addMobile.Text = "";
+        searchBox.Text = ""; // the new row must be visible even under a filter
+        Reload();
+        SelectRow(name);
+    }
+
+    void SelectRow(string name)
+    {
+        foreach (var item in list.Items.OfType<ListBoxItem>())
+        {
+            if (item.Tag is PickerRow row && string.Equals(row.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                list.SelectedItem = item;
+                list.ScrollIntoView(item);
+                return;
+            }
+        }
     }
 
     void ShowAddError(string text)
     {
         addErrorBlock.Text = text;
         addErrorBlock.Visibility = Visibility.Visible;
+    }
+
+    void UpdateSearchHint() =>
+        searchHint.Visibility = string.IsNullOrEmpty(searchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+
+    protected override void OnClosed(EventArgs e)
+    {
+        ownedStore?.Dispose();
+        ownedStore = null;
+        base.OnClosed(e);
     }
 
     static void LogInstaller(string message)

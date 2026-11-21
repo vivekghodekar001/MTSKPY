@@ -211,23 +211,108 @@ internal static class Program
         var nameBox = Descendants(root).OfType<TextBox>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Vendor Person Name");
         var contactBox = Descendants(root).OfType<TextBox>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Vendor Person Mobile No");
         Assert(nameBox != null && contactBox != null, "name and mobile fields both exist in the tree");
-        Assert(nameBox.Height == 30 && contactBox.Height == 30, "both installer fields carry an explicit 30 px height");
-        Assert(nameBox.IsReadOnly && contactBox.IsReadOnly, "both installer fields are read-only");
+        var nameField = nameBox!;
+        var contactField = contactBox!;
+        Assert(nameField.Height == 30 && contactField.Height == 30, "both installer fields carry an explicit 30 px height");
+        Assert(nameField.IsReadOnly && contactField.IsReadOnly, "both installer fields are read-only");
         var chooseBtn = Descendants(root).OfType<Button>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
         Assert(chooseBtn != null && chooseBtn.IsEnabled, "the Choose... button exists and is enabled");
         var clearLink = Descendants(root).OfType<Button>().FirstOrDefault(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Clear");
         Assert(clearLink != null, "the Clear text link exists");
 
         // V3: prefill writes the two plain strings on open (book has sandip).
-        var prefilledName = nameBox?.Text;
+        var prefilledName = nameField.Text;
         Assert(!string.IsNullOrWhiteSpace(prefilledName), "the name field is prefilled on open");
-        var prefilledMobile = contactBox?.Text;
+        var prefilledMobile = contactField.Text;
         Assert(!string.IsNullOrWhiteSpace(prefilledMobile), "the mobile field is prefilled on open");
 
-        // V1/V5: Clear empties both strings; book untouched.
+        // V1/V5: Clear empties both strings and leaves the contact book alone.
+        var bookCountBefore = newBook.People.Count;
+        Assert(bookCountBefore >= 2, "the synthetic contact book starts with two installers");
         inspection.DoClear();
-        Assert(string.IsNullOrWhiteSpace(nameBox.Text) && string.IsNullOrWhiteSpace(contactBox.Text),
+        Assert(string.IsNullOrWhiteSpace(nameField.Text) && string.IsNullOrWhiteSpace(contactField.Text),
             "Clear empties both the name and mobile fields");
+        Assert(newBook.People.Count == bookCountBefore,
+            "Clear does not remove anyone from the contact book");
+
+        // V4: the picker's list is the store's rows merged with this vendor's
+        // book - two different names stay two rows, and a name in both keeps
+        // the store's (fresher) number.
+        var merged = InstallerPickerWindow.MergeContacts(
+            new (string PersonName, string Mobile)[] { ("Sandip Kale", "9000000000") },
+            new (string Name, string Mobile)[] { ("Vivek Kumar", "9111111111"), ("Sandip Kale", "9999999999") });
+        Assert(merged.Count == 2, "the picker lists both installers (got " + merged.Count + ")");
+        Assert(merged.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
+            "the picker's rows carry two different names");
+        Assert(merged.Single(r => r.Name == "Sandip Kale").Mobile == "9000000000",
+            "a name in both sources keeps the contact book's number");
+        Assert(merged.All(r => r.Mobile.Length > 0), "every picker row carries a full mobile number");
+
+        // V4: the store path the Add new area uses - two names are two rows,
+        // the same name updates in place, and the list is sorted by name.
+        var testDbDir = Path.Combine(Path.GetTempPath(), "mskpy-contacts-" + Guid.NewGuid().ToString("N"));
+        var testDb = Path.Combine(testDbDir, "inspection-store.db");
+        try
+        {
+            using (var contacts = new Mskpy.Infrastructure.InspectionStore(testDb))
+            {
+                contacts.UpsertVendorContact("V-TEST", "Zed", "9000000001");
+                contacts.UpsertVendorContact("V-TEST", "Amit", "9000000002");
+                contacts.UpsertVendorContact("V-TEST", "Zed", "9000000003");
+                var storedRows = contacts.VendorContacts("V-TEST");
+                Assert(storedRows.Count == 2, "two different names are two stored contacts (got " + storedRows.Count + ")");
+                Assert(storedRows[0].PersonName == "Amit" && storedRows[1].PersonName == "Zed",
+                    "stored contacts come back sorted by person name");
+                Assert(storedRows[1].Mobile == "9000000003", "adding the same name again updates it in place");
+            }
+
+            // V2/V4: the dialog itself, rendered offscreen (never shown). Two
+            // stored contacts, name + number on each row, OK gated on a pick,
+            // and live filtering by name and number.
+            using (var pickerStore = new Mskpy.Infrastructure.InspectionStore(testDb))
+            {
+                pickerStore.UpsertVendorContact("V-PICK", "Zed", "9000000001");
+                pickerStore.UpsertVendorContact("V-PICK", "Amit", "9000000002");
+                var picker = new InstallerPickerWindow("V-PICK", pickerStore);
+                var pickerRoot = (FrameworkElement)picker.Content;
+                pickerRoot.Measure(new Size(380, 420));
+                pickerRoot.Arrange(new Rect(0, 0, 380, 420));
+                pickerRoot.UpdateLayout();
+
+                var pickerList = Descendants(pickerRoot).OfType<ListBox>()
+                    .First(l => System.Windows.Automation.AutomationProperties.GetName(l) == "Installer contacts");
+                Assert(pickerList.Items.Count == 2, "the picker's list shows both stored contacts");
+                var rowText = pickerList.Items.OfType<ListBoxItem>()
+                    .Select(i => string.Join(" ", ((Grid)i.Content).Children.OfType<TextBlock>().Select(t => t.Text)))
+                    .ToList();
+                Assert(rowText.Any(t => t.Contains("Zed") && t.Contains("9000000001")),
+                    "a picker row shows the name and the full number");
+                Assert(rowText.Any(t => t.Contains("Amit") && t.Contains("9000000002")),
+                    "the second picker row shows its own number");
+
+                var pickerOk = Descendants(pickerRoot).OfType<Button>()
+                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "OK");
+                Assert(!pickerOk.IsEnabled, "OK is disabled until a row is selected");
+                pickerList.SelectedIndex = 0;
+                Assert(pickerOk.IsEnabled, "OK enables once a row is selected");
+
+                var pickerSearch = Descendants(pickerRoot).OfType<TextBox>()
+                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Search installer");
+                pickerSearch.Text = "zed";
+                Assert(pickerList.Items.Count == 1, "search filters the list by name");
+                pickerSearch.Text = "9000000002";
+                Assert(pickerList.Items.Count == 1, "search filters the list by number");
+                pickerSearch.Text = "";
+                Assert(pickerList.Items.Count == 2, "clearing the search brings both contacts back");
+                pickerList.SelectedIndex = 0;
+                pickerRoot.UpdateLayout();
+                SaveRender(pickerRoot, 380, 420, Path.Combine(outputDir, "2v-picker.png"));
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(testDbDir, true); } catch { }
+        }
 
         // G1a evidence: the installer card and the location heading as they
         // actually lay out, with the Photos tab selected.
@@ -236,6 +321,24 @@ internal static class Program
         root.Measure(new Size(1100, 850));
         root.Arrange(new Rect(0, 0, 1100, 850));
         root.UpdateLayout();
+        Assert(Math.Abs(nameField.ActualHeight - 30) < 0.5 && Math.Abs(contactField.ActualHeight - 30) < 0.5,
+            "both installer fields actually lay out at 30 px (got " + nameField.ActualHeight + " / " + contactField.ActualHeight + ")");
+        var photoChooseButtons = Descendants(root).OfType<Button>()
+            .Where(b => (System.Windows.Automation.AutomationProperties.GetName(b) ?? "").StartsWith("Choose JPEG for ", StringComparison.Ordinal)).ToArray();
+        Assert(photoChooseButtons.Length == 3, "each of the three photo slots has its own Choose button (got " + photoChooseButtons.Length + ")");
+        var photoRemoveButtons = Descendants(root).OfType<Button>()
+            .Where(b => (System.Windows.Automation.AutomationProperties.GetName(b) ?? "").StartsWith("Remove ", StringComparison.Ordinal)).ToArray();
+        Assert(photoRemoveButtons.Length == 3, "each of the three photo slots has its own Remove button (got " + photoRemoveButtons.Length + ")");
+        var signatureClears = Descendants(root).OfType<Button>()
+            .Where(b => (System.Windows.Automation.AutomationProperties.GetName(b) ?? "").StartsWith("Clear ", StringComparison.Ordinal)).ToArray();
+        Assert(signatureClears.Length >= 2, "both signatures expose an obvious Clear action (got " + signatureClears.Length + ")");
+        Assert(Descendants(root).OfType<Button>().Any(b =>
+            System.Windows.Automation.AutomationProperties.GetName(b) == "Clear" && b.Visibility == Visibility.Visible),
+            "a visible Clear control remains on the page");
+        Assert(contactField.ActualWidth > nameField.ActualWidth,
+            "the mobile field is wider than the name field (got " + contactField.ActualWidth + " vs " + nameField.ActualWidth + ")");
+        Assert(Descendants(root).OfType<InkCanvas>().All(c => Math.Abs(c.Height - 110) < 0.5),
+            "both signature canvases keep a consistent 110 px height");
         SaveRender(root, 1100, 850, Path.Combine(outputDir, "g1a-installer.png"));
 
         // The fault shape is real: a background thread cannot read Strokes.
@@ -274,20 +377,6 @@ internal static class Program
         Assert(!statusText.Contains("Signature check failed", StringComparison.Ordinal),
             "the debounced signature check runs the real comparison, not an error path");
     }
-    /// <summary>H3: the labels the contact dropdown is currently offering.</summary>
-    static List<string> ContactLabels(ComboBox box) =>
-        (box.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
-            .OfType<InspectionWindow.VendorOption>()
-            .Select(o => o.Label)
-            .ToList();
-
-    /// <summary>H1: the names the vendor dropdown is currently offering.</summary>
-    static List<string> InstallerNames(ComboBox box) =>
-        (box.ItemsSource as System.Collections.IEnumerable ?? Enumerable.Empty<object>())
-            .OfType<Mskpy.Infrastructure.VendorPeople.Person>()
-            .Select(p => p.Name)
-            .ToList();
-
     static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
     {
         yield return parent;

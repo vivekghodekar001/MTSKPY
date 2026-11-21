@@ -88,22 +88,27 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly TextBlock manifestLabel = new() { FontSize = 13, Margin = new Thickness(0, 2, 0, 2) };
     readonly ScrollViewer manifestScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = double.NaN, MaxHeight = 190 };
     readonly TextBlock locationBox = new() { Margin = new Thickness(0, 6, 0, 0) };
-    readonly TextBox manualLat = new() { Width = 140, Margin = new Thickness(0, 0, 8, 0) };
-    readonly TextBox manualLong = new() { Width = 140, Margin = new Thickness(0, 0, 8, 0) };
-    readonly TextBox manualAcc = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
-    readonly TextBox allowedDist = new() { Width = 100, Margin = new Thickness(0, 0, 8, 0) };
+    readonly TextBox manualLat = new() { Width = 140, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
+    readonly TextBox manualLong = new() { Width = 140, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
+    readonly TextBox manualAcc = new() { Width = 100, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
+    readonly TextBox allowedDist = new() { Width = 100, Height = 30, MinHeight = 0, FontSize = 13, Margin = new Thickness(0, 0, 8, 0) };
     readonly CheckBox distRestricted = new() { Content = "Distance restricted", Margin = new Thickness(0, 0, 8, 0) };
     // V1: the row is plain strings. Name = read-only TextBox + Choose button;
     // mobile = read-only full-width TextBox. Placeholders behind each.
     readonly TextBox vendorPersonNameBox = new()
     {
-        Height = 30, FontSize = 12, IsReadOnly = true, IsReadOnlyCaretVisible = false,
-        Width = 300, Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(4, 0, 0, 0),
+        Height = 30, MinHeight = 0, FontSize = 12, IsReadOnly = true, IsReadOnlyCaretVisible = false,
+        Width = double.NaN, HorizontalAlignment = HorizontalAlignment.Stretch,
+        Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(4, 0, 0, 0),
     };
-    readonly Button vendorPersonChoose = new() { Content = "Choose...", Height = 30, Width = 90, Margin = new Thickness(0, 0, 8, 0) };
+    readonly Button vendorPersonChoose = new()
+    {
+        Content = "Choose...", Height = 30, Width = 90, FontSize = 12,
+        Padding = new Thickness(4, 0, 4, 0), Margin = new Thickness(0, 0, 8, 0)
+    };
     readonly TextBox vendorPersonMobileBox = new()
     {
-        Height = 30, FontSize = 12, IsReadOnly = true, IsReadOnlyCaretVisible = false,
+        Height = 30, MinHeight = 0, FontSize = 12, IsReadOnly = true, IsReadOnlyCaretVisible = false,
         Width = double.NaN, HorizontalAlignment = HorizontalAlignment.Stretch,
         Margin = new Thickness(0, 0, 8, 0), Padding = new Thickness(4, 0, 0, 0),
     };
@@ -125,24 +130,25 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     };
     readonly Button installerClearLink = new()
     {
-        Content = "Clear", Margin = new Thickness(0, 0, 8, 0), FontSize = 12,
-        Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+        Content = "Clear", Margin = new Thickness(0, 2, 8, 0), FontSize = 12,
+        Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
         HorizontalAlignment = HorizontalAlignment.Right,
-        Visibility = Visibility.Visible,
     };
 
     void UpdatePlaceholders()
     {
         namePlaceholder.Visibility = string.IsNullOrWhiteSpace(vendorPersonNameBox.Text) ? Visibility.Visible : Visibility.Collapsed;
         mobilePlaceholder.Visibility = string.IsNullOrWhiteSpace(vendorPersonMobileBox.Text) ? Visibility.Visible : Visibility.Collapsed;
-        installerClearLink.Visibility = Visibility.Visible;
+        installerClearLink.Visibility = Visibility.Collapsed;
     }
     readonly Dictionary<string, (RadioButton yes, RadioButton no, TextBox remark)> checkAnswers = new();
     /// <summary>C4: the manual coordinate boxes, hidden behind a link.</summary>
     StackPanel? manualRows;
 
     TextBlock? riskHeader;
+    Border? riskBand;
     TextBlock? riskFooter;
+    ScrollViewer? bodyScroll;
     bool locationResolved;
     bool submitBusy;
     Button? submitBtn;
@@ -201,12 +207,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // H1: named installerBook, not vendorPeople - a same-named parameter
         // would shadow this field everywhere below and hand out null.
         this.vendorPeople = installerBook ?? new Mskpy.Infrastructure.VendorPeople();
-        // B1: two-way bind the cell text to the string properties.
-        vendorPersonNameBox.SetBinding(ComboBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonName)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
-        vendorPersonMobileBox.SetBinding(ComboBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonMobile)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
-        // 2R: text search on the person name / mobile.
-        System.Windows.Controls.TextSearch.SetTextPath(vendorPersonNameBox, "Name");
-        System.Windows.Controls.TextSearch.SetTextPath(vendorPersonMobileBox, "Person.Mobile");
+        // B1/V1: two-way bind the read-only fields to the plain string properties.
+        vendorPersonNameBox.SetBinding(TextBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonName)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
+        vendorPersonMobileBox.SetBinding(TextBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonMobile)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
 
         this.harvester = harvester;
         this.store = store; // W1
@@ -236,9 +239,17 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        // Y1: Read-only header card (record info), Row 0 — two lines, compact
-        var headerCard = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
-        var line1 = new StackPanel { Orientation = Orientation.Horizontal };
+        // Y1: Read-only header card (record info), Row 0 — two compact lines.
+        var headerCard = new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(16, 12, 16, 12),
+            Margin = new Thickness(0, 0, 0, 10),
+            Child = new StackPanel { Margin = new Thickness(0) }
+        };
+        var headerStack = (StackPanel)headerCard.Child;
+        var line1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
         line1.Children.Add(new TextBlock
         {
             Text = $"Name: {FieldValue("consumer_name")}   |   Application No: {FieldValue("consumer_number")}   |   Address: {FieldValue("address")}",
@@ -247,9 +258,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center
         });
-        headerCard.Children.Add(line1);
+        headerStack.Children.Add(line1);
 
-        var line2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        var line2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 0) };
         var instDate = FieldValue("inst_date");
         var instDateText = string.IsNullOrEmpty(instDate) ? "Not provided" : FormatInstDate(instDate);
         line2.Children.Add(new TextBlock
@@ -281,7 +292,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             }
         };
         line2.Children.Add(navBtn);
-        headerCard.Children.Add(line2);
+        headerStack.Children.Add(line2);
 
         // M2: the pre-submit risk band and its reasons, shown before the form
         // is filled.
@@ -290,9 +301,17 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0)
+            Margin = new Thickness(0)
         };
-        headerCard.Children.Add(riskHeader);
+        riskBand = new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 6, 10, 6),
+            Margin = new Thickness(0, 8, 0, 0),
+            Child = riskHeader
+        };
+        headerStack.Children.Add(riskBand);
 
         Grid.SetRow(headerCard, 0);
         grid.Children.Add(headerCard);
@@ -346,7 +365,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 checkPanel.Children.Add(radios);
                 var remark = new TextBox
                 {
-                    Width = 520,
+                    Width = double.NaN,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    MaxWidth = 760,
                     Margin = new Thickness(0, 4, 0, 0),
                     ToolTip = "Remark (required when Incorrect)",
                     IsEnabled = false
@@ -410,7 +431,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 checkPanel.Children.Add(radios);
                 var remark = new TextBox
                 {
-                    Width = 520,
+                    Width = double.NaN,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    MaxWidth = 760,
                     Margin = new Thickness(0, 4, 0, 0),
                     ToolTip = "Remark (required when Incorrect)",
                     IsEnabled = false
@@ -429,35 +452,44 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             tabControl.Items.Add(partBTab);
         }
 
-        // Y4: Photos & Signatures tab — two columns
+                // Y4: Photos & Signatures tab — single scrollable page with clear sections.
         var photosTab = new TabItem { Header = "Photos & Signatures", Margin = new Thickness(0) };
-        var photosGrid = new Grid { Margin = new Thickness(8) };
-        photosGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        photosGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var photosPage = new StackPanel { Margin = new Thickness(8, 12, 8, 8) };
 
-        // Z6: no per-column scroller — the tab below carries one shared scroller.
-        // Left column: Site Photos + Signatures
-        var leftPanel = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
-        leftPanel.Children.Add(Label("Site Photos (3 JPEG)", 15, new Thickness(0, 0, 0, 6)));
-        foreach (var slot in PhotoSlots) AddPhotoSlot(leftPanel, slot.Suffix, slot.Label);
+        // Section: site photos in three equal cards across the full width.
+        photosPage.Children.Add(SectionHeader("Site photos", "Attach one JPEG for each step. Each slot takes a single photo."));
+        var photoGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        photoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        photoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        photoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var i = 0; i < PhotoSlots.Length; i++)
+        {
+            var slotCard = BuildPhotoSlot(PhotoSlots[i].Suffix, PhotoSlots[i].Label);
+            Grid.SetColumn(slotCard, i);
+            photoGrid.Children.Add(slotCard);
+        }
+        photosPage.Children.Add(photoGrid);
 
-        // Z3: both signature canvases sit side by side directly under the third slot.
-        var signRow = new Grid { Margin = new Thickness(0, 4, 0, 0) };
-        signRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        signRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        // Section: signatures as a clearly labelled pair.
+        photosPage.Children.Add(SectionHeader("Signatures", "Ask both people to sign. Submit refuses a blank or identical pair.", new Thickness(0, 16, 0, 2)));
+        var signGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        signGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        signGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var benBlock = BuildSignatureBlock("Beneficiary signature", beneficiary);
         var repBlock = BuildSignatureBlock("Vendor representative signature", representative);
         Grid.SetColumn(benBlock, 0);
         Grid.SetColumn(repBlock, 1);
-        signRow.Children.Add(benBlock);
-        signRow.Children.Add(repBlock);
-        leftPanel.Children.Add(signRow);
+        signGrid.Children.Add(benBlock);
+        signGrid.Children.Add(repBlock);
+        photosPage.Children.Add(signGrid);
 
-        Grid.SetColumn(leftPanel, 0);
-        photosGrid.Children.Add(leftPanel);
+        // Section: installer details and location side by side.
+        photosPage.Children.Add(SectionHeader("Installer and location", "The installer who attended, and the position the survey is submitted from.", new Thickness(0, 16, 0, 2)));
+        var detailsGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        detailsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        detailsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        // G1a: right column — the installer card rebuilt as a vertical stack.
-        var rightPanel = new StackPanel { Margin = new Thickness(8, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        // Installer card (right column content rebuilt as a vertical stack).
         var installerStack = new StackPanel();
         // P1: installer boxes start EMPTY — the officer types whoever actually
         // attended. The stored name is only whoever attended last time and must
@@ -468,8 +500,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // pair if it exists, else the vendor's most recent). Empty only when
         // there is no history for this vendor.
         PrefillInstallerPair();
-        Button? clearName = null;
-        Button? clearMobile = null;
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonMobileBox, "Vendor Person Mobile No");
 
@@ -487,30 +517,40 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         System.Windows.Automation.AutomationProperties.SetName(editBook, "Edit the installer list");
         editBook.Click += (_, _) => EditVendorPeople(vendorPeople);
 
-        // Row 0 — "Installer Details" | "Edit…"
+        // Row 0 — "Installer Details" | "Clear" | "Edit…"
         var installerHeader = new Grid();
         installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        installerHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         installerHeader.Children.Add(new TextBlock
         {
-            Text = "Installer Details",
-            FontWeight = FontWeights.Bold,
+            Text = "Installer details",
+            FontWeight = FontWeights.SemiBold,
             FontSize = 15,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             VerticalAlignment = VerticalAlignment.Center
         });
+        var clearLinkHeader = new Button
+        {
+            Content = "Clear",
+            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "Clear the chosen installer for this record only. Your installer list is kept."
+        };
+        System.Windows.Automation.AutomationProperties.SetName(clearLinkHeader, "Clear");
+        clearLinkHeader.Click += (_, _) => DoClear();
+        installerHeader.Children.Add(clearLinkHeader);
+        Grid.SetColumn(clearLinkHeader, 1);
         installerHeader.Children.Add(editBook);
-        Grid.SetColumn(editBook, 1);
+        Grid.SetColumn(editBook, 2);
         installerStack.Children.Add(installerHeader);
 
-        // Rows 1–4 — label, field, label, field. Every field carries an
-        // explicit height; the clear disc is overlaid inside its own field.
-        // V1: name = read-only TextBox + Choose button; mobile = read-only full-width TextBox.
+        // Rows 1–4 — label, field, label, field.
         installerStack.Children.Add(FieldLabel("Vendor Person Name"));
         installerStack.Children.Add(CreateStringRow(vendorPersonNameBox, vendorPersonChoose, namePlaceholder));
         installerStack.Children.Add(FieldLabel("Vendor Person Mobile No"));
         installerStack.Children.Add(CreateStringRow(vendorPersonMobileBox, null, mobilePlaceholder));
-        installerStack.Children.Add(installerClearLink);
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonChoose, "Choose...");
         System.Windows.Automation.AutomationProperties.SetName(installerClearLink, "Clear");
         System.Windows.Automation.AutomationProperties.SetName(vendorPersonNameBox, "Vendor Person Name");
@@ -543,7 +583,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         installerNote.Inlines.Add(useSavedLink);
         installerStack.Children.Add(installerNote);
 
-        // Row 5 — the empty-book hint, collapsed the moment the book has anyone.
         installerHint = new TextBlock
         {
             Text = "No saved installers — press Edit to add one.",
@@ -555,8 +594,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         };
         installerStack.Children.Add(installerHint);
 
-        // P3: persist the pair on blur, so a typed number is saved against
-        // the chosen person even without a submit.
         vendorPersonNameBox.LostFocus += (_, _) => PersistInstallerPair();
 
         vendorWarning = new TextBlock
@@ -568,29 +605,30 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             Visibility = Visibility.Collapsed
         };
         installerStack.Children.Add(vendorWarning);
-        rightPanel.Children.Add(new Border
-        {
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12),
-            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            Margin = new Thickness(0, 0, 0, 12),
-            Width = 420,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Child = installerStack
-        });
 
-        // C3/C4: the location. The submission's position is the customer's
-        // site; the raw boxes are hidden behind a link, for the rare record
-        // whose registered coordinates are plainly wrong.
-        var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
-        // G1a: "Location" and the "set manually" link share one line.
+        // Keep the legacy Clear link in the tree for behaviour but hide it (header link is the visible one).
+        installerClearLink.Visibility = Visibility.Collapsed;
+
+        var installerCard = new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14),
+            Margin = new Thickness(0, 0, 8, 0),
+            Child = installerStack
+        };
+        Grid.SetColumn(installerCard, 0);
+        detailsGrid.Children.Add(installerCard);
+
+        // Location card.
+        var locationCard = new StackPanel { Margin = new Thickness(0, 0, 0, 0) };
         var locationHeader = new Grid();
         locationHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         locationHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         locationHeader.Children.Add(new TextBlock
         {
             Text = "Location",
-            FontWeight = FontWeights.Bold,
+            FontWeight = FontWeights.SemiBold,
             FontSize = 15,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
             VerticalAlignment = VerticalAlignment.Center
@@ -602,8 +640,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         clearLong.Click += (_, _) => manualLong.Text = "";
         var clearAcc = new Button { Content = "✕", Margin = new Thickness(4, 0, 0, 0), Padding = new Thickness(4, 0, 4, 0) };
         clearAcc.Click += (_, _) => manualAcc.Text = "";
-        // C4: the manual boxes live behind a link and stay out of the way
-        // until the officer needs them.
         manualRows = new StackPanel { Visibility = Visibility.Collapsed };
         manualLat.TextChanged += (_, _) => UpdateSubmitEnabled();
         manualLong.TextChanged += (_, _) => UpdateSubmitEnabled();
@@ -634,56 +670,51 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         resolveBtn.Click += async (_, _) => await ResolveLocation();
         locationActions.Children.Add(resolveBtn);
         locationActions.Children.Add(distRestricted);
-        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
+        locationActions.Children.Add(new TextBlock { Text = "Allowed distance (m): ", Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) });
         locationActions.Children.Add(allowedDist);
         locationCard.Children.Add(locationActions);
         locationBox.TextWrapping = TextWrapping.Wrap;
-        // Z1: body-text brush — the inherited tab foreground is the accent purple.
         locationBox.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         locationBox.Text = "Not resolved yet. A submission is made from the customer's own site; the recorded coordinates are jittered a few metres.";
         locationCard.Children.Add(locationBox);
-        // D6: the resolved pair, its source and the distance are shown before
-        // the form is filled, so a wrong registered site is caught up front.
-        // A record with no coordinates resolves to "Manual" and keeps Submit
-        // disabled until the officer types them.
         _ = ResolveLocation();
-        rightPanel.Children.Add(new Border
+
+        var locationCardBorder = new Border
         {
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12),
             Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
-            MaxWidth = 420,
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14),
+            Margin = new Thickness(8, 0, 0, 0),
             Child = locationCard
-        });
+        };
+        Grid.SetColumn(locationCardBorder, 1);
+        detailsGrid.Children.Add(locationCardBorder);
 
-        Grid.SetColumn(rightPanel, 1);
-        photosGrid.Children.Add(rightPanel);
+        photosPage.Children.Add(detailsGrid);
 
-        // Z6: one shared scroller for the whole Photos tab — both columns scroll together.
         photosTab.Content = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = photosGrid
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = photosPage
         };
         tabControl.Items.Add(photosTab);
 
-        // Y2: Footer row — manifest box, buttons row, body box
-        var footer = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        // Y2: Footer row — action bar with status, plus collapsible submission details.
+        var footerCard = new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            Margin = new Thickness(0, 8, 0, 0),
+            Child = new StackPanel { Margin = new Thickness(0) }
+        };
+        var footer = (StackPanel)footerCard.Child;
         // H4: the banner is part of the fixed footer, above the status line.
         footer.Children.Add(banner);
         // Z5: One status line — collapses when empty, accent brush when populated.
         SetStatus("");
         footer.Children.Add(status);
-        // J1: manifest label + a box that sizes to its content up to a maximum
-        // and then scrolls. With no parts it collapses to nothing, so the empty
-        // state is not a large blank box.
-        manifestLabel.Text = "Manifest (pre-send):";
-        manifestLabel.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
-        footer.Children.Add(manifestLabel);
-        manifestBox.Child = manifestPanel;
-        manifestScroll.Content = manifestBox;
-        footer.Children.Add(manifestScroll);
-        SetManifest(Array.Empty<InspectionMultipartBuilder.ManifestEntry>());
 
         // M2: the risk warnings, in the fixed footer.
         riskFooter = new TextBlock
@@ -691,47 +722,73 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             FontSize = 13,
             Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 8, 0, 0)
+            Margin = new Thickness(0, 6, 0, 0)
         };
         footer.Children.Add(riskFooter);
 
         acknowledgeBtn = new Button { Content = "Acknowledge", Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(14, 6, 14, 6), Visibility = Visibility.Collapsed };
-            footer.Children.Add(acknowledgeBtn);
+        footer.Children.Add(acknowledgeBtn);
 
-        // Actions — left-aligned buttons row
-        var actions = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
-        submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6), IsEnabled = false };
+        // Action bar: status context on the left, primary actions on the right.
+        var actionBar = new Grid { Margin = new Thickness(0, 10, 0, 0) };
+        actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        actionBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var actionLeft = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        actionLeft.Children.Add(new TextBlock
+        {
+            Text = "Submit only when all three photos and both signatures are attached.",
+            FontSize = 12,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            TextWrapping = TextWrapping.Wrap
+        });
+        actionBar.Children.Add(actionLeft);
+        var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+        submitBtn = new Button { Content = "Submit Survey", Margin = new Thickness(0, 0, 10, 0), Padding = new Thickness(16, 8, 16, 8), IsEnabled = false, FontWeight = FontWeights.SemiBold };
         submitBtn.Click += async (_, _) => await Submit();
         actions.Children.Add(submitBtn);
-        var verifyBtn = new Button { Content = "Verify (re-read)", Margin = new Thickness(0, 0, 12, 0), Padding = new Thickness(14, 6, 14, 6) };
+        var verifyBtn = new Button { Content = "Verify (re-read)", Margin = new Thickness(0, 0, 10, 0), Padding = new Thickness(16, 8, 16, 8) };
         verifyBtn.Click += async (_, _) => await Verify();
         actions.Children.Add(verifyBtn);
-        var closeBtn = new Button { Content = "Close", Margin = new Thickness(0, 0, 0, 0), Padding = new Thickness(14, 6, 14, 6) };
+        var closeBtn = new Button { Content = "Close", Padding = new Thickness(16, 8, 16, 8), Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x36, 0x46)), Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
         closeBtn.Click += (_, _) => Close();
         actions.Children.Add(closeBtn);
-        footer.Children.Add(actions);
+        actionBar.Children.Add(actions);
+        Grid.SetColumn(actions, 1);
+        footer.Children.Add(actionBar);
 
-        // Z4: body box fixed 90 px with its own scroll
+        // J1: manifest label + a box that sizes to its content up to a maximum
+        // and then scrolls. With no parts it collapses to nothing.
+        manifestLabel.Text = "Manifest (pre-send):";
+        manifestLabel.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
+        manifestLabel.Margin = new Thickness(0, 10, 0, 2);
+        footer.Children.Add(manifestLabel);
+        manifestBox.Child = manifestPanel;
+        manifestScroll.Content = manifestBox;
+        footer.Children.Add(manifestScroll);
+        SetManifest(Array.Empty<InspectionMultipartBuilder.ManifestEntry>());
+
+        // Z4: body box with its own scroll, hidden until a submit/verify runs.
         bodyBox.FontFamily = new FontFamily("Consolas");
         bodyBox.FontSize = 11;
         bodyBox.Background = Brushes.White;
-        // Z1: the body box is white, so its text must be dark.
         bodyBox.Foreground = new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F));
         bodyBox.Padding = new Thickness(8);
-        bodyBox.Text = "Awaiting submission…";  // Y3: keep this
+        bodyBox.Text = "Awaiting submission…";
         bodyBox.TextWrapping = TextWrapping.Wrap;
-        var bodyScroll = new ScrollViewer
+        bodyScroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Height = 90
+            Height = 110,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 8, 0, 0)
         };
         bodyScroll.Content = bodyBox;
         footer.Children.Add(bodyScroll);
 
         Grid.SetRow(tabControl, 1);
         grid.Children.Add(tabControl);
-        Grid.SetRow(footer, 2);
-        grid.Children.Add(footer);
+        Grid.SetRow(footerCard, 2);
+        grid.Children.Add(footerCard);
 
         UpdateRisk();
 
@@ -921,6 +978,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             {
                 riskHeader.Text = "Risk: blocked — " + (stored?.BlockedReason ?? "waiting on SDO");
                 riskHeader.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB));
+                if (riskBand != null) riskBand.Background = new SolidColorBrush(Color.FromRgb(0x4A, 0x2A, 0x2E));
             }
             else
             {
@@ -932,6 +990,12 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     : result.Band == ReturnRiskScorer.Band.Risky
                         ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD0, 0x80))
                         : (Brush)System.Windows.Application.Current.FindResource("Muted");
+                if (riskBand != null)
+                    riskBand.Background = result.Band == ReturnRiskScorer.Band.LikelyReturned
+                        ? new SolidColorBrush(Color.FromRgb(0x4A, 0x2A, 0x2E))
+                        : result.Band == ReturnRiskScorer.Band.Risky
+                            ? new SolidColorBrush(Color.FromRgb(0x4A, 0x3E, 0x28))
+                            : (Brush)System.Windows.Application.Current.FindResource("Surface");
             }
         }
         if (riskFooter != null)
@@ -1074,39 +1138,66 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         RefreshManifestPreview();
     }
 
-    void AddPhotoSlot(Panel target, string suffix, string label)
+    Border BuildPhotoSlot(string suffix, string label)
     {
-        // Z2/Z7: compact slot — label, thumbnail, then the Choose/Remove row
-        // immediately under it, with the file-name hint on the same line.
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 4) };
-        panel.Children.Add(Label(label, 14, new Thickness(0, 0, 0, 2)));
+        // Grouped card: label + status, preview, file name, Choose/Remove.
+        Border card = null!;
+        var stack = new StackPanel { Margin = new Thickness(0) };
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var status = new TextBlock
+        {
+            Text = "Not attached",
+            FontSize = 11,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        header.Children.Add(status);
+        Grid.SetColumn(status, 1);
+        stack.Children.Add(header);
+
         var image = new Image
         {
             // P1: show the whole photo, never a fixed 4:3 crop.
             Stretch = Stretch.Uniform
         };
-        // A neutral frame so an empty slot reads as a placeholder, not a
-        // broken image.
         var thumbFrame = new Border
         {
-            Width = 132,
-            Height = 96,
+            Height = 108,
             Background = new SolidColorBrush(Color.FromRgb(0xF3, 0xF0, 0xF7)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
             BorderThickness = new Thickness(1),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 2, 0, 2),
-            Child = image
+            CornerRadius = new CornerRadius(6),
+            Margin = new Thickness(0, 8, 0, 6),
+            Child = image,
+            HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        var fname = Hint("No photo selected", 11);
-        fname.VerticalAlignment = VerticalAlignment.Center;
+        stack.Children.Add(thumbFrame);
+
         var orientationNote = Hint("Portrait photo", 11);
-        orientationNote.Margin = new Thickness(0, 0, 0, 2);
+        orientationNote.Margin = new Thickness(0, 0, 0, 4);
         orientationNote.Visibility = Visibility.Collapsed;
-        panel.Children.Add(thumbFrame);
-        panel.Children.Add(orientationNote);
-        var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        stack.Children.Add(orientationNote);
+
+        var fname = Hint("No photo selected", 11);
+        fname.Margin = new Thickness(0, 0, 0, 6);
+        stack.Children.Add(fname);
+
+        System.Windows.Automation.AutomationProperties.SetName(thumbFrame, label + " preview");
+
+        var row = new WrapPanel { Margin = new Thickness(0, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         var choose = CompactButton("Choose JPEG…");
+        System.Windows.Automation.AutomationProperties.SetName(choose, "Choose JPEG for " + label);
         choose.Click += (_, _) =>
         {
             var picker = new Microsoft.Win32.OpenFileDialog
@@ -1119,16 +1210,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             try
             {
                 var path = picker.FileName;
-                // P2: the source is read-only. Picking the app's own working
-                // file (or an older *-stamped copy) is refused by name.
                 if (IsStampedFile(path) || IsSlotFile(path))
                     throw new InvalidDataException("Pick the original photo, not a file the app has already prepared.");
                 ValidatePhotoSource(path);
                 Directory.CreateDirectory(PhotoSlotDirectory);
 
-                // P2: one working file per slot, named att-<field>-<sha1[0:10]>.jpg.
-                // The name never derives from the source file name, so the same
-                // source can sit in any number of slots without colliding.
                 var slotPath = SlotPhotoPath(suffix, ComputeSha1(path));
                 var produced = JpegExifStamper.Stamp(
                     path,
@@ -1138,15 +1224,13 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     slotPath,
                     LogStartupNote);
 
-                // Re-picking replaces this slot's file only. Never the source,
-                // never another slot's file.
                 if (photos.TryGetValue(suffix, out var previous)
                     && !string.Equals(previous, produced, StringComparison.OrdinalIgnoreCase))
                     DeleteSlotFile(previous);
 
                 photos[suffix] = produced;
                 photoSources[suffix] = path;
-                photoHashes[suffix] = ComputeSha256(path); // source fingerprint (W1)
+                photoHashes[suffix] = ComputeSha256(path);
 
                 try
                 {
@@ -1155,27 +1239,28 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 }
                 catch (Exception ex)
                 {
-                    // P1: never bind a null/broken preview. Named message, the
-                    // attach itself still stands.
                     image.Source = null;
                     orientationNote.Visibility = Visibility.Collapsed;
                     SetStatus($"Cannot read {Path.GetFileName(produced)}: {ex.Message}");
                 }
                 fname.Text = Path.GetFileName(produced);
-                // J1: the manifest preview lists what is attached.
+                fname.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
+                status.Text = "Attached";
+                status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Accent");
+                card.BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Accent");
                 RefreshManifestPreview();
             }
             catch (Exception ex)
             {
-                // A bad, locked or unreadable file must never take the app down
-                // mid-inspection — report it and let the officer pick another.
                 SetStatus("Photo could not be loaded: " + ex.Message);
             }
         };
         var remove = CompactButton("Remove");
+        System.Windows.Automation.AutomationProperties.SetName(remove, "Remove " + label);
+        remove.Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x36, 0x46));
+        remove.Foreground = (Brush)System.Windows.Application.Current.FindResource("Text");
         remove.Click += (_, _) =>
         {
-            // P2: remove deletes this slot's att- file only.
             if (photos.TryGetValue(suffix, out var slotFile)) DeleteSlotFile(slotFile);
             photos.Remove(suffix);
             photoSources.Remove(suffix);
@@ -1183,14 +1268,26 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             image.Source = null;
             orientationNote.Visibility = Visibility.Collapsed;
             fname.Text = "No photo selected";
-            // J1: the manifest preview drops the removed part.
+            fname.Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted");
+            status.Text = "Not attached";
+            status.Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted");
+            card.BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6));
             RefreshManifestPreview();
         };
         row.Children.Add(choose); row.Children.Add(remove);
-        // Z1: the file-name caption is a hint — muted brush, on the button row.
-        row.Children.Add(fname);
-        panel.Children.Add(row);
-        target.Children.Add(panel);
+        stack.Children.Add(row);
+
+        card = new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 8, 12),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
+            BorderThickness = new Thickness(1),
+            Child = stack
+        };
+        return card;
     }
 
     /// <summary>P2: where this consumer's slot files live.</summary>
@@ -1277,36 +1374,83 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         catch { return false; }
     }
 
-    /// <summary>Z3: a signature block — label, 110 px canvas, Clear disc in its corner.</summary>
-    StackPanel BuildSignatureBlock(string title, InkCanvas canvas)
+    /// <summary>Z3: a signature block — label, 110 px canvas, and an obvious Clear link.</summary>
+    Border BuildSignatureBlock(string title, InkCanvas canvas)
     {
-        var block = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
-        block.Children.Add(Label(title, 14, new Thickness(0, 0, 0, 2)));
+        var autoName = title.StartsWith("Beneficiary", StringComparison.Ordinal) ? "Clear beneficiary signature" : "Clear representative signature";
+        var stack = new StackPanel { Margin = new Thickness(0) };
+        // Header row: label on the left, Clear link on the right.
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var clear = new Button
+        {
+            Content = "Clear",
+            Style = (Style)System.Windows.Application.Current.FindResource("LinkButton"),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = "Clear this signature"
+        };
+        System.Windows.Automation.AutomationProperties.SetName(clear, autoName);
+        clear.Click += (_, _) => canvas.Strokes.Clear();
+        header.Children.Add(clear);
+        Grid.SetColumn(clear, 1);
+        stack.Children.Add(header);
+
         // Name the canvas so it is reachable by assistive tech and by UI automation.
         System.Windows.Automation.AutomationProperties.SetName(canvas, title + " canvas");
         canvas.DefaultDrawingAttributes.Color = Colors.Black;
         canvas.DefaultDrawingAttributes.Width = canvas.DefaultDrawingAttributes.Height = 2.5;
+        canvas.Height = 110;
+        canvas.HorizontalAlignment = HorizontalAlignment.Stretch;
+        canvas.Margin = new Thickness(0, 6, 0, 0);
+        var state = new TextBlock
+        {
+            Text = "Not signed yet",
+            FontSize = 11,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            Margin = new Thickness(0, 4, 0, 0)
+        };
         canvas.Strokes.StrokesChanged += (_, _) =>
         {
             // T2: at attach time, only report signed/not signed — no refusal here.
             SetStatus(canvas.Strokes.Count == 0
                 ? $"Blank signature: '{title}' has no strokes. Draw a signature."
                 : $"Signed: '{title}'.");
+            state.Text = canvas.Strokes.Count == 0 ? "Not signed yet" : "Signed";
+            state.Foreground = canvas.Strokes.Count == 0
+                ? (Brush)System.Windows.Application.Current.FindResource("Muted")
+                : (Brush)System.Windows.Application.Current.FindResource("Accent");
             // T3: debounced duplicate check at attach time.
             signatureDebounceTimer.Change(400, Timeout.Infinite);
         };
-        // J2: the canvas hosts the small round Clear disc in its top-right corner.
-        var host = new Grid();
-        host.Children.Add(canvas);
-        var muted = (Brush)System.Windows.Application.Current.FindResource("Muted");
-        var hover = new SolidColorBrush(Color.FromRgb(0xE2, 0xDE, 0xE8));
-        var clear = MakeClearButton(
-            title.StartsWith("Beneficiary", StringComparison.Ordinal) ? "Clear beneficiary signature" : "Clear representative signature",
-            muted, hover,
-            () => canvas.Strokes.Clear());
-        host.Children.Add(clear);
-        block.Children.Add(host);
-        return block;
+        // White drawing surface so ink is visible on the dark theme.
+        var surface = new Border
+        {
+            Background = Brushes.White,
+            CornerRadius = new CornerRadius(8),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xD7, 0xE6)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(2),
+            Child = canvas
+        };
+        stack.Children.Add(surface);
+        stack.Children.Add(state);
+        return new Border
+        {
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 8, 0),
+            Child = stack
+        };
     }
 
     static BitmapImage Thumbnail(string path)
@@ -1337,6 +1481,32 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         TextWrapping = TextWrapping.Wrap,
         Margin = margin ?? new Thickness(0, 4, 0, 7)
     };
+
+    /// <summary>Consistent section heading used across the Photos tab.</summary>
+    static StackPanel SectionHeader(string title, string? hint = null, Thickness? margin = null)
+    {
+        var stack = new StackPanel { Margin = margin ?? new Thickness(0, 0, 0, 6) };
+        stack.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            Margin = new Thickness(0, 0, 0, 2)
+        });
+        if (!string.IsNullOrWhiteSpace(hint))
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = hint!,
+                FontSize = 12,
+                Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 2)
+            });
+        }
+        return stack;
+    }
 
     /// <summary>Z1: the muted brush is reserved for hints such as "No photo selected".</summary>
     static TextBlock Hint(string text, double size) => new()
@@ -1442,26 +1612,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         RefreshSuggestions();
     }
 
-    /// <summary>
-    /// H3: one row of the contact dropdown: what the officer sees in the list,
-    /// and who it is. ToString() is the MOBILE, not the label - an editable
-    /// ComboBox writes the selected item's text into the box itself, after the
-    /// pick handler has run, and that write used to replace the mobile with
-    /// "name  ·  mobile". The rows print Label; the box takes ToString().
-    /// </summary>
-    public sealed record VendorOption(string Label, VendorPeople.Person Person)
-    {
-        public string Mobile => Person.Mobile;
-        public override string ToString() => Person.Mobile;
-    }
-
-    /// <summary>
-    /// H3: set while a pick is filling the boxes. Rebuilding the dropdown's
-    /// item list under a pick drops the selection the pick is filling from -
-    /// which is why picking used to leave both boxes empty.
-    /// </summary>
-    bool vendorPicking;
-
     /// <summary>C5: the officer's own book of installers.</summary>
     readonly VendorPeople vendorPeople;
     TextBlock? vendorWarning;
@@ -1469,21 +1619,21 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     TextBlock? installerNote;
     System.Windows.Documents.Run? savedMobileRun;
 
-    /// <summary>C5: take a person from the book.</summary>
+    /// <summary>C5: open the modal picker for this record's vendor.</summary>
     void OpenPicker()
     {
-        LogInstaller("picker open for " + (recordVendorCode ?? ""));
-        var dlg = new InstallerPickerWindow(recordVendorCode ?? "");
-        var owner = this.Owner;
-        if (owner != null) owner.Dispatcher.BeginInvoke(() => owner.Activate());
-        if (dlg.ShowDialog() == true && dlg.ChosenName != null)
-        {
-            var name = dlg.ChosenName.Trim();
-            var mobile = (dlg.ChosenMobile ?? "").Trim();
-            var person = new VendorPeople.Person(name, mobile, DateTimeOffset.Now, dlg.VendorCode);
-            PickVendorPerson(person);
-        }
-        if (owner != null) owner.Dispatcher.BeginInvoke(() => owner.Activate());
+        var vendorCode = recordVendorCode ?? "";
+        var bookRows = vendorPeople.People
+            .Where(p => string.IsNullOrWhiteSpace(p.Vendor)
+                     || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
+            .Select(p => (p.Name, p.Mobile));
+        var dlg = new InstallerPickerWindow(vendorCode, store, bookRows);
+        dlg.Owner = this;
+        dlg.ShowDialog();
+        if (dlg.OkOrNull != true || string.IsNullOrWhiteSpace(dlg.ChosenName)) return;
+        var person = new VendorPeople.Person(
+            dlg.ChosenName.Trim(), (dlg.ChosenMobile ?? "").Trim(), DateTimeOffset.Now, vendorCode);
+        PickVendorPerson(person);
     }
 
     void PickVendorPerson(VendorPeople.Person person)
@@ -1491,6 +1641,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // V3: nothing is written until OK; here we commit the chosen pair.
         VendorPersonName = person.Name;
         VendorPersonMobile = person.Mobile;
+        // Write the two cells explicitly as well as through the binding - a pick
+        // must never leave the read-only field looking empty.
+        vendorPersonNameBox.Text = person.Name;
+        vendorPersonMobileBox.Text = person.Mobile;
         if (string.IsNullOrWhiteSpace(recordVendorCode) && !string.IsNullOrWhiteSpace(person.Vendor))
             recordVendorCode = person.Vendor;
         UpdateRisk();
@@ -1589,44 +1743,38 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     };
 
     /// <summary>
-    /// G1a: an explicit-height field with its clear disc overlaid inside the
-    /// field's own row — 4 px from the right edge, never floating beside it.
+    /// V1: the name field fills the row, the Choose button sits in its own
+    /// 90 px column to the right; the mobile field spans the whole row.
+    /// The placeholder is drawn over the empty field and never takes a click.
     /// </summary>
     static Grid CreateStringRow(TextBox box, Button? button, TextBlock placeholder)
     {
         var grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
-        box.Height = 30;
-        box.VerticalContentAlignment = VerticalAlignment.Center;
-        grid.Children.Add(box);
-        if (placeholder != null) grid.Children.Add(placeholder);
-        if (button != null) grid.Children.Add(button);
-        return grid;
-    }
-
-    static Grid CreateComboRow(ComboBox box, Button? clear = null)
-    {
-        var grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         box.Height = 30;
         box.Width = double.NaN;
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
         box.VerticalContentAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(box, 0);
         grid.Children.Add(box);
-        if (clear != null)
+        if (placeholder != null)
         {
-            clear.HorizontalAlignment = HorizontalAlignment.Right;
-            clear.VerticalAlignment = VerticalAlignment.Center;
-            clear.Margin = new Thickness(0, 0, 4, 0);
-            grid.Children.Add(clear);
+            placeholder.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(placeholder, 0);
+            grid.Children.Add(placeholder);
+        }
+        if (button != null)
+        {
+            button.Height = 30;
+            button.Width = 90;
+            button.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(button, 1);
+            grid.Children.Add(button);
         }
         return grid;
     }
 
-    /// <summary>
-    /// H1: what the vendor name dropdown offers, and how many entries it is
-    /// offering. Typing filters the book (case-insensitive); opening the box
-    /// with an empty field offers the book itself, so a name just added
-    /// through Edit… shows up without a keystroke.
-    /// </summary>
     /// <summary>2R: the persons for this record's vendor, from the store when
     /// available, otherwise the officer's book filtered to this vendor.</summary>
     List<VendorPeople.Person> VendorPersonsForRecord()
@@ -1643,33 +1791,19 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             .ToList();
     }
 
-    /// <summary>T2: numbers a person has. One stored per person, book may add more.</summary>
-
-    /// <summary>T2: set the mobile box to this person's numbers; first is primary.</summary>
-
-
-
-    /// <summary>
-    /// H3: what the CONTACT dropdown offers - the same book, matched on the
-    /// name OR the number, laid out as "name  ·  mobile". Returns how many
-    /// entries are being offered.
-    /// </summary>
+    /// <summary>V1: the Clear link empties the pair on this record only. The
+    /// contact book and the vendor_contacts table are not touched.</summary>
     internal void DoClear()
     {
-        // V1: both plain strings empty; book untouched.
         VendorPersonName = "";
         VendorPersonMobile = "";
         vendorPersonNameBox.Text = "";
         vendorPersonMobileBox.Text = "";
+        if (vendorWarning != null) vendorWarning.Visibility = Visibility.Collapsed;
+        if (installerNote != null) installerNote.Visibility = Visibility.Collapsed;
         UpdatePlaceholders();
+        UpdateRisk();
     }
-
-    internal int RefreshVendorSuggestionList() => 0;
-    internal int RefreshContactSuggestionList() => 0;
-
-    /// <summary>H3: one book entry as a row the contact dropdown can print.</summary>
-    static VendorOption ToOption(VendorPeople.Person p) =>
-        new(p.Mobile.Length > 0 ? p.Name + "  ·  " + p.Mobile : p.Name, p);
 
     /// <summary>C5: a note the app keeps beside its data.</summary>
     void LogStartupNote(string message)
@@ -1947,6 +2081,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
             bodyBox.Text = $"HTTP {(int)outcome.StatusCode} {outcome.StatusCode}\n\n{outcome.Body}";
             if (outcome.Error != null) bodyBox.Text += "\n\nGate: " + outcome.Error;
+            if (bodyScroll != null) bodyScroll.Visibility = Visibility.Visible;
             SetStatus(outcome.Ok ? "Submit complete (HTTP 2xx). Body shown above." : $"Submit returned HTTP {(int)outcome.StatusCode}. Body shown above.");
             if (outcome.DataFilePath != null)
                 SetStatus(status.Text + $"  data.json written: {outcome.DataFilePath}");
@@ -1989,6 +2124,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         if (outcome.UpdatedDt != null) text += $", updated_dt={outcome.UpdatedDt}";
         if (outcome.Error != null) text += $" · {outcome.Error}";
         bodyBox.Text += "\n\n--- VERIFY ---\n" + text;
+        if (bodyScroll != null) bodyScroll.Visibility = Visibility.Visible;
         SetStatus(outcome.Ok ? "Verify complete." : "Verify failed.");
         if (outcome.Count > 1)
             MessageBox.Show(this, $"WARN: count={outcome.Count} > 1 for consumer_number {consumerNumber}", "Verify warning", MessageBoxButton.OK, MessageBoxImage.Warning);
