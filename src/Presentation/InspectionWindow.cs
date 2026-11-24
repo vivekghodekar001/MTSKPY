@@ -9,6 +9,7 @@ using System.Windows.Ink;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Input;
+using System.Windows.Threading;
 using Mskpy.Domain;
 using Mskpy.Infrastructure;
 using Mskpy.Presentation.Services;
@@ -70,6 +71,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     StackPanel pickerAddForm = null!;
     TextBlock pickerAddLinkText = null!;
     Button pickerUndoLink = null!;
+    TextBlock pickerEmptyText = null!;
+    TextBlock pickerDeleteError = null!;
+    TextBlock pickerSearchHint = null!;
+    Button pickerSearchClear = null!;
+    DispatcherTimer? pickerStateTimer;
     PickerRow? lastDeletedRow;
     int lastDeletedIndex = -1;
     private sealed record PickerRow(long RowId, string Name, string Mobile);
@@ -612,7 +618,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             _pickerOpen = true;
             pickerSearchBox.Text = string.Empty;
             LoadPickerRows();
+            LogPickerState();
             if (pickerOverlay != null) pickerOverlay.Visibility = Visibility.Visible;
+            SchedulePickerStateLog();
             Log($"overlay shown: children={(pickerOverlay != null ? pickerOverlay.Children.Count : 0)} " +
                 $"w={(pickerOverlay != null ? pickerOverlay.ActualWidth : 0)} " +
                 $"h={(pickerOverlay != null ? pickerOverlay.ActualHeight : 0)} " +
@@ -730,7 +738,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             Width = 420,
             Height = double.NaN,
             MaxHeight = Math.Max(320, Height - 120),
-            Background = Brushes.White,
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
             BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
@@ -742,25 +750,79 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         pickerCard = card;
         var cardGrid = new Grid();
         cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // header
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // search
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // add link
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // add form
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // list
-        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // actions
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // search Auto
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // add Auto (link + form)
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // list *
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // footer Auto
 
         var overlayHeaderGrid = new Grid();
         overlayHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         overlayHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        overlayHeaderGrid.Children.Add(new TextBlock { Text = "Select installer", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.Black, VerticalAlignment = VerticalAlignment.Center });
-        var closeX = new Button { Content = "✕", Width = 20, Height = 20, MinHeight = 0, FontSize = 12, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = Brushes.Black };
+        overlayHeaderGrid.Children.Add(new TextBlock { Text = "Select installer", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"), VerticalAlignment = VerticalAlignment.Center });
+        var closeX = new Button { Content = "✕", Width = 20, Height = 20, MinHeight = 0, FontSize = 12, Padding = new Thickness(0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
         closeX.Click += (_, __) => CollapsePickerOverlay();
         overlayHeaderGrid.Children.Add(closeX);
         Grid.SetColumn(closeX, 1);
         cardGrid.Children.Add(overlayHeaderGrid);
 
-        pickerSearchBox = new TextBox { Height = 30, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 8, 0, 4) };
-        Grid.SetRow(pickerSearchBox, 1);
-        cardGrid.Children.Add(pickerSearchBox);
+        pickerSearchBox = new TextBox
+        {
+            Height = 30,
+            MinHeight = 0,
+            FontSize = 12,
+            Padding = new Thickness(6, 2, 26, 2),
+            Margin = new Thickness(0),
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            BorderThickness = new Thickness(1)
+        };
+        var searchHost = new Grid { Margin = new Thickness(0, 8, 0, 4) };
+        searchHost.Children.Add(pickerSearchBox);
+        pickerSearchHint = new TextBlock
+        {
+            Text = "Search name or number",
+            FontSize = 12,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            Margin = new Thickness(8, 0, 28, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        searchHost.Children.Add(pickerSearchHint);
+        pickerSearchClear = new Button
+        {
+            Content = "✕",
+            Width = 18,
+            Height = 18,
+            MinHeight = 0,
+            FontSize = 10,
+            Padding = new Thickness(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0),
+            Cursor = Cursors.Hand,
+            ToolTip = "Clear search"
+        };
+        pickerSearchClear.Click += (_, __) =>
+        {
+            pickerSearchBox.Text = string.Empty;
+            pickerSearchBox.Focus();
+        };
+        searchHost.Children.Add(pickerSearchClear);
+        pickerSearchBox.GotFocus += (_, __) => pickerSearchHint.Visibility = Visibility.Collapsed;
+        pickerSearchBox.LostFocus += (_, __) =>
+            pickerSearchHint.Visibility = string.IsNullOrEmpty(pickerSearchBox.Text)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        pickerSearchBox.TextChanged += (_, __) =>
+            pickerSearchHint.Visibility = string.IsNullOrEmpty(pickerSearchBox.Text) && !pickerSearchBox.IsKeyboardFocusWithin
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        Grid.SetRow(searchHost, 1);
+        cardGrid.Children.Add(searchHost);
 
         pickerAddLinkText = new TextBlock { Text = "Add new installer", FontSize = 12, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
         var addLink = new Button
@@ -783,8 +845,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             pickerAddForm.Visibility = Visibility.Visible;
             pickerAddName.Focus();
         };
-        Grid.SetRow(addLink, 2);
-        cardGrid.Children.Add(addLink);
+        var addRow = new StackPanel { Margin = new Thickness(0) };
+        addRow.Children.Add(addLink);
+        Grid.SetRow(addRow, 2);
+        cardGrid.Children.Add(addRow);
 
         pickerAddForm = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 6) };
         var nameField = PickerInputField("Name", 0);
@@ -824,14 +888,40 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         pickerAddForm.Children.Add(addActionRow);
         pickerAddError = new TextBlock { Foreground = Brushes.DarkRed, FontSize = 11, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 4, 0, 0) };
         pickerAddForm.Children.Add(pickerAddError);
-        Grid.SetRow(pickerAddForm, 3);
-        cardGrid.Children.Add(pickerAddForm);
+        addRow.Children.Add(pickerAddForm);
 
-        pickerListBox = new ListBox { MinHeight = 0, VerticalAlignment = VerticalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 0, 0, 6) };
+        pickerListBox = new ListBox
+        {
+            MinHeight = 180,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 0, 0, 6),
+            Background = (Brush)System.Windows.Application.Current.FindResource("Surface"),
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Text"),
+            BorderBrush = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            BorderThickness = new Thickness(1)
+        };
+        ScrollViewer.SetVerticalScrollBarVisibility(pickerListBox, ScrollBarVisibility.Auto);
         pickerListBox.SelectionChanged += (_, _) => pickerOkButton.IsEnabled = SelectedPickerRow() != null;
         pickerListBox.MouseDoubleClick += (_, _) => { if (SelectedPickerRow() != null) AcceptPickerSelection(); };
-        Grid.SetRow(pickerListBox, 4);
-        cardGrid.Children.Add(pickerListBox);
+        pickerEmptyText = new TextBlock
+        {
+            Text = "No installers for this vendor — use Add new installer",
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(16)
+        };
+        var listHost = new Grid();
+        listHost.Children.Add(pickerListBox);
+        listHost.Children.Add(pickerEmptyText);
+        Grid.SetRow(listHost, 3);
+        cardGrid.Children.Add(listHost);
 
         var btnRow = new Grid();
         btnRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -848,8 +938,19 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         btns.Children.Add(pickerOkButton);
         btnRow.Children.Add(btns);
         Grid.SetColumn(btns, 1);
-        Grid.SetRow(btnRow, 5);
-        cardGrid.Children.Add(btnRow);
+        pickerDeleteError = new TextBlock
+        {
+            Foreground = Brushes.DarkRed,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(0, 0, 0, 4)
+        };
+        var footerStack = new StackPanel();
+        footerStack.Children.Add(pickerDeleteError);
+        footerStack.Children.Add(btnRow);
+        Grid.SetRow(footerStack, 4);
+        cardGrid.Children.Add(footerStack);
 
         card.Child = cardGrid;
         pickerOverlayControl.Children.Add(card);
@@ -1589,7 +1690,13 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// <summary>Test hook for the picker flow: apply a picked pair without opening the dialog.</summary>
     void CollapsePickerOverlay()
     {
+        pickerStateTimer?.Stop();
         CollapseAddForm();
+        if (pickerDeleteError != null)
+        {
+            pickerDeleteError.Text = "";
+            pickerDeleteError.Visibility = Visibility.Collapsed;
+        }
         if (pickerOverlay != null) pickerOverlay.Visibility = Visibility.Collapsed;
         _pickerOpen = false;
         pickerOkButton.IsEnabled = false;
@@ -1680,6 +1787,28 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         return grid;
     }
 
+    void LogPickerState()
+    {
+        var key = recordVendorCode ?? "";
+        var raw = pickerRows.Count;
+        var filter = (pickerSearchBox?.Text ?? "").Trim();
+        var shown = pickerListBox?.Items.OfType<ListBoxItem>().Count(i => i.Tag is PickerRow) ?? 0;
+        var listH = pickerListBox?.ActualHeight ?? 0;
+        Log($"picker state: key='{key}' raw={raw} filter='{filter}' shown={shown} listH={listH}");
+    }
+
+    void SchedulePickerStateLog()
+    {
+        pickerStateTimer?.Stop();
+        pickerStateTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        pickerStateTimer.Tick += (_, _) =>
+        {
+            pickerStateTimer?.Stop();
+            if (_pickerOpen) LogPickerState();
+        };
+        pickerStateTimer.Start();
+    }
+
     void ApplyPickerFilter()
     {
         pickerListBox.Items.Clear();
@@ -1690,15 +1819,16 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 || (r.Name ?? "").Contains(typed, StringComparison.OrdinalIgnoreCase)
                 || (r.Mobile ?? "").Contains(typed, StringComparison.OrdinalIgnoreCase))
             .ToList();
+        Log($"filter='{typed}' shown={filtered.Count}");
         if (filtered.Count == 0)
         {
-            pickerListBox.Items.Add(new ListBoxItem
-            {
-                Content = typed.Length == 0 ? "No installers for this vendor — use Add new installer" : "No matching installer",
-                IsEnabled = false
-            });
+            pickerEmptyText.Text = typed.Length == 0
+                ? "No installers for this vendor — use Add new installer"
+                : "No matching installer";
+            pickerEmptyText.Visibility = Visibility.Visible;
             return;
         }
+        pickerEmptyText.Visibility = Visibility.Collapsed;
         foreach (var row in filtered)
         {
             ListBoxItem item = new() { Tag = row, Padding = new Thickness(2, 3, 2, 3) };
@@ -1712,15 +1842,60 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         if (item.Tag is not PickerRow row) return;
         var wasSelected = ReferenceEquals(pickerListBox.SelectedItem, item);
         var vendorCode = string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode!;
-        int removed = 0;
-        bool stillPresent = false;
-        try { removed = store?.DeleteVendorContactByRowId(row.RowId, out _, out _) ?? 0; } catch { }
-        try { stillPresent = store?.VendorContactRows(vendorCode).Any(r => r.RowId == row.RowId) ?? false; } catch { }
-        if (removed == 0 || stillPresent)
+        if (pickerDeleteError != null)
         {
-            SetStatus("Not removed — row still present after delete");
+            pickerDeleteError.Text = "";
+            pickerDeleteError.Visibility = Visibility.Collapsed;
+        }
+
+        int removedByRowId = 0;
+        var stillByRowId = false;
+        var remainingAfterRowId = 0;
+        try { removedByRowId = store?.DeleteVendorContactByRowId(row.RowId, out _, out _) ?? 0; } catch { }
+        try
+        {
+            var rows = store?.VendorContactRows(vendorCode) ?? Array.Empty<(long RowId, string PersonName, string Mobile)>();
+            remainingAfterRowId = rows.Count;
+            stillByRowId = rows.Any(r => r.RowId == row.RowId);
+        }
+        catch { }
+        Log($"delete attempt rowid: rowid={row.RowId} key='{vendorCode}' removed={removedByRowId} remaining={remainingAfterRowId} stillPresent={stillByRowId}");
+
+        var removed = removedByRowId > 0 && !stillByRowId;
+        if (removed)
+        {
+            Log($"delete attempt key: rowid={row.RowId} key='{vendorCode}' name='{row.Name}' removed=0 remaining={remainingAfterRowId} stillPresent=False skipped=rowid-verified");
+        }
+        else
+        {
+            int removedByKey = 0;
+            var stillByKey = false;
+            var remainingAfterKey = 0;
+            try { removedByKey = store?.DeleteVendorContact(vendorCode, row.Name) ?? 0; } catch { }
+            try { store?.AddTombstone(vendorCode, row.Name); } catch { }
+            try
+            {
+                var rows = store?.VendorContactRows(vendorCode) ?? Array.Empty<(long RowId, string PersonName, string Mobile)>();
+                remainingAfterKey = rows.Count;
+                stillByKey = rows.Any(r => string.Equals((r.PersonName ?? "").Trim(), row.Name.Trim(), StringComparison.OrdinalIgnoreCase));
+            }
+            catch { }
+            Log($"delete attempt key: rowid={row.RowId} key='{vendorCode}' name='{row.Name}' removed={removedByKey} remaining={remainingAfterKey} stillPresent={stillByKey}");
+            removed = !stillByKey;
+        }
+
+        if (!removed)
+        {
+            var line = $"Not removed — rowid={row.RowId} key='{vendorCode}'";
+            if (pickerDeleteError != null)
+            {
+                pickerDeleteError.Text = line;
+                pickerDeleteError.Visibility = Visibility.Visible;
+            }
             return;
         }
+
+        Log($"delete verified: rowid={row.RowId} key='{vendorCode}' name='{row.Name}'");
         lastDeletedIndex = pickerRows.IndexOf(row);
         pickerRows.Remove(row);
         lastDeletedRow = row;
