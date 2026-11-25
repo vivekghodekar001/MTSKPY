@@ -11,7 +11,7 @@ public enum RecordStatus
     New,       // First seen in harvester, never opened
     Opened,    // User opened the detail view
     Submitted, // Submit attempted (regardless of outcome)
-    Accepted,  // Verify confirmed count=1, no hasErrors
+    Accepted,  // 2xx upload-survey accepted; leaves the pending queue
     Returned,  // Server returned 500 or hasErrors=true
     Failed,     // Non-2xx submit; awaits retry in Needs redo view
     Blocked     // State refusal: waiting on SDO

@@ -1115,6 +1115,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     string? riskBlockedReason;
     int riskReturnedCount;
     bool riskBlocked;
+    bool riskAccepted;
     bool riskLoaded;
 
     void UpdateRisk()
@@ -1127,6 +1128,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             riskCategory = stored?.ReasonCategory ?? ReasonCategoriser.Categorise(stored?.ReasonToRevert);
             riskReturnedCount = stored?.Status == RecordStatus.Returned ? 1 : 0;
             riskBlocked = stored?.Status == RecordStatus.Blocked;
+            riskAccepted = stored?.Status == RecordStatus.Accepted;
             riskBlockedReason = stored?.BlockedReason;
             riskLoaded = true;
         }
@@ -1170,6 +1172,12 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 riskHeader.Text = "Risk: blocked — " + (riskBlockedReason ?? "waiting on SDO");
                 riskHeader.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB));
                 if (riskBand != null) riskBand.Background = new SolidColorBrush(Color.FromRgb(0x4A, 0x2A, 0x2E));
+            }
+            else if (riskAccepted)
+            {
+                riskHeader.Text = "already submitted — resubmitting may be refused";
+                riskHeader.Foreground = (Brush)System.Windows.Application.Current.FindResource("Muted");
+                if (riskBand != null) riskBand.Background = (Brush)System.Windows.Application.Current.FindResource("Surface");
             }
             else
             {
@@ -2333,7 +2341,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     SubmittedDataPath: dataFilePath,
                     PhotoPaths: photoPathsJson,
                     SignPaths: signPathsJson
-                ), caller: "inspection-submit");
+                ), preserveStatus: true, caller: "inspection-submit");
             }
 
             var outcome = await workflow.SubmitAsync(
@@ -2371,7 +2379,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 var sentAt = DateTime.UtcNow.ToString("o");
                 foreach (var (suffix, hash) in photoHashChecks)
                     store?.InsertPhotoHash(hash, consumerNumber, suffix, sentAt);
-                store?.SetStatus(consumerNumber, RecordStatus.Accepted);
+                store?.SetStatus(consumerNumber, RecordStatus.Accepted, outcome.Body,
+                    outcome.SubmissionLat, outcome.SubmissionLong, outcome.LocationSource);
                 onSubmitComplete?.Invoke(record, outcome);
                 MessageBox.Show(this, displayMessage, "Submit", MessageBoxButton.OK, MessageBoxImage.Information);
                 Close();
@@ -2381,10 +2390,15 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             Log($"hashes skipped (status {(int)outcome.StatusCode})");
             if (RefusalClassifier.IsStateRefusal(outcome.Body)) {
                 store?.SetStatus(consumerNumber, RecordStatus.Blocked, outcome.Body,
+                    outcome.SubmissionLat, outcome.SubmissionLong, outcome.LocationSource,
                     blockedReason: RefusalClassifier.Reason(outcome.Body),
                     blockedAt: DateTime.UtcNow);
-            } else {
-                store?.SetStatus(consumerNumber, RecordStatus.Failed, outcome.Body);
+            } else if (outcome.Body.Length > 0) {
+                // 4D5: an ordinary failure records the server message but
+                // leaves the queue status exactly as it was.
+                var statusBeforeAttempt = existingStored?.Status ?? RecordStatus.New;
+                store?.SetStatus(consumerNumber, statusBeforeAttempt, outcome.Body,
+                    outcome.SubmissionLat, outcome.SubmissionLong, outcome.LocationSource);
             }
             LogPayloadPreserved();
             onSubmitComplete?.Invoke(record, outcome);

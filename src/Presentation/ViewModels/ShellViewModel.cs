@@ -829,10 +829,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     /// <summary>The one place a stored row becomes a row the list can show.</summary>
     static List<ApplicationDocument> Materialise(IEnumerable<StoredInspectionRecord> stored) =>
-        stored.Select(r => new ApplicationDocument(
-            Identity: r.ConsumerNumber,
-            Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
-            Fields: new DisplayField[]
+        stored.Select(r =>
+        {
+            var fields = new List<DisplayField>
             {
                 new("Consumer", r.ConsumerNumber),
                 new("Name", r.ConsumerName ?? ""),
@@ -842,9 +841,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 new("Cpf", r.CpfNo ?? ""),
                 // F1: every cpf whose list has contained this row.
                 new("SeenCpfs", r.SeenCpfs ?? "")
-            },
-            OriginalJson: r.OriginalJson ?? ""
-        )).ToList();
+            };
+            if (r.Status == RecordStatus.Accepted)
+                fields.Add(new("Note", "already submitted — resubmitting may be refused"));
+            return new ApplicationDocument(
+                Identity: r.ConsumerNumber,
+                Summary: $"{r.ConsumerName ?? r.ConsumerNumber} ({r.ConsumerNumber})",
+                Fields: fields,
+                OriginalJson: r.OriginalJson ?? "");
+        }).ToList();
 
     // O2: list rows carry no original_json; fetch the payload only when an
     // offline edit actually needs it.
@@ -1813,11 +1818,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// <summary>P3: persist the submit outcome and its verbatim server message.</summary>
     void PersistSubmitOutcome(InspectionRecord record, SubmitOutcome outcome)
     {
-        // Gate refusals never leave the machine, so there is no server message.
-        if (outcome.Body.Length == 0) return;
-        PersistStatus(record, outcome.Ok ? RecordStatus.Submitted : RecordStatus.Returned, outcome.Body,
+        if (!outcome.Ok)
+        {
+            // The window has already preserved the queue status (or moved a
+            // state refusal to Blocked); the shell must not overwrite it.
+            RefreshRecordCounts();
+            return;
+        }
+        PersistStatus(record, RecordStatus.Accepted, outcome.Body,
             outcome.SubmissionLat, outcome.SubmissionLong, outcome.LocationSource);
-        if (outcome.Ok) RefreshSubmittedRow(record.ConsumerNumber);
+        RefreshSubmittedRow(record.ConsumerNumber);
     }
 
     void RefreshSubmittedRow(string consumerNumber)
@@ -1967,7 +1977,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }
             else
             {
-                store.SetStatus(record.ConsumerNumber, RecordStatus.Failed, outcome.Body);
+                store.SetStatus(record.ConsumerNumber, record.Status, outcome.Body);
                 Status = $"Retry failed for {record.ConsumerNumber}: {outcome.Body}";
             }
             RefreshRecordCounts();
@@ -2094,11 +2104,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Console.WriteLine($"Verify: ok={verify.Ok}, count={verify.Count}, updated_dt={verify.UpdatedDt}");
         if (verify.Error != null) Console.WriteLine($"Error/warn: {verify.Error}");
 
-        // R5/P3: persist the verbatim server message and the confirmed state.
+        // R5/P3: persist the verbatim server message. A 2xx is Accepted and
+        // leaves pending; an ordinary failure keeps the status it had.
         if (submit.Body.Length > 0)
+        {
+            var existingStatus = store?.GetByConsumerNumber(record.ConsumerNumber)?.Status ?? RecordStatus.New;
             PersistStatus(record,
-                !submit.Ok ? RecordStatus.Returned : verify.Ok ? RecordStatus.Accepted : RecordStatus.Submitted,
+                submit.Ok ? RecordStatus.Accepted
+                : RefusalClassifier.IsStateRefusal(submit.Body) ? RecordStatus.Blocked
+                : existingStatus,
                 submit.Body);
+        }
 
         return submit.Ok ? 0 : 1;
     }

@@ -375,6 +375,24 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
             "a consumer seen under one cpf counts in that officer's queue");
         Check(ownStore.CountSeenUnder("09999999") == 0,
             "an officer who has seen nothing counts nothing");
+
+        // 4D: a 2xx lands as Accepted, so the row leaves pending for the
+        // owning cpf and for every cpf that listed it, while staying in All.
+        ownStore.SetStatus("MT4420200801626", Mskpy.Infrastructure.RecordStatus.Accepted, "{\"message\":\"ok\"}");
+        Check(ownStore.CountSeenUnder("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
+            "an accepted row drops out of the first officer's pending count");
+        Check(ownStore.CountSeenUnder("02781310", Mskpy.Infrastructure.RecordStatus.Accepted) == 1,
+            "an accepted row drops out of the owning officer's pending count too");
+        Check(ownStore.GetSeenUnder("02284251", Mskpy.Infrastructure.RecordStatus.Accepted).Count == 0,
+            "an accepted row leaves the first officer's pending rows");
+        Check(ownStore.GetAll().Any(r => r.ConsumerNumber == "MT4420200801626"
+                && r.Status == Mskpy.Infrastructure.RecordStatus.Accepted),
+            "an accepted row remains reachable in the full store");
+        // 4D5 store side: recording a failure message under the status the
+        // row already had does not move it between queues.
+        ownStore.SetStatus("MT4420200999999", Mskpy.Infrastructure.RecordStatus.New, "forced 500");
+        Check(ownStore.CountSeenUnder("02781310", Mskpy.Infrastructure.RecordStatus.Accepted) == 1,
+            "a failure recorded under the existing status leaves the pending count unchanged");
     }
     finally { try { Directory.Delete(ownDir, true); } catch { } }
 }
