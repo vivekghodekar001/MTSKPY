@@ -629,9 +629,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             sessionVerified = true;
             Changed(nameof(IsSignedIn));
             Changed(nameof(IsSessionUnverified));
-            // keep the session file fresh
+            // keep the session file fresh, with the login role/scheme the
+            // verification itself used
             if (StaySignedIn) Sessions.Save(new SessionStore.StoredSession(
-                account.LoginId, account.Role, account.Scheme,
+                account.LoginId, SelectedRole, SelectedScheme.Value,
                 account.Fields.Select(f => (f.Label, f.Value)).ToList(),
                 DateTimeOffset.Now));
             Status = "Session verified.";
@@ -639,19 +640,14 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             if (version != generation) return;
-            if (ex is SignInException se && se.Rejected)
-            {
-                Credentials.Clear();
-                Sessions.Clear();
-                profile = null;
-                sessionVerified = true;
-                Changed(nameof(IsSignedIn));
-                Changed(nameof(IsSignedOut));
-                Changed(nameof(IsSessionUnverified));
-                Error = "The saved sign-in did not work. Please sign in again.";
-                Status = "Signed out.";
-            }
-            // transient: leave the restored session in place
+            // A refused background verification must not destroy the saved
+            // sign-in: the same credentials sign in fine when typed, so the
+            // refusal is about this background attempt, not the officer.
+            // Keep the restored session and the files; mark it unverified.
+            SignInLog.Write("session verify failed: " + ex.GetType().Name + ": " + ex.Message);
+            sessionVerified = false;
+            Changed(nameof(IsSessionUnverified));
+            Status = "Signed in (session not verified).";
         }
     }
 
@@ -1379,7 +1375,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // A stale walk list rebuilds at once, stamp or no stamp: gating
             // it behind the 30-minute refresh stamp left the warning up for
             // days while every refresh decided it was not due yet.
-            if (IsIndexStale && IsSignedIn && harvester != null)
+            if (IsIndexStale && IsSignedIn && store != null)
             {
                 _refreshRunning = true;
                 File.WriteAllText(stampPath, now.ToString("O"));
@@ -1647,6 +1643,31 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Error = ""; IsBusy = true;
         try
         {
+            // The harvest already fetched this record's payload; opening
+            // from the store skips two network round trips (cpf resolve +
+            // detail GET) that made every open crawl. The live detail is
+            // fetched only when the store has no payload for the consumer.
+            InspectionRecord? record = null;
+            var fromLocalStore = false;
+            DetailOutcome? outcome = null;
+            var storedFirst = store?.GetByConsumerNumber(consumer);
+            if (!string.IsNullOrWhiteSpace(storedFirst?.OriginalJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(storedFirst!.OriginalJson!);
+                    record = InspectionRecord.FromJson(doc.RootElement);
+                    fromLocalStore = record != null;
+                    if (record != null && string.IsNullOrWhiteSpace(cpf)) cpf = storedFirst.CpfNo;
+                }
+                catch (Exception ex)
+                {
+                    Status = $"Local record for {consumer} could not be read: {ex.Message}";
+                }
+            }
+
+            if (record == null)
+            {
             if (string.IsNullOrWhiteSpace(cpf))
                 cpf = await ResolveCpfAsync(consumer, gateway, ct);
             if (string.IsNullOrWhiteSpace(cpf))
@@ -1657,9 +1678,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }
 
             Status = $"Opening detail for {consumer} (cpf={cpf})…";
-            var outcome = await gateway.DetailAsync(consumer, cpf, ct);
-            InspectionRecord? record = outcome.Ok ? outcome.Record : null;
-            var fromLocalStore = false;
+            outcome = await gateway.DetailAsync(consumer, cpf, ct);
+            record = outcome.Ok ? outcome.Record : null;
 
             // H4: the server answered but did not contain this consumer. If the
             // harvest has it, open it from the store and say so — a record that
@@ -1682,15 +1702,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 }
             }
 
+            }
+
             if (record == null)
             {
-                Error = outcome.Error ?? $"HTTP {(int)outcome.StatusCode}";
+                Error = outcome?.Error ?? "Detail could not be loaded.";
                 Status = "Detail refused.";
                 return;
             }
 
             Status = fromLocalStore
-                ? $"Opened {consumer} from the local store (the server did not return it)."
+                ? $"Opened {consumer} from the local store."
                 : $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
             var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf,
                 (Window)System.Windows.Application.Current.MainWindow,

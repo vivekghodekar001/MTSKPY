@@ -868,9 +868,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         };
         pickerAddForm.Children.Add(mobileField.Host);
         var addActionRow = new Grid { Margin = new Thickness(0, 6, 0, 0) };
-        addActionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+        addActionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
         addActionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var addButton = new Button { Content = "Add", Width = 80, Height = 30, MinHeight = 0, FontSize = 12, HorizontalAlignment = HorizontalAlignment.Left };
+        var addButton = new Button { Content = "Add", Width = 120, Height = 30, MinHeight = 0, FontSize = 12, Padding = new Thickness(6, 2, 6, 2), HorizontalAlignment = HorizontalAlignment.Left };
         addButton.Click += (_, __) => DoPickerAdd();
         addActionRow.Children.Add(addButton);
         var cancelAddText = new TextBlock { Text = "Cancel add", FontSize = 12, Foreground = (Brush)System.Windows.Application.Current.FindResource("Text") };
@@ -1111,11 +1111,25 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// M2: gather the signals that exist and paint the band + reasons in the
     /// header card and the warnings in the fixed footer.
     /// </summary>
+    string? riskCategory;
+    int riskReturnedCount;
+    bool riskBlocked;
+    bool riskLoaded;
+
     void UpdateRisk()
     {
-        var stored = store?.GetByConsumerNumber(consumerNumber);
-        var category = stored?.ReasonCategory ?? ReasonCategoriser.Categorise(stored?.ReasonToRevert);
-        var returnedCount = stored?.Status == RecordStatus.Returned ? 1 : 0;
+        // The stored row's risk facts do not change while the window is
+        // open; read them once instead of a full store fetch per keystroke.
+        if (!riskLoaded)
+        {
+            var stored = store?.GetByConsumerNumber(consumerNumber);
+            riskCategory = stored?.ReasonCategory ?? ReasonCategoriser.Categorise(stored?.ReasonToRevert);
+            riskReturnedCount = stored?.Status == RecordStatus.Returned ? 1 : 0;
+            riskBlocked = stored?.Status == RecordStatus.Blocked;
+            riskLoaded = true;
+        }
+        var category = riskCategory;
+        var returnedCount = riskReturnedCount;
 
         var installerBlank = string.IsNullOrWhiteSpace(VendorPersonName)
             || string.IsNullOrWhiteSpace(VendorPersonMobile);
@@ -1141,7 +1155,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
         var result = ReturnRiskScorer.Score(input);
         var label = ReturnRiskScorer.BandLabel(result.Band);
-        var blocked = stored?.Status == RecordStatus.Blocked;
+        var blocked = riskBlocked;
         isBlockedRecord = blocked;
 
         var reasons = result.Reasons.Take(2).ToArray();
@@ -1992,10 +2006,14 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Log($"picker add: {name}/{mobile} total={pickerRows.Count}");
     }
 
+    static bool bookImportedThisRun;
+
     void ImportBookOnce()
     {
         var s = store;
-        if (pickerImported || s == null) return;
+        // The store keeps the import; re-importing the JSON book on every
+        // window open is pure delay. Once per app run is enough.
+        if (pickerImported || bookImportedThisRun || s == null) return;
         try
         {
             var vendorCode = BookVendorCode;
@@ -2004,6 +2022,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 .Select(p => (p.Name, p.Mobile));
             s.ImportVendorContacts(vendorCode, bookRows);
             pickerImported = true;
+            bookImportedThisRun = true;
         }
         catch (Exception ex) { LogInstaller("picker import failed: " + ex.Message); }
     }
