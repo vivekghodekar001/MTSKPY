@@ -1129,7 +1129,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
         else if (destination == "Settings")
         {
-            Fields.Add(new("Theme", "Dark reference theme")); Fields.Add(new("Language", "English; additional translation parity pending")); Fields.Add(new("Session", "Memory only. Closing or signing out clears account state."));
+            Fields.Add(new("Theme", "Dark reference theme")); Fields.Add(new("Language", "English; additional translation parity pending")); Fields.Add(new("Session", StaySignedIn ? "Stay signed in is on: closing the app keeps the sign-in; Sign out clears it." : "Stay signed in is off: sign-in is asked at every launch.")); Fields.Add(new("Index path", IndexPath));
         }
         else if (destination == "Diagnostics")
         {
