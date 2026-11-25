@@ -2140,7 +2140,14 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
-        EndSession();
+        // Closing the app is not signing out. EndSession clears the saved
+        // sign-in, so disposing through it made every close forget the
+        // login and the next launch ask again. Dispose only stops work.
+        dailyRefreshTimer?.Stop(); dailyRefreshTimer = null;
+        ownListTimer?.Stop(); ownListTimer = null;
+        CancelAutoSignIn();
+        CancelPending();
+        harvester?.Dispose(); harvester = null;
         store?.Dispose();
     }
 }

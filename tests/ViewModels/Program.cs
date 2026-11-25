@@ -322,6 +322,25 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
         "D9+: a verification finishing after sign-out does not resurrect the session");
 }
 
+// D9++: closing the app is not signing out. Dispose stops work but must
+// leave the saved sign-in on disk for the next launch.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    var sessionFile = Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json");
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    credentials.Save("sample", "synthetic-password");
+    var sessions = new Mskpy.Presentation.Services.SessionStore(sessionFile);
+    sessions.Save(new Mskpy.Presentation.Services.SessionStore.StoredSession(
+        "sample", "Employee", "SCHEME_MTSKPY", [], DateTimeOffset.Now));
+    var closing = new ShellViewModel(workflow, secrets, desktop, storePath: storePath,
+        credentials: credentials, sessionStore: sessions);
+    await closing.AutoSignInAsync();
+    Check(closing.IsSignedIn, "D9++: the stored session signs in at launch");
+    closing.Dispose();
+    Check(sessions.Load() != null && credentials.Load() != null,
+        "D9++: Dispose keeps the saved sign-in for the next launch");
+}
+
 // E5: a Blocked row lands in Waiting on SDO and not in Needs redo.
 {
     using var seed = new Mskpy.Infrastructure.InspectionStore(storePath);
