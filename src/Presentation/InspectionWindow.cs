@@ -1368,7 +1368,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 if (photos.TryGetValue(suffix, out var previous) && !string.Equals(previous, slotPath, StringComparison.OrdinalIgnoreCase))
                     DeleteSlotFile(previous);
 
-                var produced = JpegExifStamper.Stamp(path, ResolveCoordinate("latitude", manualLat.Text), ResolveCoordinate("longitude", manualLong.Text), DateTime.UtcNow, slotPath, LogStartupNote);
+                var produced = JpegExifStamper.Stamp(path, ResolveCoordinate("latitude", manualLat.Text), ResolveCoordinate("longitude", manualLong.Text), DateTime.Now, slotPath, LogStartupNote);
                 photos[suffix] = produced;
                 photoSources[suffix] = path;
                 try { photoHashes[suffix] = ComputeSha256(path); } catch { }
@@ -2181,7 +2181,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
             var photoPaths = new List<string>();
             var extraData = new Dictionary<string, object?>();
-            var stampAt = DateTime.UtcNow;
+            // EXIF DateTimeOriginal is local wall-clock time with no zone.
+            // Stamping UTC put every photo 5:30 behind the officer's clock;
+            // stamp local time, and keep the blob field on the same instant.
+            var stampAt = DateTime.Now;
             var stampSecond = 0;
             foreach (var slot in PhotoSlots)
             {
@@ -2199,7 +2202,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                     var photoAt = stampAt.AddSeconds(stampSecond++);
                     slotPath = JpegExifStamper.Stamp(original, lat, lon, photoAt, slotPath, LogStartupNote);
                     extraData[slot.Suffix + "DateTime"] =
-                        photoAt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+                        photoAt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
                 }
                 // P2: slots are independent. The same source may fill several
                 // roles; no within-submission duplicate refusal.

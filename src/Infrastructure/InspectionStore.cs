@@ -1128,6 +1128,29 @@ public sealed class InspectionStore : IDisposable
         }
     }
 
+    /// <summary>Count with the Returned page's own definition: a server
+    /// reason_to_revert on a row seen under this cpf. The badge and the list
+    /// must count the same rows.</summary>
+    public int CountReturned(string? seenUnderCpf = null)
+    {
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT COUNT(*) FROM inspection_records r WHERE r.reason_to_revert IS NOT NULL AND TRIM(r.reason_to_revert) <> ''");
+            if (!string.IsNullOrWhiteSpace(seenUnderCpf))
+                sb.Append(" AND EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            if (!string.IsNullOrWhiteSpace(seenUnderCpf)) cmd.Parameters.AddWithValue("@cpf", seenUnderCpf.Trim());
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+        finally
+        {
+            dbLock.Release();
+        }
+    }
+
     public int Count(bool? firstTimeOnly = null, RecordStatus? status = null)
     {
         dbLock.Wait();

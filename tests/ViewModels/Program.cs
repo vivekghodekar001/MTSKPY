@@ -296,6 +296,32 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     }
     Check(walking, $"D2: the walk starts by itself after the list has had the screen ({ShellViewModel.HarvestStartDelayMs} ms)");
 }
+// D9+: a restored session verifies with its own stored role and scheme, and
+// a sign-out during that verification is not undone when it completes.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    var sessionFile = Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json");
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    credentials.Save("sample", "synthetic-password");
+    var sessions = new Mskpy.Presentation.Services.SessionStore(sessionFile);
+    sessions.Save(new Mskpy.Presentation.Services.SessionStore.StoredSession(
+        "sample", "Agency", "SCHEME_MSKVY_2", [], DateTimeOffset.Now));
+    gateway.PendingLogin = new TaskCompletionSource<AccountProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var restored = new ShellViewModel(workflow, secrets, desktop, storePath: storePath,
+        credentials: credentials, sessionStore: sessions);
+    await restored.AutoSignInAsync();
+    Check(restored.IsSignedIn && restored.IsSessionUnverified, "D9+: the stored session is restored before verification");
+    Check(gateway.LastLogin is { Role: "Agency", Scheme: "SCHEME_MSKVY_2" },
+        "D9+: verification uses the stored role and scheme, not the form defaults");
+    restored.SignOut.Execute(null);
+    Check(restored.IsSignedOut, "D9+: sign-out ends the restored session");
+    gateway.PendingLogin.TrySetResult(new AccountProfile("sample", "Agency", "SCHEME_MSKVY_2", []));
+    gateway.PendingLogin = null;
+    await Task.Delay(200);
+    Check(restored.IsSignedOut && sessions.Load() == null,
+        "D9+: a verification finishing after sign-out does not resurrect the session");
+}
+
 // E5: a Blocked row lands in Waiting on SDO and not in Needs redo.
 {
     using var seed = new Mskpy.Infrastructure.InspectionStore(storePath);
@@ -311,6 +337,18 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     Check(shell.BlockedRecords.Count == 1, "E5: a seeded Blocked row appears in Waiting on SDO");
     shell.ShowNeedsRedo.Execute(null);
     Check(shell.NeedsRedoRecords.Count == 0, "E5: a blocked row does not appear in Needs redo");
+    seed.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+        ConsumerNumber: "MRETURNED", CpfNo: "sample", VendorCode: "V", ConsumerName: "returned one",
+        Latitude: "1", Longitude: "2", InstallDate: "2026-08-01",
+        ReasonToRevert: "upload clear photos", SurveyDurationMinutes: null,
+        IsFirstTime: false, Status: Mskpy.Infrastructure.RecordStatus.Returned,
+        LastServerMessage: "returned", LastServerMessageAt: DateTime.UtcNow, OriginalJson: "{}",
+        SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+    shell.ShowReturned.Execute(null);
+    Check(shell.ReturnedRecords.Any(r => r.ConsumerNumber == "MRETURNED"),
+        "E5: a returned row appears on the Returned page");
+    Check(shell.ReturnedCountBadge.Contains("returned"),
+        "E5: the returned badge counts the same rows the page lists");
 }
 
 // M8: the refresh gate. A missing stamp is "never refreshed", not "just ran".
@@ -331,6 +369,7 @@ sealed class FakeDesktop : IDesktopActions
 sealed class FakeGateway : IClientGateway
 {
     public int LoginCalls, LoadCalls; public bool Expire;
+    public LoginRequest? LastLogin;
     public AccountProfile? Profile { get; private set; }
     public string Diagnostics => "Response fields only";
     public TaskCompletionSource<IReadOnlyList<ApplicationDocument>>? Pending;
@@ -340,6 +379,7 @@ sealed class FakeGateway : IClientGateway
     public Task<AccountProfile> LoginAsync(LoginRequest request, CancellationToken ct)
     {
         LoginCalls++;
+        LastLogin = request;
         if (PendingLogin != null) return PendingLogin.Task;
         if (SignInFailure != null) return Task.FromException<AccountProfile>(SignInFailure);
         Profile = new(request.Username, request.Role, request.Scheme, []);

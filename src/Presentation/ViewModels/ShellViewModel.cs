@@ -150,6 +150,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
 
         selectedScheme = Schemes[0];
+        staySignedIn = LoadStaySignedIn();
         Login = new AsyncCommand(LoginAsync, ShowError, _ => !IsBusy && !IsSignedIn);
         OpenModule = new AsyncCommand(OpenModuleAsync, ShowError, p => !IsBusy && IsSignedIn && p is ModuleDefinition);
         Refresh = new AsyncCommand((_, ct) => LoadAsync(ct), ShowError, _ => !IsBusy && IsSignedIn && currentModule != null);
@@ -167,6 +168,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         EditJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(SelectedOriginalJson(), ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "jsr");
         CopyDiagnostics = new RelayCommand(_ => desktop.CopyDiagnostics(workflow.Diagnostics));
         OpenLiveInspectionCommand = new RelayCommand(_ => OpenLiveInspection(), _ => !IsBusy && IsSignedIn && SelectedApplication != null);
+        OpenStoredRecord = new RelayCommand(p => { if (p is StoredInspectionRecord r) _ = OpenDetailForSearched(r.ConsumerNumber, r.CpfNo); }, _ => !IsBusy && IsSignedIn);
         ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
         RebuildIndexCommand = new RelayCommand(_ => RebuildIndex(), _ => !IsBusy && store != null);
         ResumeHarvestCommand = new RelayCommand(_ => ResumeHarvest(), _ => !IsBusy);
@@ -433,6 +435,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public RelayCommand CopyDiagnostics { get; }
     /// <summary>H1: opens the live inspection form for the selected record.</summary>
     public RelayCommand OpenLiveInspectionCommand { get; }
+    public RelayCommand OpenStoredRecord { get; }
 
     async Task LoginAsync(object? _, CancellationToken ct)
     {
@@ -447,7 +450,33 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public bool StaySignedIn
     {
         get => staySignedIn;
-        set { if (Set(ref staySignedIn, value)) Changed(nameof(StaySignedIn)); }
+        set { if (Set(ref staySignedIn, value)) { Changed(nameof(StaySignedIn)); SaveStaySignedIn(value); } }
+    }
+
+    static string SettingsPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RenewableEnergyDesktop", "settings.json");
+
+    static bool LoadStaySignedIn()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath)) return true;
+            using var doc = JsonDocument.Parse(File.ReadAllText(SettingsPath));
+            return !doc.RootElement.TryGetProperty("staySignedIn", out var v) || v.ValueKind != JsonValueKind.False;
+        }
+        catch { return true; }
+    }
+
+    static void SaveStaySignedIn(bool value)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(SettingsPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(SettingsPath, "{\"staySignedIn\":" + (value ? "true" : "false") + "}");
+        }
+        catch { /* the tick is a preference; failing to persist it is not fatal */ }
     }
 
     /// <summary>C6: where the encrypted sign-in lives.</summary>
@@ -532,6 +561,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         profile = new AccountProfile(stored.LoginId, stored.Role, stored.Scheme,
             stored.Fields.Select(f => new DisplayField(f.Item1, f.Item2)).ToList());
         Username = stored.LoginId;
+        // The restored session carries its own role and scheme; the sign-in
+        // form's defaults must not overwrite them (verification used the
+        // defaults and a good session was refused as a bad password).
+        if (Roles.Contains(stored.Role)) SelectedRole = stored.Role;
+        SelectedScheme = Schemes.FirstOrDefault(s => s.Value == stored.Scheme) ?? Schemes[0];
         listScope = ListScopeMyPending;
         Changed(nameof(IsSignedIn));
         Changed(nameof(IsSignedOut));
@@ -552,19 +586,24 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// </summary>
     async Task VerifySessionAsync()
     {
+        // A sign-out (or a fresh typed sign-in) bumps the generation; a
+        // verification that finishes afterwards must not resurrect the
+        // session the officer just ended.
+        var version = generation;
         try
         {
             var loaded = Credentials.Load();
-            if (loaded == null) return;
+            if (loaded == null || profile == null) return;
             var account = await workflow.SignInAsync(
-                new LoginRequest(Username, loaded.Value.Password, SelectedRole, SelectedScheme.Value),
+                new LoginRequest(Username, loaded.Value.Password, profile.Role, profile.Scheme),
                 CancellationToken.None);
+            if (version != generation) return;
             profile = account;
             sessionVerified = true;
             Changed(nameof(IsSignedIn));
             Changed(nameof(IsSessionUnverified));
             // keep the session file fresh
-            Sessions.Save(new SessionStore.StoredSession(
+            if (StaySignedIn) Sessions.Save(new SessionStore.StoredSession(
                 account.LoginId, account.Role, account.Scheme,
                 account.Fields.Select(f => (f.Label, f.Value)).ToList(),
                 DateTimeOffset.Now));
@@ -572,6 +611,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            if (version != generation) return;
             if (ex is SignInException se && se.Rejected)
             {
                 Credentials.Clear();
@@ -609,10 +649,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             sessionVerified = true;
             Changed(nameof(IsSessionUnverified));
             // D9: persist the session so the next launch needs no network.
-            Sessions.Save(new SessionStore.StoredSession(
+            // Only when the officer asked to stay signed in: an unticked box
+            // must mean the next launch asks again.
+            if (StaySignedIn) Sessions.Save(new SessionStore.StoredSession(
                 account.LoginId, account.Role, account.Scheme,
                 account.Fields.Select(f => (f.Label, f.Value)).ToList(),
                 DateTimeOffset.Now));
+            else { Sessions.Clear(); Credentials.Clear(); }
             // C6: keep the sign-in so the next launch does not need it typed.
             if (StaySignedIn)
             {
@@ -931,13 +974,47 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
     void ApplySearch()
     {
-        Applications.Clear();
         // A3: the whole current scope is listed. Row virtualisation (recycling)
         // keeps the scroll smooth with thousands of rows, so the old 100-row cap
-        // is gone.
-        foreach (var row in loaded.Where(Matches))
-            Applications.Add(row);
-        if (SelectedApplication != null && !Applications.Contains(SelectedApplication)) SelectedApplication = null;
+        // is gone. Diff instead of clear-and-rebuild: a keystroke or a
+        // harvester batch usually changes a few rows, and rebuilding thousands
+        // of collection entries per change is what made typing and refresh
+        // feel heavy. Unchanged rows keep their objects, so the officer's
+        // selection and scroll position survive.
+        var filtered = loaded.Where(Matches).ToList();
+        var aligned = filtered.Count == Applications.Count
+            && filtered.Zip(Applications).All(p => p.First.Identity == p.Second.Identity);
+        if (aligned)
+        {
+            // Same rows in the same order: swap in fresh row objects where
+            // the store rebuilt them, without touching the rest of the list.
+            suppressAutoOpen = true;
+            try
+            {
+                for (var i = 0; i < filtered.Count; i++)
+                {
+                    if (ReferenceEquals(Applications[i], filtered[i])) continue;
+                    var wasSelected = ReferenceEquals(SelectedApplication, Applications[i]);
+                    Applications[i] = filtered[i];
+                    if (wasSelected) SelectedApplication = filtered[i];
+                }
+            }
+            finally { suppressAutoOpen = false; }
+        }
+        else
+        {
+            var selectedIdentity = SelectedApplication?.Identity;
+            Applications.Clear();
+            foreach (var row in filtered) Applications.Add(row);
+            suppressAutoOpen = true;
+            try
+            {
+                SelectedApplication = selectedIdentity == null
+                    ? null
+                    : Applications.FirstOrDefault(r => r.Identity == selectedIdentity);
+            }
+            finally { suppressAutoOpen = false; }
+        }
         Changed(nameof(RecordCount));
         Changed(nameof(MyPendingChip));
         Changed(nameof(AllChip));
@@ -962,7 +1039,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             {
                 _firstTimeCount = store.Count(firstTimeOnly: true);
                 _reInspectionCount = store.Count(firstTimeOnly: false);
-                _returnedCount = store.Count(status: RecordStatus.Returned);
+                _returnedCount = store.CountReturned(profile?.LoginId);
                 _failedCount = store.Count(status: RecordStatus.Failed);
             }
         }
@@ -976,34 +1053,38 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Changed(nameof(ReturnedCountBadge));
         Changed(nameof(NeedsRedoCountBadge));
     }
-    void NavigateTo(string destination)
+    void ReloadRecordPage(string destination)
     {
-        Error = ""; Status = ""; Fields.Clear();
-        if (destination == "Returned" && store != null)
+        if (store == null) return;
+        if (destination == "Returned")
         {
             ReturnedRecords.Clear();
             foreach (var r in LoadPagedRecords(returnedOnly: true, seenUnderCpf: profile?.LoginId))
                 ReturnedRecords.Add(r);
-            RefreshRecordCounts();
-            SetPage("Returned");
-            return;
         }
-        if (destination == "NeedsRedo" && store != null)
+        else if (destination == "NeedsRedo")
         {
             NeedsRedoRecords.Clear();
             foreach (var r in LoadPagedRecords(status: RecordStatus.Failed))
                 NeedsRedoRecords.Add(r);
-            RefreshRecordCounts();
-            SetPage("NeedsRedo");
-            return;
         }
-        if (destination == "Blocked" && store != null)
+        else if (destination == "Blocked")
         {
             BlockedRecords.Clear();
             foreach (var r in LoadPagedRecords(status: RecordStatus.Blocked))
                 BlockedRecords.Add(r);
-            RefreshRecordCounts();
-            SetPage("Blocked");
+        }
+        else return;
+        RefreshRecordCounts();
+    }
+
+    void NavigateTo(string destination)
+    {
+        Error = ""; Status = ""; Fields.Clear();
+        if (destination is "Returned" or "NeedsRedo" or "Blocked" && store != null)
+        {
+            ReloadRecordPage(destination);
+            SetPage(destination);
             return;
         }
         SetPage(destination is "Profile" or "Settings" or "Diagnostics" ? destination : "Applications");
@@ -1088,11 +1169,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         // harvest. Disposing it on sign-out left the app with a dead store after
         // the next sign-in — the list came up empty and the harvest could not
         // write. It is disposed with the view model instead.
-        Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut)); Status = "Signed out.";
+        Changed(nameof(IsSignedIn)); Changed(nameof(IsSignedOut)); sessionVerified = true; Changed(nameof(IsSessionUnverified)); Status = "Signed out.";
     }
     void RefreshCommands()
     {
-        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); ShowNeedsRedo?.Refresh(); ShowBlocked?.Refresh(); OpenLiveInspectionCommand?.Refresh();
+        Login?.Refresh(); OpenModule?.Refresh(); Refresh?.Refresh(); OpenOffline?.Refresh(); OpenJsr?.Refresh(); EditOffline?.Refresh(); EditJsr?.Refresh(); OpenInspection?.Refresh(); Cancel?.Refresh(); Navigate?.Refresh(); SignOut?.Refresh(); ViewDetails?.Refresh(); ShowReturned?.Refresh(); ShowNeedsRedo?.Refresh(); ShowBlocked?.Refresh(); OpenLiveInspectionCommand?.Refresh(); OpenStoredRecord?.Refresh();
     }
 
     async Task OpenInspectionAsync(CancellationToken ct)
@@ -1309,7 +1390,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 RefreshIndexAge();
                 // Rebuilding it on every batch is too heavy with thousands of
                 // rows, so the refresh is throttled.
-                if (page == "Applications" && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 10)
+                if ((page == "Applications" || page is "Returned" or "NeedsRedo" or "Blocked")
+                    && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 10)
                 {
                     _lastListRefresh = DateTime.UtcNow;
                     try
@@ -1318,10 +1400,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                         // refresh the cached stamp, so the stale warning clears
                         // without a reload.
                         RefreshIndexAge();
+                        // The record pages are small; keep the visible one
+                        // current as the harvester imports.
+                        if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);
                         // D2: new statewide rows update the counts only.
                         // Reloading would throw away the pages the officer
                         // has scrolled to; the next scope entry reads fresh.
-                        if (listScope == ListScopeAll) { Changed(nameof(AllChip)); Changed(nameof(RecordCount)); }
+                        else if (listScope == ListScopeAll) { Changed(nameof(AllChip)); Changed(nameof(RecordCount)); }
                         else { LoadFromStore(); ApplySearch(); }
                     }
                     catch { /* a list refresh must never disturb the walk */ }
@@ -1678,6 +1763,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         var record = parameter as StoredInspectionRecord;
         if (record == null || store == null) return;
+        // List rows carry no original_json (narrow columns); the retry needs
+        // the full payload, so re-read the row before rebuilding the survey.
+        if (string.IsNullOrWhiteSpace(record.OriginalJson))
+            record = store.GetByConsumerNumber(record.ConsumerNumber) ?? record;
         if (string.IsNullOrWhiteSpace(record.SubmittedDataPath)) return;
 
         Error = ""; IsBusy = true;
@@ -1825,7 +1914,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             ? CliSubmitPhotosDir
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenewableEnergyDesktop", "photos");
         var extraData = new Dictionary<string, object?>();
-        var now = DateTime.UtcNow;
+        // EXIF stamps local wall-clock time; the blob field keeps the same
+        // instant in UTC form.
+        var now = DateTime.Now;
         var photoSecond = 0;
         if (!string.IsNullOrWhiteSpace(photosDir) && Directory.Exists(photosDir))
         {
@@ -1847,7 +1938,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 photoPaths.Add(stamped);
                 extraData[suffix + "Lat"] = latText;
                 extraData[suffix + "Long"] = lonText;
-                extraData[suffix + "DateTime"] = photoDt.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+                extraData[suffix + "DateTime"] = photoDt.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
             }
 
             foreach (var suffix in new[] { "benSign", "vendorRepSign" })
