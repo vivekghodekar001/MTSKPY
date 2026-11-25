@@ -310,6 +310,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     Task? harvestStart;
     // P5: daily refresh timer.
     System.Windows.Threading.DispatcherTimer? dailyRefreshTimer;
+    System.Windows.Threading.DispatcherTimer? ownListTimer;
+    bool _ownRefreshRunning;
     /// <summary>
     /// D1/H3: the officer's own pending queue — the records seen under their
     /// cpf that have not been accepted. Counted through record_cpfs with the
@@ -1157,6 +1159,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     void EndSession()
     {
         dailyRefreshTimer?.Stop(); dailyRefreshTimer = null;
+        ownListTimer?.Stop(); ownListTimer = null;
         searchLoadToken++;
         CancelAutoSignIn();
         CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Applications"); IsBusy = false;
@@ -1205,7 +1208,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// This is the immediate source of rows; the harvester covers the long tail.
     /// Failure is non-fatal — the harvester still fills the store.
     /// </summary>
-    async Task SeedSessionListAsync(string loginId)
+    async Task SeedSessionListAsync(string loginId, bool quiet = false)
     {
         // The seed needs the inspection services. When they are not configured
         // (tests, headless runs) it must not reach the network.
@@ -1224,8 +1227,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // F1: these rows came from the session's own list, so the session's
             // cpf is one of the cpfs they have been seen under.
             var (added, duplicates) = store.UpsertRows(rows, loginId);
-            Status = $"Session list: {rows.Count} rows ({added} new, {duplicates} already held).";
+            if (!quiet || added > 0)
+                Status = quiet
+                    ? $"{added} new customer{(added == 1 ? "" : "s")} added to your list."
+                    : $"Session list: {rows.Count} rows ({added} new, {duplicates} already held).";
             RefreshRecordCounts();
+            if (added > 0)
+            {
+                if (page == "Applications" && listScope != ListScopeAll) { LoadFromStore(); ApplySearch(); }
+                else if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);
+                Changed(nameof(AllChip)); Changed(nameof(RecordCount));
+            }
         }
         catch (SessionExpiredException)
         {
@@ -1235,8 +1247,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            // Non-fatal: the harvester covers this.
-            Status = "Session list could not be fetched (" + ex.Message + "). The harvester will fill the store.";
+            // Non-fatal: the harvester covers this. A periodic refresh stays
+            // quiet about it instead of overwriting the status line.
+            if (!quiet) Status = "Session list could not be fetched (" + ex.Message + "). The harvester will fill the store.";
         }
     }
 
@@ -1298,6 +1311,21 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         dailyRefreshTimer.Tick += (_, _) => TryDailyCustomerRefresh();
         dailyRefreshTimer.Start();
         SignInLog.Write("refresh: timer started (30 min)");
+        // The officer's own new customers must not wait for the statewide
+        // walk to come back around to their cpf: re-read the session list
+        // every five minutes (one request) so they appear within minutes.
+        ownListTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMinutes(5)
+        };
+        ownListTimer.Tick += async (_, _) =>
+        {
+            if (!IsSignedIn || profile == null || _ownRefreshRunning) return;
+            _ownRefreshRunning = true;
+            try { await SeedSessionListAsync(profile.LoginId, quiet: true); }
+            finally { _ownRefreshRunning = false; }
+        };
+        ownListTimer.Start();
     }
 
     bool _refreshRunning;
@@ -1391,7 +1419,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 // Rebuilding it on every batch is too heavy with thousands of
                 // rows, so the refresh is throttled.
                 if ((page == "Applications" || page is "Returned" or "NeedsRedo" or "Blocked")
-                    && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 10)
+                    && (DateTime.UtcNow - _lastListRefresh).TotalSeconds >= 3)
                 {
                     _lastListRefresh = DateTime.UtcNow;
                     try
