@@ -149,6 +149,28 @@ try
         SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
     Check(store.GetAll().Count == 1 && store.GetByConsumerNumber("MT4420200801626")!.ConsumerName == "Store round trip twice",
         "store upserts a record it already holds instead of duplicating it");
+    var preserved = store.GetByConsumerNumber("MT4420200801626")!;
+    Check(preserved.OriginalJson == "{\"a\":1}", "a null original_json never overwrites the stored payload");
+    Check(preserved.SubmittedDataPath == "C:\\data.json", "a null submitted_data_path never overwrites the attempt path");
+    store.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+        ConsumerNumber: "MT4420200801626", CpfNo: "02284251", VendorCode: "100038029",
+        ConsumerName: "Store round trip twice", Latitude: "19.525251", Longitude: "74.119873",
+        InstallDate: "2026-08-01", ReasonToRevert: "returned", SurveyDurationMinutes: null,
+        IsFirstTime: false, Status: Mskpy.Infrastructure.RecordStatus.Returned,
+        LastServerMessage: null, LastServerMessageAt: null,
+        OriginalJson: "{\"cpf\":\"02284251\",\"pump_load\":\"3\"}",
+        SubmittedDataPath: "C:\\attempt\\data.json", PhotoPaths: "[\"p.jpg\"]", SignPaths: "[\"s.png\"]"));
+    store.Upsert(new Mskpy.Infrastructure.StoredInspectionRecord(
+        ConsumerNumber: "MT4420200801626", CpfNo: "02284251", VendorCode: "100038029",
+        ConsumerName: "Store round trip twice", Latitude: "19.525251", Longitude: "74.119873",
+        InstallDate: "2026-08-01", ReasonToRevert: "returned", SurveyDurationMinutes: null,
+        IsFirstTime: false, Status: Mskpy.Infrastructure.RecordStatus.Failed,
+        LastServerMessage: "forced 500", LastServerMessageAt: null, OriginalJson: "",
+        SubmittedDataPath: null, PhotoPaths: null, SignPaths: null));
+    var afterFailedAttempt = store.GetByConsumerNumber("MT4420200801626")!;
+    Check(afterFailedAttempt.OriginalJson != null && afterFailedAttempt.OriginalJson.Contains("\"cpf\":\"02284251\"") && afterFailedAttempt.OriginalJson.Contains("\"pump_load\":\"3\""),
+        "a failed attempt keeps a parseable payload with cpf and pump_load");
+    Check(afterFailedAttempt.SubmittedDataPath == "C:\\attempt\\data.json", "a failed attempt keeps its submitted_data_path");
 }
 finally { try { File.Delete(storePath); } catch { } }
 
@@ -919,7 +941,7 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     var none = await provider.ResolveAsync(null, null, null, null, null);
     Check(none.Source == Mskpy.Infrastructure.LocationSource.None, "a record with no coordinates has no position");
     Check(!none.HasCoords, "nothing is made up for a record with no coordinates");
-    Check(none.Error != null && none.Error.Contains("Enter them"), "the officer is told to enter the coordinates");
+    Check(none.Error == "Unable to access your location.", "a record with no coordinates gets the client location message");
 
     // What the officer typed wins (C4), and it is used as it is.
     var manual = await provider.ResolveAsync("19.1", "74.1", "5", "19.336027", "74.095619");
@@ -927,6 +949,15 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     Check(manual.Lat == "19.1" && manual.Long == "74.1", "the typed pair is used as it is");
     Check(manual.Accuracy == "5", "the typed accuracy is used as it is");
     Check(manual.Mocked == false, "a typed position is not mocked");
+
+    var zero = await provider.ResolveAsync(null, null, null, "0", "0");
+    Check(!zero.HasCoords && zero.Error == "Unable to access your location.", "0,0 coordinates are rejected");
+    var badManual = await provider.ResolveAsync("abc", "74.1", null, "19.336027", "74.095619");
+    Check(!badManual.HasCoords && badManual.Error == "Unable to access your location.", "non-numeric coordinates are rejected");
+    var nan = await provider.ResolveAsync("NaN", "74.1", null, "19.336027", "74.095619");
+    Check(!nan.HasCoords && nan.Error == "Unable to access your location.", "NaN coordinates are rejected");
+    var infinity = await provider.ResolveAsync(null, null, null, "Infinity", "74.095619");
+    Check(!infinity.HasCoords && infinity.Error == "Unable to access your location.", "Infinity coordinates are rejected");
 }
 
 // C5: the officer's own book of installers.

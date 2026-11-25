@@ -361,7 +361,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 {
                     FileName = $"https://www.google.com/maps?q={lat},{lon}",
                     UseShellExecute = true
-                }); } catch { }
+                }); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed maps-open: {ex.GetType().Name} {ex.Message}"); }
             }
         };
         headerGrid.Children.Add(navBtn);
@@ -1050,7 +1050,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     static string? Empty(string text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 
     static bool IsNumber(string? text) =>
-        text == null || double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+        text == null || (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value));
 
     /// <summary>Manual override first, then the record coordinate, then 0.</summary>
     double ResolveCoordinate(string recordKey, string manualText)
@@ -1387,7 +1387,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 var produced = JpegExifStamper.Stamp(path, ResolveCoordinate("latitude", manualLat.Text), ResolveCoordinate("longitude", manualLong.Text), DateTime.Now, slotPath, LogStartupNote);
                 photos[suffix] = produced;
                 photoSources[suffix] = path;
-                try { photoHashes[suffix] = ComputeSha256(path); } catch { }
+                try { photoHashes[suffix] = ComputeSha256(path); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed photo-hash-compute: {ex.GetType().Name} {ex.Message}"); }
 
                 try
                 {
@@ -1857,14 +1857,14 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         int removedByRowId = 0;
         var stillByRowId = false;
         var remainingAfterRowId = 0;
-        try { removedByRowId = store?.DeleteVendorContactByRowId(row.RowId, out _, out _) ?? 0; } catch { }
+        try { removedByRowId = store?.DeleteVendorContactByRowId(row.RowId, out _, out _) ?? 0; } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-delete-by-rowid: {ex.GetType().Name} {ex.Message}"); }
         try
         {
             var rows = store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>();
             remainingAfterRowId = rows.Count;
             stillByRowId = rows.Any(r => r.RowId == row.RowId);
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-delete-verify-rowid: {ex.GetType().Name} {ex.Message}"); }
         Log($"delete attempt rowid: rowid={row.RowId} key='{vendorCode}' removed={removedByRowId} remaining={remainingAfterRowId} stillPresent={stillByRowId}");
 
         var removed = removedByRowId > 0 && !stillByRowId;
@@ -1877,17 +1877,23 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             int removedByKey = 0;
             var stillByKey = false;
             var remainingAfterKey = 0;
-            try { removedByKey = store?.DeleteVendorContact(vendorCode, row.Name) ?? 0; } catch { }
-            try { store?.AddTombstone(vendorCode, row.Name); } catch { }
+            var tombstoneFailed = false;
+            try { removedByKey = store?.DeleteVendorContact(vendorCode, row.Name) ?? 0; } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-delete-by-key: {ex.GetType().Name} {ex.Message}"); }
+            try { store?.AddTombstone(vendorCode, row.Name); } catch (Exception ex) { tombstoneFailed = true; System.Diagnostics.Debug.WriteLine($"swallowed vendor-add-tombstone: {ex.GetType().Name} {ex.Message}"); }
             try
             {
                 var rows = store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>();
                 remainingAfterKey = rows.Count;
                 stillByKey = rows.Any(r => string.Equals((r.PersonName ?? "").Trim(), row.Name.Trim(), StringComparison.OrdinalIgnoreCase));
             }
-            catch { }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-delete-verify-key: {ex.GetType().Name} {ex.Message}"); }
             Log($"delete attempt key: rowid={row.RowId} key='{vendorCode}' name='{row.Name}' removed={removedByKey} remaining={remainingAfterKey} stillPresent={stillByKey}");
             removed = !stillByKey;
+            if (removed && tombstoneFailed && pickerDeleteError != null)
+            {
+                pickerDeleteError.Text = "Removed, but the delete could not be made permanent.";
+                pickerDeleteError.Visibility = Visibility.Visible;
+            }
         }
 
         if (!removed)
@@ -1923,7 +1929,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             store?.UpsertVendorContact(vendorCode, row.Name, row.Mobile);
             store?.ClearTombstone(vendorCode, row.Name);
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-undo-restore: {ex.GetType().Name} {ex.Message}"); }
         long restoredRowId = 0;
         try
         {
@@ -1931,7 +1937,16 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 .FirstOrDefault(r => string.Equals(r.PersonName, row.Name, StringComparison.OrdinalIgnoreCase));
             if (found != null) restoredRowId = found.RowId;
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-undo-verify: {ex.GetType().Name} {ex.Message}"); }
+        if (restoredRowId == 0)
+        {
+            if (pickerDeleteError != null)
+            {
+                pickerDeleteError.Text = "Undo could not be saved.";
+                pickerDeleteError.Visibility = Visibility.Visible;
+            }
+            return;
+        }
         var restored = new PickerRow(restoredRowId, row.Name, row.Mobile);
         if (!pickerRows.Any(r => string.Equals(r.Name, row.Name, StringComparison.OrdinalIgnoreCase)))
         {
@@ -2008,23 +2023,28 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Log($"picker add: {name}/{mobile} total={pickerRows.Count}");
     }
 
-    static bool bookImportedThisRun;
+    static readonly HashSet<string> importedBookVendors = new(StringComparer.OrdinalIgnoreCase);
 
     void ImportBookOnce()
     {
         var s = store;
-        // The store keeps the import; re-importing the JSON book on every
-        // window open is pure delay. Once per app run is enough.
-        if (pickerImported || bookImportedThisRun || s == null) return;
+        if (s == null) return;
+        var vendorCode = BookVendorCode;
+        if (importedBookVendors.Contains(vendorCode))
+        {
+            pickerImported = true;
+            Log($"book import: vendor={vendorCode} imported=0 (skipped=already)");
+            return;
+        }
         try
         {
-            var vendorCode = BookVendorCode;
             var bookRows = vendorPeople.People
                 .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
                 .Select(p => (p.Name, p.Mobile));
-            s.ImportVendorContacts(vendorCode, bookRows);
+            var imported = s.ImportVendorContacts(vendorCode, bookRows);
+            importedBookVendors.Add(vendorCode);
             pickerImported = true;
-            bookImportedThisRun = true;
+            Log($"book import: vendor={vendorCode} imported={imported}");
         }
         catch (Exception ex) { LogInstaller("picker import failed: " + ex.Message); }
     }
@@ -2092,7 +2112,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             File.AppendAllText(Path.Combine(dir, "inspection.log"),
                 string.Format("{0:O} {1} {2}{3}", DateTime.Now, consumerNumber, message, Environment.NewLine));
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed installer-log-write: {ex.GetType().Name} {ex.Message}"); }
     }
 
 
@@ -2137,13 +2157,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             }
         }
         catch { /* a failed re-fetch must not block a legitimate submit */ }
-        // D6: a record with no resolved position cannot be sent.
-        if (submitBtn != null && !locationResolved && string.IsNullOrWhiteSpace(manualLat.Text))
-        {
-            MessageBox.Show(this, "This survey needs a position: enter the coordinates by hand before submitting.",
-                "Submit", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
         submitBusy = true;
         // P3: stop harvesting for the duration of the upload.
         harvester?.Pause();
@@ -2163,6 +2176,17 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 throw new InvalidDataException(
                     "Vendor Person Mobile No must be 10+ digits starting with a non-zero digit.");
 
+            // 4B2: coordinates are validated before any store write, so a
+            // coordinate failure leaves the store untouched.
+            var resolved = await workflow.location.ResolveAsync(
+                Empty(manualLat.Text), Empty(manualLong.Text), Empty(manualAcc.Text),
+                record.Latitude, record.Longitude, CancellationToken.None);
+            locationBox.Text = DescribeLocation(resolved, resolved.DistanceMetres);
+            if (!resolved.HasCoords)
+                throw new InvalidDataException(LocationProvider.UnableToAccessLocation);
+            if (!IsNumber(Empty(manualAcc.Text)))
+                throw new InvalidDataException("Manual latitude, longitude and accuracy must be numbers.");
+
             // P3: remember the pair that just went out.
             PersistInstallerPair();
 
@@ -2171,26 +2195,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 throw new InvalidDataException("Blank signature: 'Beneficiary signature' has no strokes. Draw a signature.");
             if (representative.Strokes.Count == 0)
                 throw new InvalidDataException("Blank signature: 'Vendor representative signature' has no strokes. Draw a signature.");
-
-            // P4: the manual override must be numeric; otherwise the blob would
-            // claim a coordinate the photos cannot be stamped with.
-            if (!IsNumber(Empty(manualLat.Text)) || !IsNumber(Empty(manualLong.Text)) ||
-                !IsNumber(Empty(manualAcc.Text)))
-                throw new InvalidDataException("Manual latitude, longitude and accuracy must be numbers.");
-
-            // P4: resolve the position once, then re-stamp the photos from
-            // their originals with exactly the pair the blob will carry, so the
-            // upload, the EXIF GPS and the distance all agree.
-            var resolved = await workflow.location.ResolveAsync(
-                Empty(manualLat.Text), Empty(manualLong.Text), Empty(manualAcc.Text),
-                record.Latitude, record.Longitude, CancellationToken.None);
-            locationBox.Text = DescribeLocation(resolved, resolved.DistanceMetres);
-
-            // C3: there is no device fallback. The submission's position is the
-            // customer's site; a record without coordinates needs the officer
-            // to type them (C4) before the survey can be sent.
-            if (!resolved.HasCoords)
-                throw new InvalidDataException(resolved.Error ?? "This survey needs a position: enter the coordinates by hand.");
 
             // The ONE pair: it goes in the payload AND into the EXIF of all
             // three photos, so a reviewer comparing them finds the same
@@ -2295,7 +2299,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 }
             }
 
-            // W4: persist the record before submit so a failed attempt can be retried.
+            // 4B1: persist the attempt when the workflow has built data.json,
+            // before the POST. The stored payload is carried through, never
+            // blanked, and submitted_data_path points at the attempt body.
             // S4: store LocalAppData photo paths (not %TEMP% paths) for retry.
             var retryPhotoPaths = PhotoSlots
                 .Select(s => photos.TryGetValue(s.Suffix, out var p) ? p : null)
@@ -2303,25 +2309,32 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 .ToList();
             var photoPathsJson = System.Text.Json.JsonSerializer.Serialize(retryPhotoPaths);
             var signPathsJson = System.Text.Json.JsonSerializer.Serialize(signPaths);
-            store?.Upsert(new StoredInspectionRecord(
-                ConsumerNumber: consumerNumber,
-                CpfNo: cpfNo,
-                VendorCode: recordVendorCode,
-                ConsumerName: FieldValue("consumer_name"),
-                Latitude: record.Latitude,
-                Longitude: record.Longitude,
-                InstallDate: FieldValue("inst_date"),
-                ReasonToRevert: FieldValue("reason_to_revert"),
-                SurveyDurationMinutes: null,
-                IsFirstTime: string.IsNullOrWhiteSpace(FieldValue("beneficiary_sign_file_name")),
-                Status: RecordStatus.Submitted,
-                LastServerMessage: null,
-                LastServerMessageAt: null,
-                OriginalJson: null,
-                SubmittedDataPath: null,
-                PhotoPaths: photoPathsJson,
-                SignPaths: signPathsJson
-            ), caller: "inspection-submit");
+            var existingStored = store?.GetByConsumerNumber(consumerNumber);
+            var payloadJson = !string.IsNullOrWhiteSpace(existingStored?.OriginalJson)
+                ? existingStored.OriginalJson
+                : record.Raw.Count > 0 ? System.Text.Json.JsonSerializer.Serialize(record.Raw) : null;
+            void PersistAttempt(string dataFilePath)
+            {
+                store?.Upsert(new StoredInspectionRecord(
+                    ConsumerNumber: consumerNumber,
+                    CpfNo: cpfNo,
+                    VendorCode: recordVendorCode,
+                    ConsumerName: FieldValue("consumer_name"),
+                    Latitude: record.Latitude,
+                    Longitude: record.Longitude,
+                    InstallDate: FieldValue("inst_date"),
+                    ReasonToRevert: FieldValue("reason_to_revert"),
+                    SurveyDurationMinutes: null,
+                    IsFirstTime: string.IsNullOrWhiteSpace(FieldValue("beneficiary_sign_file_name")),
+                    Status: RecordStatus.Submitted,
+                    LastServerMessage: null,
+                    LastServerMessageAt: null,
+                    OriginalJson: payloadJson,
+                    SubmittedDataPath: dataFilePath,
+                    PhotoPaths: photoPathsJson,
+                    SignPaths: signPathsJson
+                ), caller: "inspection-submit");
+            }
 
             var outcome = await workflow.SubmitAsync(
                 record,
@@ -2339,35 +2352,43 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 vendorPersonName: VendorPersonName,
                 vendorPersonMobile: VendorPersonMobile,
                 resolvedLocation: resolved,
-                sessionLoginId: loginId);
+                sessionLoginId: loginId,
+                onDataFileBuilt: PersistAttempt);
 
             // J1: every part is listed by name with its size; signatures are muted.
             SetManifest(outcome.Manifest, outcome.LocationSummary);
 
-            bodyBox.Text = $"HTTP {(int)outcome.StatusCode} {outcome.StatusCode}\n\n{outcome.Body}";
-            if (outcome.Error != null) bodyBox.Text += "\n\nGate: " + outcome.Error;
+            var displayMessage = ServerMessageForDisplay(outcome);
+            bodyBox.Text = displayMessage;
+            bodyBox.Foreground = outcome.Ok
+                ? new SolidColorBrush(Color.FromRgb(0x1C, 0x1B, 0x1F))
+                : Brushes.Firebrick;
             if (bodyScroll != null) bodyScroll.Visibility = Visibility.Visible;
-            SetStatus(outcome.Ok ? "Submit complete (HTTP 2xx). Body shown above." : $"Submit returned HTTP {(int)outcome.StatusCode}. Body shown above.");
-            if (outcome.DataFilePath != null)
-                SetStatus(status.Text + $"  data.json written: {outcome.DataFilePath}");
 
-            // W1: insert photo hash rows only after a successful 2xx upload.
-            var sentAt = DateTime.UtcNow.ToString("o");
-            foreach (var (suffix, hash) in photoHashChecks)
-                store?.InsertPhotoHash(hash, consumerNumber, suffix, sentAt);
-
-            // W4: update record status based on submit outcome.
-            if (outcome.Ok) {
+            if (outcome.Ok)
+            {
+                // W1: insert photo hash rows only after a successful 2xx upload.
+                var sentAt = DateTime.UtcNow.ToString("o");
+                foreach (var (suffix, hash) in photoHashChecks)
+                    store?.InsertPhotoHash(hash, consumerNumber, suffix, sentAt);
                 store?.SetStatus(consumerNumber, RecordStatus.Accepted);
-            } else if (RefusalClassifier.IsStateRefusal(outcome.Body)) {
+                onSubmitComplete?.Invoke(record, outcome);
+                MessageBox.Show(this, displayMessage, "Submit", MessageBoxButton.OK, MessageBoxImage.Information);
+                Close();
+                return;
+            }
+
+            Log($"hashes skipped (status {(int)outcome.StatusCode})");
+            if (RefusalClassifier.IsStateRefusal(outcome.Body)) {
                 store?.SetStatus(consumerNumber, RecordStatus.Blocked, outcome.Body,
                     blockedReason: RefusalClassifier.Reason(outcome.Body),
                     blockedAt: DateTime.UtcNow);
             } else {
                 store?.SetStatus(consumerNumber, RecordStatus.Failed, outcome.Body);
             }
-
+            LogPayloadPreserved();
             onSubmitComplete?.Invoke(record, outcome);
+            SetStatus($"Submit returned HTTP {(int)outcome.StatusCode}.");
         }
         catch (Exception ex)
         {
@@ -2380,6 +2401,54 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             harvester?.Resume();
             submitBusy = false;
         }
+    }
+
+    static string ServerMessageForDisplay(SubmitOutcome outcome)
+    {
+        var message = ExtractServerMessage(outcome.Body);
+        if (message != null) return message;
+        if (!string.IsNullOrWhiteSpace(outcome.Error)) return outcome.Error;
+        var bytes = Encoding.UTF8.GetBytes(outcome.Body ?? "");
+        var first = Encoding.UTF8.GetString(bytes.Take(200).ToArray());
+        return $"HTTP {(int)outcome.StatusCode} {outcome.StatusCode}\n{first}";
+    }
+
+    static string? ExtractServerMessage(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("message", out var message))
+                return message.ValueKind == JsonValueKind.String ? message.GetString() : message.GetRawText();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"swallowed server-message-parse: {ex.GetType().Name} {ex.Message}");
+        }
+        return null;
+    }
+
+    void LogPayloadPreserved()
+    {
+        var stored = store?.GetByConsumerNumber(consumerNumber);
+        var json = stored?.OriginalJson ?? "";
+        var cpf = cpfNo;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("cpf", out var value) && value.ValueKind == JsonValueKind.String)
+                    cpf = value.GetString() ?? cpf;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"swallowed payload-preserved-parse: {ex.GetType().Name} {ex.Message}");
+        }
+        Log($"payload preserved: len={json.Length} cpf='{cpf}'");
     }
 
     async Task Verify()

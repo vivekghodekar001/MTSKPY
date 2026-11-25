@@ -97,7 +97,8 @@ public sealed class InspectionWorkflow
         string? vendorPersonName = null,
         string? vendorPersonMobile = null,
         LocationResult? resolvedLocation = null,
-        string? sessionLoginId = null)
+        string? sessionLoginId = null,
+        Action<string>? onDataFileBuilt = null)
     {
         // R1: username is the session loginId (userInfo.loginId), not the record's
         // cpf_no. They are different fields that have been equal in every test.
@@ -279,6 +280,9 @@ public sealed class InspectionWorkflow
         // --- Build multipart body; data.json written to disk (P5) ---
         // Part names: Insp-<consumer_number>-<suffix>.{ext}
         var built = builder.Build(record.ConsumerNumber, dataJson, photoPaths, signPaths, dataDirectory);
+        // 4B1: the attempt's data.json path is recorded before the POST, so a
+        // failed attempt keeps an inspectable body.
+        onDataFileBuilt?.Invoke(built.DataFilePath);
 
         // --- Gates (P7) ---
         var gateErrors = new List<string>();
@@ -287,8 +291,8 @@ public sealed class InspectionWorkflow
             if (part.Size < 1)
                 gateErrors.Add($"Missing part: {part.PartName}");
         }
-        if (string.IsNullOrWhiteSpace(blobLat) || string.IsNullOrWhiteSpace(blobLong))
-            gateErrors.Add("Latitude or longitude is empty (no location source available).");
+        if (!LocationProvider.IsValidCoordinatePair(blobLat, blobLong))
+            gateErrors.Add(LocationProvider.UnableToAccessLocation);
         if (distanceRestricted &&
             double.TryParse(allowedDistanceMeter, NumberStyles.Float, CultureInfo.InvariantCulture, out var allowed) &&
             double.TryParse(Convert.ToString(dataDict["distanceFromInst"], CultureInfo.InvariantCulture),

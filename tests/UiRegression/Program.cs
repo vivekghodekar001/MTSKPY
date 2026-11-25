@@ -444,6 +444,14 @@ internal static class Program
                 Assert(!noStoreList.Items.OfType<ListBoxItem>().Any(i =>
                         Descendants(i).OfType<TextBlock>().Any(t => t.Text == "Ghost Installer")),
                     "a failed add adds no picker row");
+                var extractMessage = typeof(InspectionWindow).GetMethod("ExtractServerMessage",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(extractMessage != null &&
+                    (string?)extractMessage.Invoke(null, new object[] { "{\"message\":\"Done\"}" }) == "Done",
+                    "submit response message is extracted verbatim");
+                Assert(extractMessage != null &&
+                    extractMessage.Invoke(null, new object[] { "not json" }) == null,
+                    "a body without message falls back to status display");
             }
         }
         finally

@@ -27,7 +27,7 @@ public sealed class LocationResult
     public double? DistanceMetres { get; init; }
     /// <summary>C3: the jitter that was applied to the installation, in metres.</summary>
     public double? JitterMetres { get; init; }
-    public bool HasCoords => !string.IsNullOrWhiteSpace(Lat) && !string.IsNullOrWhiteSpace(Long);
+    public bool HasCoords => LocationProvider.IsValidCoordinatePair(Lat, Long);
 }
 
 /// <summary>
@@ -73,6 +73,11 @@ public static class GeoDistance
 /// </summary>
 public sealed class LocationProvider
 {
+    public const string UnableToAccessLocation = "Unable to access your location.";
+
+    public static bool IsValidCoordinatePair(string? latText, string? longText) =>
+        TryNumber(latText, out var lat) && TryNumber(longText, out var lon) && !(lat == 0 && lon == 0);
+
     public async Task<LocationResult> ResolveAsync(
         string? manualLat,
         string? manualLong,
@@ -83,14 +88,28 @@ public sealed class LocationProvider
     {
         await Task.CompletedTask;
 
-        // 1. What the officer typed.
-        if (!string.IsNullOrWhiteSpace(manualLat) && !string.IsNullOrWhiteSpace(manualLong))
+        // 1. What the officer typed. A typed pair that is missing a half,
+        // non-numeric, non-finite or exactly 0,0 is rejected, not repaired.
+        if (!string.IsNullOrWhiteSpace(manualLat) || !string.IsNullOrWhiteSpace(manualLong))
         {
+            if (!IsValidCoordinatePair(manualLat, manualLong))
+            {
+                return new LocationResult
+                {
+                    Source = LocationSource.None,
+                    Lat = null,
+                    Long = null,
+                    Accuracy = null,
+                    Mocked = false,
+                    DistanceMetres = null,
+                    Error = UnableToAccessLocation
+                };
+            }
             return new LocationResult
             {
                 Source = LocationSource.ManualOverride,
-                Lat = manualLat.Trim(),
-                Long = manualLong.Trim(),
+                Lat = manualLat!.Trim(),
+                Long = manualLong!.Trim(),
                 Accuracy = string.IsNullOrWhiteSpace(manualAccuracy) ? null : manualAccuracy.Trim(),
                 Mocked = false,
                 DistanceMetres = DistanceToInstall(manualLat, manualLong, installLat, installLong),
@@ -99,7 +118,7 @@ public sealed class LocationProvider
         }
 
         // 2. The customer's site.
-        if (TryNumber(installLat, out var lat) && TryNumber(installLong, out var lon))
+        if (TryNumber(installLat, out var lat) && TryNumber(installLong, out var lon) && !(lat == 0 && lon == 0))
         {
             var metres = SitePoint.RandomJitterMetres();
             var bearing = SitePoint.RandomBearing();
@@ -135,12 +154,12 @@ public sealed class LocationProvider
             Accuracy = null,
             Mocked = false,
             DistanceMetres = null,
-            Error = "This record carries no coordinates. Enter them by hand before submitting."
+            Error = UnableToAccessLocation
         };
     }
 
     static bool TryNumber(string? text, out double value) =>
-        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) && double.IsFinite(value);
 
     static double? DistanceToInstall(string lat, string lon, string? installLat, string? installLong)
     {

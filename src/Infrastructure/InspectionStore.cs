@@ -182,7 +182,7 @@ public sealed class InspectionStore : IDisposable
             idx.CommandText = "CREATE INDEX IF NOT EXISTS idx_vendor_contacts_vendor_person ON vendor_contacts(vendor_code, person_name);";
             idx.ExecuteNonQuery();
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-contacts-index-create: {ex.GetType().Name} {ex.Message}"); }
 
         // J3: a store written by an earlier build has no seen_cpfs column at
         // all. Add it before the backfill reads it.
@@ -446,7 +446,10 @@ public sealed class InspectionStore : IDisposable
                                 ELSE inspection_records.status END,
                     last_server_message=COALESCE(excluded.last_server_message, inspection_records.last_server_message),
                     last_server_message_at=COALESCE(excluded.last_server_message_at, inspection_records.last_server_message_at),
-                    original_json=excluded.original_json,
+                    original_json=CASE
+                        WHEN excluded.original_json IS NULL OR TRIM(excluded.original_json)=''
+                        THEN inspection_records.original_json
+                        ELSE excluded.original_json END,
                     updated_at=CASE
                         WHEN inspection_records.cpf_no IS NOT excluded.cpf_no
                           OR inspection_records.vendor_code IS NOT excluded.vendor_code
@@ -457,12 +460,22 @@ public sealed class InspectionStore : IDisposable
                           OR inspection_records.reason_to_revert IS NOT excluded.reason_to_revert
                           OR inspection_records.survey_duration_minutes IS NOT excluded.survey_duration_minutes
                           OR inspection_records.is_first_time IS NOT excluded.is_first_time
-                          OR inspection_records.original_json IS NOT excluded.original_json
+                          OR (excluded.original_json IS NOT NULL AND TRIM(excluded.original_json)<>''
+                              AND inspection_records.original_json IS NOT excluded.original_json)
                         THEN excluded.updated_at
                         ELSE inspection_records.updated_at END,
-                    submitted_data_path=excluded.submitted_data_path,
-                    photo_paths=excluded.photo_paths,
-                    sign_paths=excluded.sign_paths,
+                    submitted_data_path=CASE
+                        WHEN excluded.submitted_data_path IS NULL OR TRIM(excluded.submitted_data_path)=''
+                        THEN inspection_records.submitted_data_path
+                        ELSE excluded.submitted_data_path END,
+                    photo_paths=CASE
+                        WHEN excluded.photo_paths IS NULL OR TRIM(excluded.photo_paths)=''
+                        THEN inspection_records.photo_paths
+                        ELSE excluded.photo_paths END,
+                    sign_paths=CASE
+                        WHEN excluded.sign_paths IS NULL OR TRIM(excluded.sign_paths)=''
+                        THEN inspection_records.sign_paths
+                        ELSE excluded.sign_paths END,
                     submission_lat=excluded.submission_lat,
                     submission_long=excluded.submission_long,
                     location_source=excluded.location_source,
@@ -936,7 +949,7 @@ public sealed class InspectionStore : IDisposable
     {
         if (!loggedSql.TryAdd(tag, true)) return;
         System.Diagnostics.Debug.WriteLine($"[{tag}] sql: {sql}");
-        try { LogLine($"{tag} sql: {sql.Replace("\r", " ").Replace("\n", " ").Trim()}"); } catch { }
+        try { LogLine($"{tag} sql: {sql.Replace("\r", " ").Replace("\n", " ").Trim()}"); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed sql-log-write: {ex.GetType().Name} {ex.Message}"); }
     }
 
     internal static void LogLine(string message)
@@ -949,7 +962,7 @@ public sealed class InspectionStore : IDisposable
             File.AppendAllText(Path.Combine(dir, "inspection.log"),
                 string.Format("{0:O} {1}{2}", DateTime.Now, message, Environment.NewLine));
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed inspection-log-write: {ex.GetType().Name} {ex.Message}"); }
     }
 
     public sealed record VendorBookRow(long RowId, string PersonName, string Mobile, DateTimeOffset LastUsedAt);
@@ -1311,7 +1324,7 @@ public sealed class InspectionStore : IDisposable
             File.AppendAllText(Path.Combine(dir, "inspection.log"),
                 string.Format("{0:O} vendor_contacts migration: merged {1} duplicate rows ({2} -> {3}){4}", DateTime.Now, before - after, before, after, Environment.NewLine));
         }
-        catch { }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-contacts-migration-log: {ex.GetType().Name} {ex.Message}"); }
     }
 
     /// <summary>P3: upsert a vendor contact pair and mark it last-used now.</summary>

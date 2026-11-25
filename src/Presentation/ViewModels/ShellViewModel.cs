@@ -1325,7 +1325,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     void RefreshIndexAge()
     {
         DateTime? stamp = null;
-        try { if (File.Exists(IndexPath)) stamp = File.GetLastWriteTime(IndexPath); } catch { }
+        try { if (File.Exists(IndexPath)) stamp = File.GetLastWriteTime(IndexPath); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed index-stamp-read: {ex.GetType().Name} {ex.Message}"); }
         indexLastWrite = stamp;
         Changed(nameof(IndexLastWrite));
         Changed(nameof(IndexAge));
@@ -1817,6 +1817,20 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (outcome.Body.Length == 0) return;
         PersistStatus(record, outcome.Ok ? RecordStatus.Submitted : RecordStatus.Returned, outcome.Body,
             outcome.SubmissionLat, outcome.SubmissionLong, outcome.LocationSource);
+        if (outcome.Ok) RefreshSubmittedRow(record.ConsumerNumber);
+    }
+
+    void RefreshSubmittedRow(string consumerNumber)
+    {
+        if (store == null) return;
+        var stored = store.GetByConsumerNumber(consumerNumber);
+        if (stored == null) { RefreshRecordCounts(); return; }
+        var fresh = Materialise(new[] { stored })[0];
+        var index = loaded.FindIndex(r => r.Identity == consumerNumber);
+        if (index >= 0) loaded[index] = fresh;
+        if (page == "Applications") ApplySearch();
+        else if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);
+        RefreshRecordCounts();
     }
 
     /// <summary>P3: a successful verify confirms the accepted state.</summary>
