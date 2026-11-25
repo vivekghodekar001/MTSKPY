@@ -766,13 +766,21 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // must never wait on a host that is having a bad day: clearing the
             // list and then blocking on a 120-second probe left the officer
             // staring at an empty list with 27,000 records already harvested.
-            LoadFromStore();
-            ApplySearch();
-            // D2: the landing list is the officer's own queue, so the count is
-            // their queue's count - the statewide total is on its chip.
-            Status = listScope == ListScopeAll
-                ? $"Loaded {loaded.Count} applications."
-                : $"Loaded your pending queue: {loaded.Count} inspection{ (loaded.Count == 1 ? "" : "s") }.";
+            if (listScope == ListScopeAll)
+            {
+                // Refresh in the statewide scope reloads its pages; the
+                // store read below only fills the officer's own queue and
+                // would leave the statewide list empty.
+                BeginAllScopeLoad(force: true);
+            }
+            else
+            {
+                LoadFromStore();
+                ApplySearch();
+                // D2: the landing list is the officer's own queue, so the count is
+                // their queue's count - the statewide total is on its chip.
+                Status = $"Loaded your pending queue: {loaded.Count} inspection{ (loaded.Count == 1 ? "" : "s") }.";
+            }
 
             // Then the liveness probe, bounded so a slow host cannot hold the
             // page hostage. Its only job is to detect an expired session.

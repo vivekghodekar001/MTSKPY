@@ -874,16 +874,18 @@ public sealed class InspectionStore : IDisposable
         {
             var sb = new System.Text.StringBuilder(
                 "SELECT " + ListColumns + ", r.updated_at FROM inspection_records r WHERE 1=1");
-            if (afterUpdatedAt != null)
-                sb.Append(" AND (r.updated_at < @at OR (r.updated_at = @at AND r.consumer_number > @cn))");
-            sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC LIMIT @lim;");
+            // Keyset on the consumer number alone. Paging by updated_at
+            // skipped rows: the harvester bumps updated_at on re-import,
+            // so a row not yet reached jumped ahead of the cursor and
+            // never appeared (the list stopped hundreds short of the
+            // store total). Consumer numbers never move.
+            if (afterConsumerNumber != null)
+                sb.Append(" AND r.consumer_number > @cn");
+            sb.Append(" ORDER BY r.consumer_number ASC LIMIT @lim;");
             using var cmd = connection.CreateCommand();
             cmd.CommandText = sb.ToString();
-            if (afterUpdatedAt != null)
-            {
-                cmd.Parameters.AddWithValue("@at", afterUpdatedAt);
-                cmd.Parameters.AddWithValue("@cn", afterConsumerNumber ?? "");
-            }
+            if (afterConsumerNumber != null)
+                cmd.Parameters.AddWithValue("@cn", afterConsumerNumber);
             cmd.Parameters.AddWithValue("@lim", limit);
             var results = new List<StoredInspectionRecord>();
             string? cursorAt = afterUpdatedAt;
