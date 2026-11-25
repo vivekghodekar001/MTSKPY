@@ -558,6 +558,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// </summary>
     bool RestoreSession()
     {
+        try
+        {
         var stored = Sessions.Load();
         if (stored == null) return false;
         profile = new AccountProfile(stored.LoginId, stored.Role, stored.Scheme,
@@ -579,6 +581,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             TryDailyCustomerRefresh();
         Status = "Restored session.";
         return true;
+        }
+        catch (Exception ex)
+        {
+            // A restore that throws must not kill auto sign-in: fall through
+            // to the saved-credential sign-in instead of dying in the log.
+            SignInLog.Write("session restore failed: " + ex.GetType().Name + ": " + ex.Message);
+            profile = null;
+            return false;
+        }
     }
 
     /// <summary>
@@ -1357,7 +1368,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             _refreshRunning = true;
             File.WriteAllText(stampPath, now.ToString("O"));
             Status = "Refreshing index…";
-            harvester?.Resume();
+            // A stale walk list rebuilds itself from the store (union of the
+            // file's pairs and everything the harvest has imported), so the
+            // stale warning clears on its own instead of waiting for a click.
+            if (IsIndexStale) RebuildIndex(resetCursor: false);
+            else harvester?.Resume();
             SignInLog.Write("refresh: started at " + now.ToString("O"));
             _refreshRunning = false;
             Status = "";
@@ -1494,7 +1509,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// The walk is then re-armed from the start of the NEW list: the cursor
     /// is reset, so the harvester covers the new file from position 0.
     /// </summary>
-    void RebuildIndex()
+    void RebuildIndex(bool resetCursor = true)
     {
         if (store == null) { Error = "The store is not available."; return; }
         var path = IndexPath?.Trim() ?? "";
@@ -1507,13 +1522,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Changed(nameof(IndexLoaded));
             Changed(nameof(IndexConsumers)); Changed(nameof(IndexPairs)); Changed(nameof(IndexCpfs));
             // J5: the walk starts again at the beginning of the new list.
-            ResetHarvesterCursor();
+            // The automatic stale-index rebuild keeps the cursor instead, so
+            // clearing the warning never throws away walk progress.
+            if (resetCursor) ResetHarvesterCursor();
             StartHarvester();
             RefreshIndexAge();
             Status = $"Index rebuilt: {result.Pairs} pairs, {result.Consumers} consumers, {result.Cpfs} cpfs "
                 + $"(was {result.PairsBefore} pairs, {result.ConsumersBefore} consumers, {result.CpfsBefore} cpfs; "
                 + $"+{result.PairsAdded} pairs, +{result.ConsumersAdded} consumers, +{result.CpfsAdded} cpfs). "
-                + "The walk restarts from 0.";
+                + (resetCursor ? "The walk restarts from 0." : "The walk continues where it was.");
             if (page == "Diagnostics") NavigateTo("Diagnostics");
         }
         catch (Exception ex)

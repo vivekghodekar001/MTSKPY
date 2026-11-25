@@ -2518,12 +2518,15 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     {
         var name = VendorPersonName.Trim();
         var mobile = VendorPersonMobile.Trim();
-        if (name.Length == 0 || mobile.Length == 0) return;
+        if (name.Length == 0 || mobile.Length == 0) { UpdateRisk(); return; }
         var vendorCode = BookVendorCode;
         store?.UpsertVendorContact(vendorCode, name, mobile);
         vendorPeople.Add(name, mobile, vendorCode);
         try { vendorPeople.Save(); }
         catch (Exception ex) { LogInstaller("installer book save failed: " + ex.Message); }
+        // Every path that commits an installer pair recomputes the banner,
+        // so no selection route can leave the blank-installer warning up.
+        UpdateRisk();
     }
 
     /// <summary>C5: the entries that match what has been typed.</summary>
