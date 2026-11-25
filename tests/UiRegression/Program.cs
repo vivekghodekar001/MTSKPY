@@ -347,6 +347,21 @@ internal static class Program
                 pickerSearch.Text = "";
                 Assert(pickerList.Items.Count >= 2, "clearing the search brings both contacts back");
 
+                // Accepting a picker row must recompute the risk banner: after
+                // Clear the banner flags the blank installer, and choosing a
+                // row has to drop that reason again.
+                pickerInspection.DoClear();
+                var riskHeader = (TextBlock)PickerField("riskHeader");
+                Assert(riskHeader.Text.Contains("Installer name or mobile is blank"),
+                    "Clear raises the blank-installer risk reason (got: " + riskHeader.Text + ")");
+                pickerList.SelectedIndex = 0;
+                pickerOk.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert(overlay.Visibility == Visibility.Collapsed, "OK closes the picker after accepting a row");
+                Assert(!riskHeader.Text.Contains("Installer name or mobile is blank"),
+                    "choosing an installer drops the blank-installer risk reason (got: " + riskHeader.Text + ")");
+                choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                pickerRoot.UpdateLayout();
+
                 var addLink = Descendants(pickerRoot).OfType<Button>()
                     .First(b => Descendants(b).OfType<TextBlock>().Any(t => t.Text == "Add new installer"));
                 addLink.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

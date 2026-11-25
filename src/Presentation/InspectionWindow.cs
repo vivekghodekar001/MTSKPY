@@ -432,6 +432,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 no.Checked += (_, _) => remark.IsEnabled = true;
                 yes.Checked += (_, _) => remark.IsEnabled = false;
                 checkPanel.Children.Add(remark);
+                remark.TextChanged += (_, _) => UpdateRisk();
                 checkAnswers[check.Field] = (yes, no, remark);
                 partAPanel.Children.Add(checkPanel);
             }
@@ -498,6 +499,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 no.Checked += (_, _) => remark.IsEnabled = true;
                 yes.Checked += (_, _) => remark.IsEnabled = false;
                 checkPanel.Children.Add(remark);
+                remark.TextChanged += (_, _) => UpdateRisk();
                 checkAnswers[check.Field] = (yes, no, remark);
                 partBPanel.Children.Add(checkPanel);
             }
@@ -1743,6 +1745,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         if (SelectedPickerRow() is not PickerRow row) return;
         VendorPersonName = row.Name;
         VendorPersonMobile = row.Mobile;
+        UpdateRisk();
         UpdatePlaceholders();
         PersistInstallerPair();
         CollapsePickerOverlay();
