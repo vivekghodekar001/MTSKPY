@@ -309,6 +309,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     // near the end asks for the next one.
     public const int ListPageSize = 200;
     int allLoadedCount;
+    string loadedScope = "";
     bool allExhausted;
     bool allPageLoading;
     string? allCursorConsumer;
@@ -809,6 +810,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             return;
         }
         loaded = LoadMyRows();
+        loadedScope = ListScopeMyPending;
     }
 
     /// <summary>The one place a stored row becomes a row the list can show.</summary>
@@ -871,7 +873,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         if (store == null) return;
         if (allLoading) return;
-        if (allLoadedCount > 0 && !force) { ApplySearch(); return; }
+        // The loaded rows are shared between scopes: after a visit to My
+        // pending they hold the officer's rows, so the statewide pages must
+        // be read again instead of filtering the wrong set.
+        if (allLoadedCount > 0 && !force && loadedScope == ListScopeAll) { ApplySearch(); return; }
+        loadedScope = ListScopeAll;
         allLoading = true;
         ClearArrivals();
         allLoadedCount = 0;
