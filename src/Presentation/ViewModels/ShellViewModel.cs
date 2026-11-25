@@ -591,6 +591,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Changed(nameof(ListScope));
         LoadFromStore();
         ApplySearch();
+        // Land where a typed sign-in lands. Without this the restored
+        // session sat on the blank Home page, Refresh stayed disabled,
+        // and the harvest start waited for a list page that never came.
+        currentModule = VerifiedNavigation.Modules.FirstOrDefault(x => x.Key == "inspection");
+        Changed(nameof(ModuleDescription));
+        SetPage("Applications");
         ScheduleHarvestStart();
         StartDailyRefreshTimer();
             TryDailyCustomerRefresh();

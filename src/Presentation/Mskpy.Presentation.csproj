@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <UseWPF>true</UseWPF>
     <AssemblyName>MSKPY-Windows</AssemblyName>
-    <Version>0.9.43</Version>
+    <Version>0.9.44</Version>
     <ApplicationManifest>Mskpy.Presentation.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

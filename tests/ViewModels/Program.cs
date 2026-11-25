@@ -336,6 +336,7 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
         credentials: credentials, sessionStore: sessions);
     await closing.AutoSignInAsync();
     Check(closing.IsSignedIn, "D9++: the stored session signs in at launch");
+    Check(closing.IsList, "D9++: the restored session lands on the application list, not a blank page");
     closing.Dispose();
     Check(sessions.Load() != null && credentials.Load() != null,
         "D9++: Dispose keeps the saved sign-in for the next launch");
