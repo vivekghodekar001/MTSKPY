@@ -90,8 +90,6 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     public string ReturnedCountBadge => _returnedCount > 0 ? $"{_returnedCount} returned" : "";
     public string NeedsRedoCountBadge => _failedCount > 0 ? $"{_failedCount} needs redo" : "";
 
-    // F6: Background refresh of new customers
-    System.Threading.Timer? _refreshTimer;
     int _newCount;
     DateTime _lastListRefresh = DateTime.MinValue;
     public string NewCountBadge => _newCount > 0 ? $"+{_newCount} new" : "";
@@ -165,8 +163,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         RetryRecord = new AsyncCommand((_, ct) => RetryRecordAsync(_), ShowError, _ => !IsBusy && IsSignedIn);
         OpenOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(null, ct), ShowError, _ => !IsBusy);
         OpenJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(null, ct), ShowError, _ => !IsBusy);
-        EditOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "inspection");
-        EditJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(SelectedApplication?.OriginalJson, ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "jsr");
+        EditOffline = new AsyncCommand((_, ct) => desktop.OpenInspectionAsync(SelectedOriginalJson(), ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "inspection");
+        EditJsr = new AsyncCommand((_, ct) => desktop.OpenJsrAsync(SelectedOriginalJson(), ct), ShowError, _ => !IsBusy && SelectedApplication != null && currentModule?.Key == "jsr");
         CopyDiagnostics = new RelayCommand(_ => desktop.CopyDiagnostics(workflow.Diagnostics));
         OpenLiveInspectionCommand = new RelayCommand(_ => OpenLiveInspection(), _ => !IsBusy && IsSignedIn && SelectedApplication != null);
         ReloadIndexCommand = new RelayCommand(_ => ReloadIndex(), _ => !IsBusy);
@@ -194,7 +192,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         set
         {
             if (!Set(ref search, value)) return;
+            var token = ++searchLoadToken;
             ApplySearch();
+            // Search filters only loaded rows; with no match on page 1 there
+            // is no scroll bar to trigger the next page, so page forward
+            // until a row matches or the store runs out.
+            if (listScope == ListScopeAll && Applications.Count == 0 && !allExhausted)
+                _ = LoadUntilSearchMatchAsync(token);
             if (currentModule?.Key != "inspection" || index == null || profile == null) return;
             var consumer = search.Trim();
             // P1: the index is stale, so the detail is opened from the consumer
@@ -277,6 +281,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // The chip already carries its count, so the click is a choice, not
             // a surprise at sign-in.
             if (value == ListScopeAll) { BeginAllScopeLoad(); return; }
+            LoadFromStore();
             ApplySearch();
         }
     }
@@ -294,6 +299,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     int allLoadedCount;
     bool allExhausted;
     bool allPageLoading;
+    string? allCursorConsumer;
+    string? allCursorUpdatedAt;
+    int searchLoadToken;
 
     /// <summary>D2: the list gets this long to itself before the walk starts.</summary>
     public const int HarvestStartDelayMs = 2500;
@@ -730,7 +738,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // must not wipe the pages already on screen.
             return;
         }
-        loaded = Materialise(store.GetSeenUnder(profile?.LoginId ?? "", RecordStatus.Accepted));
+        loaded = LoadMyRows();
     }
 
     /// <summary>The one place a stored row becomes a row the list can show.</summary>
@@ -752,6 +760,38 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             OriginalJson: r.OriginalJson ?? ""
         )).ToList();
 
+    // O2: list rows carry no original_json; fetch the payload only when an
+    // offline edit actually needs it.
+    string? SelectedOriginalJson()
+    {
+        var doc = SelectedApplication;
+        if (doc == null) return null;
+        if (!string.IsNullOrWhiteSpace(doc.OriginalJson)) return doc.OriginalJson;
+        return store?.GetByConsumerNumber(doc.Identity)?.OriginalJson;
+    }
+
+    List<ApplicationDocument> LoadMyRows()
+    {
+        var login = profile?.LoginId;
+        if (store == null || string.IsNullOrWhiteSpace(login)) return [];
+        // One narrow snapshot under the store lock: no original_json drag,
+        // and no page-boundary drift while the harvester is appending.
+        return Materialise(store.GetSeenUnder(login, RecordStatus.Accepted));
+    }
+
+    List<StoredInspectionRecord> LoadPagedRecords(RecordStatus? status = null, bool returnedOnly = false, string? seenUnderCpf = null)
+    {
+        var rows = new List<StoredInspectionRecord>();
+        if (store == null) return rows;
+        for (var offset = 0; ; offset += ListPageSize)
+        {
+            var page = store.GetPage(offset, ListPageSize, seenUnderCpf, status: status, returnedOnly: returnedOnly);
+            rows.AddRange(page);
+            if (page.Count < ListPageSize) break;
+        }
+        return rows;
+    }
+
     /// <summary>
     /// D2: read and draw All Maharashtra on demand. The read runs off the UI
     /// thread; the rows are added in small batches, so the window keeps
@@ -765,6 +805,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         allLoading = true;
         allLoadedCount = 0;
         allExhausted = false;
+        allCursorConsumer = null;
+        allCursorUpdatedAt = null;
         loaded = [];
         Applications.Clear();
         Changed(nameof(RecordCount));
@@ -776,13 +818,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var page = await Task.Run(() => store!.GetPage(0, ListPageSize));
+            var (page, cursorAt) = await Task.Run(() => store!.GetPageAfter(null, null, ListPageSize));
             var rows = Materialise(page);
             allLoadedCount = page.Count;
             allExhausted = page.Count < ListPageSize;
+            allCursorConsumer = page.Count > 0 ? page[^1].ConsumerNumber : null;
+            allCursorUpdatedAt = cursorAt;
             if (listScope != ListScopeAll) return;
             loaded = rows;
             await FillListAsync(rows);
+            if (Applications.Count == 0 && !allExhausted)
+                _ = LoadUntilSearchMatchAsync(searchLoadToken);
             Status = $"All Maharashtra: {Applications.Count} shown of {AllRecordCount} in the store.";
         }
         catch (Exception ex)
@@ -805,10 +851,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         allPageLoading = true;
         try
         {
-            var offset = allLoadedCount;
-            var page = await Task.Run(() => store.GetPage(offset, ListPageSize));
+            var (page, cursorAt) = await Task.Run(() => store.GetPageAfter(allCursorConsumer, allCursorUpdatedAt, ListPageSize));
             if (listScope != ListScopeAll) return;
-            allLoadedCount = offset + page.Count;
+            if (page.Count > 0) { allCursorConsumer = page[^1].ConsumerNumber; allCursorUpdatedAt = cursorAt; }
+            allLoadedCount += page.Count;
             allExhausted = page.Count < ListPageSize;
             var rows = Materialise(page);
             loaded.AddRange(rows);
@@ -823,6 +869,17 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Error = "The next page could not be loaded: " + ex.Message;
         }
         finally { allPageLoading = false; }
+    }
+
+    async Task LoadUntilSearchMatchAsync(int token)
+    {
+        while (token == searchLoadToken && listScope == ListScopeAll && Applications.Count == 0 && !allExhausted)
+        {
+            if (allLoading || allPageLoading) { await Task.Yield(); continue; }
+            var before = allLoadedCount;
+            await LoadNextAllPageAsync();
+            if (allLoadedCount == before) break;
+        }
     }
 
     /// <summary>D2: add the visible rows in batches so the UI paints as it fills.</summary>
@@ -925,8 +982,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (destination == "Returned" && store != null)
         {
             ReturnedRecords.Clear();
-            var seen = profile != null ? store.GetSeenUnder(profile.LoginId) : store.GetAll();
-            foreach (var r in seen.Where(r => !string.IsNullOrWhiteSpace(r.ReasonToRevert)))
+            foreach (var r in LoadPagedRecords(returnedOnly: true, seenUnderCpf: profile?.LoginId))
                 ReturnedRecords.Add(r);
             RefreshRecordCounts();
             SetPage("Returned");
@@ -935,7 +991,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (destination == "NeedsRedo" && store != null)
         {
             NeedsRedoRecords.Clear();
-            foreach (var r in store.GetAll(status: RecordStatus.Failed))
+            foreach (var r in LoadPagedRecords(status: RecordStatus.Failed))
                 NeedsRedoRecords.Add(r);
             RefreshRecordCounts();
             SetPage("NeedsRedo");
@@ -944,7 +1000,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (destination == "Blocked" && store != null)
         {
             BlockedRecords.Clear();
-            foreach (var r in store.GetAll(status: RecordStatus.Blocked))
+            foreach (var r in LoadPagedRecords(status: RecordStatus.Blocked))
                 BlockedRecords.Add(r);
             RefreshRecordCounts();
             SetPage("Blocked");
@@ -1019,7 +1075,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     void CancelPending() { Login.Cancel(); OpenModule.Cancel(); Refresh.Cancel(); OpenOffline.Cancel(); OpenJsr.Cancel(); EditOffline.Cancel(); EditJsr.Cancel(); OpenInspection.Cancel(); }
     void EndSession()
     {
-        _refreshTimer?.Dispose(); _refreshTimer = null;
+        dailyRefreshTimer?.Stop(); dailyRefreshTimer = null;
+        searchLoadToken++;
         CancelAutoSignIn();
         CancelPending(); generation++; workflow.SignOut(); profile = null; loaded = []; Applications.Clear(); Fields.Clear(); SelectedApplication = null; Error = ""; SetPage("Applications"); IsBusy = false;
         harvester?.Dispose(); harvester = null;
@@ -1183,6 +1240,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // "refreshed just now" - the old condition returned on the first run
             // and the refresh never happened at all.
             if (!RefreshDue(last, now)) return;
+            if (!IsSignedIn || harvester == null)
+            {
+                SignInLog.Write("refresh: due but deferred (no harvester)");
+                return;
+            }
             _refreshRunning = true;
             File.WriteAllText(stampPath, now.ToString("O"));
             Status = "Refreshing index…";
@@ -1256,9 +1318,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                         // refresh the cached stamp, so the stale warning clears
                         // without a reload.
                         RefreshIndexAge();
-                        // D2: the statewide view is refreshed the same way it is
-                        // first filled - on demand - not by blocking the timer.
-                        if (listScope == ListScopeAll) BeginAllScopeLoad(force: true);
+                        // D2: new statewide rows update the counts only.
+                        // Reloading would throw away the pages the officer
+                        // has scrolled to; the next scope entry reads fresh.
+                        if (listScope == ListScopeAll) { Changed(nameof(AllChip)); Changed(nameof(RecordCount)); }
                         else { LoadFromStore(); ApplySearch(); }
                     }
                     catch { /* a list refresh must never disturb the walk */ }
@@ -1474,6 +1537,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,
+                store: store,
                 onSubmitComplete: PersistSubmitOutcome,
                 onVerifyComplete: PersistVerifyOutcome);
             // H4: the banner is the only signal that tells the officer which case
@@ -1689,7 +1753,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             }
             RefreshRecordCounts();
             NeedsRedoRecords.Clear();
-            foreach (var r in store.GetAll(status: RecordStatus.Failed))
+            foreach (var r in LoadPagedRecords(status: RecordStatus.Failed))
                 NeedsRedoRecords.Add(r);
         }
         catch (Exception ex)

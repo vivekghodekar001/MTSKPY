@@ -301,20 +301,16 @@ internal static class Program
             // Click handler fails these checks.
             using (var pickerStore = new Mskpy.Infrastructure.InspectionStore(testDb))
             {
-                Console.WriteLine("M6.1 store");
                 // The picker keys the store book by the record's vendor_code.
                 pickerStore.UpsertVendorContact(record.VendorCode ?? record.ConsumerNumber, "Zed", "9000000001");
                 pickerStore.UpsertVendorContact(record.VendorCode ?? record.ConsumerNumber, "Amit", "9000000002");
-                Console.WriteLine("M6.2 seeded");
                 var pickerInspection = new InspectionWindow(
                     record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow, owner,
                     store: pickerStore, installerBook: newBook);
-                Console.WriteLine("M6.3 window");
                 var pickerRoot = (FrameworkElement)pickerInspection.Content;
                 pickerRoot.Measure(new Size(1000, 820));
                 pickerRoot.Arrange(new Rect(0, 0, 1000, 820));
                 pickerRoot.UpdateLayout();
-                Console.WriteLine("M6.4 layout");
 
                 const System.Reflection.BindingFlags Private =
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
@@ -403,6 +399,36 @@ internal static class Program
                         Descendants(i).OfType<TextBlock>().Any(t => t.Text == "Saved Installer")
                         && Descendants(i).OfType<TextBlock>().Any(t => t.Text == "9000000011")),
                     "a saved installer is listed when Choose opens again with an empty record vendor_code");
+
+                // With no store the Add write cannot land; the form must say
+                // "Not saved" and add no row instead of reporting success.
+                var noStoreWindow = new InspectionWindow(
+                    record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow, owner,
+                    installerBook: newBook);
+                var noStoreRoot = (FrameworkElement)noStoreWindow.Content;
+                noStoreRoot.Measure(new Size(1000, 820));
+                noStoreRoot.Arrange(new Rect(0, 0, 1000, 820));
+                noStoreRoot.UpdateLayout();
+                object NoStoreField(string name) => typeof(InspectionWindow).GetField(name, Private)!.GetValue(noStoreWindow)!;
+                var noStoreChoose = Descendants(noStoreRoot).OfType<Button>()
+                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
+                noStoreChoose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                noStoreRoot.UpdateLayout();
+                var noStoreAddLink = Descendants(noStoreRoot).OfType<Button>()
+                    .First(b => Descendants(b).OfType<TextBlock>().Any(t => t.Text == "Add new installer"));
+                noStoreAddLink.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                ((TextBox)NoStoreField("pickerAddName")).Text = "Ghost Installer";
+                ((TextBox)NoStoreField("pickerAddMobile")).Text = "9000000099";
+                var noStoreAdd = Descendants(noStoreRoot).OfType<Button>()
+                    .First(b => b.Content as string == "Add");
+                noStoreAdd.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var noStoreError = (TextBlock)NoStoreField("pickerAddError");
+                Assert(noStoreError.Text.Contains("Not saved"),
+                    "a failed add is reported as not saved (got \"" + noStoreError.Text + "\")");
+                var noStoreList = (ListBox)NoStoreField("pickerListBox");
+                Assert(!noStoreList.Items.OfType<ListBoxItem>().Any(i =>
+                        Descendants(i).OfType<TextBlock>().Any(t => t.Text == "Ghost Installer")),
+                    "a failed add adds no picker row");
             }
         }
         finally

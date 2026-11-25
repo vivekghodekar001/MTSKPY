@@ -44,9 +44,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly InspectionWorkflow workflow;
 
     readonly InspectionRecord record;
-    string recordVendorCode;
+    readonly string recordVendorCode;
     readonly string consumerNumber;
-    // One key for every book read and write; an empty record code uses the record number.
+    // One key for every book read and write; an empty record code uses the
+    // record number as the book key only. The submitted vendor stays the
+    // record's own vendor_code.
     string BookVendorCode => string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode;
     readonly string cpfNo;
     readonly string loginId;
@@ -1673,22 +1675,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         return grid;
     }
 
-    /// <summary>2R: the persons for this record's vendor, from the store when
-    /// available, otherwise the officer's book filtered to this vendor.</summary>
-    List<VendorPeople.Person> VendorPersonsForRecord()
-    {
-        var vendorCode = BookVendorCode;
-        if (store != null)
-        {
-            var contacts = store.VendorContacts(vendorCode);
-            if (contacts.Count > 0)
-                return contacts.Select(c => new VendorPeople.Person(c.PersonName, c.Mobile, DateTimeOffset.Now, vendorCode)).ToList();
-        }
-        return vendorPeople.People
-            .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
-
     /// <summary>Test hook for the picker flow: apply a picked pair without opening the dialog.</summary>
     void CollapsePickerOverlay()
     {
@@ -1757,7 +1743,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         if (SelectedPickerRow() is not PickerRow row) return;
         VendorPersonName = row.Name;
         VendorPersonMobile = row.Mobile;
-        if (string.IsNullOrWhiteSpace(recordVendorCode)) recordVendorCode = consumerNumber;
         UpdatePlaceholders();
         PersistInstallerPair();
         CollapsePickerOverlay();
@@ -2004,6 +1989,22 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Log($"picker add: {name}/{mobile} total={pickerRows.Count}");
     }
 
+    void ImportBookOnce()
+    {
+        var s = store;
+        if (pickerImported || s == null) return;
+        try
+        {
+            var vendorCode = BookVendorCode;
+            var bookRows = vendorPeople.People
+                .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
+                .Select(p => (p.Name, p.Mobile));
+            s.ImportVendorContacts(vendorCode, bookRows);
+            pickerImported = true;
+        }
+        catch (Exception ex) { LogInstaller("picker import failed: " + ex.Message); }
+    }
+
     void LoadPickerRows()
     {
         // M4: the book key falls back to the consumer number in memory only.
@@ -2011,20 +2012,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var vendorCode = BookVendorCode;
         if (string.IsNullOrWhiteSpace(recordVendorCode))
             Log("picker open: record vendorCode EMPTY — book key resolves to '" + consumerNumber + "' (no record write)");
-        // Import the officer's book once per window. Importing again after a pick
-        // re-enters the store's non-reentrant lock and would hang the second open.
-        if (!pickerImported)
-        {
-            try
-            {
-                var bookRows = vendorPeople.People
-                    .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
-                    .Select(p => (p.Name, p.Mobile));
-                store?.ImportVendorContacts(vendorCode, bookRows);
-                pickerImported = true;
-            }
-            catch { }
-        }
+        ImportBookOnce();
         pickerRows.Clear();
         foreach (var c in store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>())
             pickerRows.Add(new PickerRow(c.RowId, c.PersonName, c.Mobile));
@@ -2500,8 +2488,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // must never leave the read-only field looking empty.
         vendorPersonNameBox.Text = person.Name;
         vendorPersonMobileBox.Text = person.Mobile;
-        if (string.IsNullOrWhiteSpace(recordVendorCode) && !string.IsNullOrWhiteSpace(person.Vendor))
-            recordVendorCode = person.Vendor;
         UpdateRisk();
         UpdatePlaceholders();
         PersistInstallerPair();
@@ -2530,7 +2516,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var vendorCode = BookVendorCode;
         store?.UpsertVendorContact(vendorCode, name, mobile);
         vendorPeople.Add(name, mobile, vendorCode);
-        try { vendorPeople.Save(); } catch { }
+        try { vendorPeople.Save(); }
+        catch (Exception ex) { LogInstaller("installer book save failed: " + ex.Message); }
     }
 
     /// <summary>C5: the entries that match what has been typed.</summary>
@@ -2551,8 +2538,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         string branch = "";
         if (store != null)
         {
-            // M1: the same VendorBook the picker lists, so prefill cannot find a
-            // person the list would not show.
+            // M1: import once, then read the same VendorBook the picker lists,
+            // so prefill cannot find a person the list would not show.
+            ImportBookOnce();
             var book = store.VendorBook(vendorCode);
             if (book.Count > 0)
             {
@@ -2560,7 +2548,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 branch = "vendor-book-last";
             }
         }
-        if (pair == null)
+        else
         {
             var book = vendorPeople.People
                 .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))

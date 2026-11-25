@@ -68,6 +68,15 @@ public sealed class InspectionStore : IDisposable
     private readonly SemaphoreSlim dbLock = new(1, 1);
     private bool disposed;
 
+    // O2: list reads never drag original_json through the reader. The full
+    // payload stays on disk and is fetched by GetByConsumerNumber on open.
+    private const string ListColumns =
+        "r.consumer_number, r.cpf_no, r.vendor_code, r.consumer_name, r.latitude, r.longitude, " +
+        "r.inst_date, r.reason_to_revert, r.survey_duration_minutes, r.is_first_time, r.status, " +
+        "r.last_server_message, r.last_server_message_at, NULL AS original_json, r.submitted_data_path, " +
+        "r.photo_paths, r.sign_paths, r.seen_cpfs, r.submission_lat, r.submission_long, r.location_source, " +
+        "r.reason_category, r.blocked_reason, r.blocked_at";
+
     public InspectionStore(string? dbPath = null)
     {
         var dir = dbPath != null
@@ -406,8 +415,8 @@ public sealed class InspectionStore : IDisposable
                 }
             }
             var newVendor = string.IsNullOrWhiteSpace(record.VendorCode) ? null : record.VendorCode;
-            if (existed && !string.Equals(oldVendor ?? "", newVendor ?? "", StringComparison.Ordinal))
-                LogLine($"vendor_code write: cn={record.ConsumerNumber} old='{oldVendor}' new='{newVendor}' caller={caller}");
+            if (!existed || !string.Equals(oldVendor ?? "", newVendor ?? "", StringComparison.Ordinal))
+                LogLine($"vendor_code write: cn={record.ConsumerNumber} old='{(existed ? oldVendor : "<none>")}' new='{newVendor}' caller={caller}");
 
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
@@ -753,10 +762,10 @@ public sealed class InspectionStore : IDisposable
             var sb = new System.Text.StringBuilder(
                 // J3: seen_cpfs is stored on the row, so no correlated subquery
                 // runs per row over 36k rows on every list load.
-                "SELECT * FROM inspection_records r WHERE 1=1");
+                "SELECT " + ListColumns + " FROM inspection_records r WHERE 1=1");
             if (firstTimeOnly.HasValue) sb.Append(" AND r.is_first_time=@ift");
             if (status.HasValue) sb.Append(" AND r.status=@st");
-            sb.Append(" ORDER BY r.updated_at DESC");
+            sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC");
 
             using var cmd = connection.CreateCommand();
             cmd.CommandText = sb.ToString();
@@ -765,7 +774,8 @@ public sealed class InspectionStore : IDisposable
 
             var results = new List<StoredInspectionRecord>();
             using var reader = cmd.ExecuteReader();
-            while (reader.Read()) results.Add(ReadRecord(reader));
+            var ordinals = new RecordOrdinals(reader);
+            while (reader.Read()) results.Add(ReadRecord(reader, ordinals));
             return results;
         }
         finally
@@ -790,16 +800,17 @@ public sealed class InspectionStore : IDisposable
         try
         {
             var sb = new System.Text.StringBuilder(
-                "SELECT r.* FROM inspection_records r WHERE EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
+                "SELECT " + ListColumns + " FROM inspection_records r WHERE EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
             if (excludeStatus.HasValue) sb.Append(" AND r.status<>@st");
-            sb.Append(" ORDER BY r.updated_at DESC");
+            sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC");
             using var cmd = connection.CreateCommand();
             cmd.CommandText = sb.ToString();
             cmd.Parameters.AddWithValue("@cpf", cpf.Trim());
             if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
             var results = new List<StoredInspectionRecord>();
             using var reader = cmd.ExecuteReader();
-            while (reader.Read()) results.Add(ReadRecord(reader));
+            var ordinals = new RecordOrdinals(reader);
+            while (reader.Read()) results.Add(ReadRecord(reader, ordinals));
             return results;
         }
         finally
@@ -814,40 +825,79 @@ public sealed class InspectionStore : IDisposable
     /// 200 payloads through the reader. Ordering is deterministic so a page
     /// boundary cannot repeat or skip a row.
     /// </summary>
-    public List<StoredInspectionRecord> GetPage(int offset, int limit, string? seenUnderCpf = null, RecordStatus? excludeStatus = null)
+    public List<StoredInspectionRecord> GetPage(int offset, int limit, string? seenUnderCpf = null,
+        RecordStatus? status = null, bool returnedOnly = false)
     {
         if (limit <= 0) return [];
         dbLock.Wait();
         try
         {
             var sb = new System.Text.StringBuilder(
-                "SELECT r.consumer_number, r.cpf_no, r.vendor_code, r.consumer_name, r.latitude, r.longitude, " +
-                "r.inst_date, r.reason_to_revert, r.survey_duration_minutes, r.is_first_time, r.status, " +
-                "r.last_server_message, r.last_server_message_at, NULL AS original_json, r.submitted_data_path, " +
-                "r.photo_paths, r.sign_paths, r.seen_cpfs, r.submission_lat, r.submission_long, r.location_source, " +
-                "r.reason_category, r.blocked_reason, r.blocked_at FROM inspection_records r");
+                "SELECT " + ListColumns + " FROM inspection_records r");
             if (!string.IsNullOrWhiteSpace(seenUnderCpf))
                 sb.Append(" WHERE EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
             else
                 sb.Append(" WHERE 1=1");
-            if (excludeStatus.HasValue) sb.Append(" AND r.status<>@st");
+            if (status.HasValue) sb.Append(" AND r.status=@st");
+            if (returnedOnly) sb.Append(" AND r.reason_to_revert IS NOT NULL AND TRIM(r.reason_to_revert) <> ''");
             sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC LIMIT @lim OFFSET @off;");
 
             using var cmd = connection.CreateCommand();
             cmd.CommandText = sb.ToString();
             if (!string.IsNullOrWhiteSpace(seenUnderCpf)) cmd.Parameters.AddWithValue("@cpf", seenUnderCpf.Trim());
-            if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
+            if (status.HasValue) cmd.Parameters.AddWithValue("@st", (int)status.Value);
             cmd.Parameters.AddWithValue("@lim", limit);
             cmd.Parameters.AddWithValue("@off", offset);
             var results = new List<StoredInspectionRecord>();
             using var reader = cmd.ExecuteReader();
-            while (reader.Read()) results.Add(ReadRecord(reader));
+            var ordinals = new RecordOrdinals(reader);
+            while (reader.Read()) results.Add(ReadRecord(reader, ordinals));
             return results;
         }
         finally
         {
             dbLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Keyset page for the statewide list: rows strictly after the cursor row
+    /// in (updated_at DESC, consumer_number ASC) order. OFFSET pages shift
+    /// when the harvester re-imports a row mid-scroll; a cursor does not.
+    /// </summary>
+    public (List<StoredInspectionRecord> Rows, string? CursorUpdatedAt) GetPageAfter(
+        string? afterConsumerNumber, string? afterUpdatedAt, int limit)
+    {
+        if (limit <= 0) return ([], afterUpdatedAt);
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT " + ListColumns + ", r.updated_at FROM inspection_records r WHERE 1=1");
+            if (afterUpdatedAt != null)
+                sb.Append(" AND (r.updated_at < @at OR (r.updated_at = @at AND r.consumer_number > @cn))");
+            sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC LIMIT @lim;");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            if (afterUpdatedAt != null)
+            {
+                cmd.Parameters.AddWithValue("@at", afterUpdatedAt);
+                cmd.Parameters.AddWithValue("@cn", afterConsumerNumber ?? "");
+            }
+            cmd.Parameters.AddWithValue("@lim", limit);
+            var results = new List<StoredInspectionRecord>();
+            string? cursorAt = afterUpdatedAt;
+            using var reader = cmd.ExecuteReader();
+            var ordinals = new RecordOrdinals(reader);
+            var updatedOrdinal = reader.GetOrdinal("updated_at");
+            while (reader.Read())
+            {
+                results.Add(ReadRecord(reader, ordinals));
+                cursorAt = reader.IsDBNull(updatedOrdinal) ? "" : reader.GetString(updatedOrdinal);
+            }
+            return (results, cursorAt);
+        }
+        finally { dbLock.Release(); }
     }
 
     /// <summary>
@@ -903,31 +953,73 @@ public sealed class InspectionStore : IDisposable
     public sealed record VendorBookRow(long RowId, string PersonName, string Mobile, DateTimeOffset LastUsedAt);
 
 
-    static StoredInspectionRecord ReadRecord(Microsoft.Data.Sqlite.SqliteDataReader reader) => new(
-        ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
-        CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
-        VendorCode: reader.IsDBNull(reader.GetOrdinal("vendor_code")) ? null : reader.GetString(reader.GetOrdinal("vendor_code")),
-        ConsumerName: reader.IsDBNull(reader.GetOrdinal("consumer_name")) ? null : reader.GetString(reader.GetOrdinal("consumer_name")),
-        Latitude: reader.IsDBNull(reader.GetOrdinal("latitude")) ? null : reader.GetString(reader.GetOrdinal("latitude")),
-        Longitude: reader.IsDBNull(reader.GetOrdinal("longitude")) ? null : reader.GetString(reader.GetOrdinal("longitude")),
-        InstallDate: reader.IsDBNull(reader.GetOrdinal("inst_date")) ? null : reader.GetString(reader.GetOrdinal("inst_date")),
-        ReasonToRevert: reader.IsDBNull(reader.GetOrdinal("reason_to_revert")) ? null : reader.GetString(reader.GetOrdinal("reason_to_revert")),
-        SurveyDurationMinutes: reader.IsDBNull(reader.GetOrdinal("survey_duration_minutes")) ? null : reader.GetString(reader.GetOrdinal("survey_duration_minutes")),
-        IsFirstTime: reader.GetInt32(reader.GetOrdinal("is_first_time")) != 0,
-        Status: (RecordStatus)reader.GetInt32(reader.GetOrdinal("status")),
-        LastServerMessage: reader.IsDBNull(reader.GetOrdinal("last_server_message")) ? null : reader.GetString(reader.GetOrdinal("last_server_message")),
-        LastServerMessageAt: reader.IsDBNull(reader.GetOrdinal("last_server_message_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("last_server_message_at")), null, System.Globalization.DateTimeStyles.RoundtripKind),
-        OriginalJson: reader.IsDBNull(reader.GetOrdinal("original_json")) ? null : reader.GetString(reader.GetOrdinal("original_json")),
-        SubmittedDataPath: reader.IsDBNull(reader.GetOrdinal("submitted_data_path")) ? null : reader.GetString(reader.GetOrdinal("submitted_data_path")),
-        PhotoPaths: reader.IsDBNull(reader.GetOrdinal("photo_paths")) ? null : reader.GetString(reader.GetOrdinal("photo_paths")),
-        SignPaths: reader.IsDBNull(reader.GetOrdinal("sign_paths")) ? null : reader.GetString(reader.GetOrdinal("sign_paths")),
-        SeenCpfs: reader.IsDBNull(reader.GetOrdinal("seen_cpfs")) ? null : reader.GetString(reader.GetOrdinal("seen_cpfs")),
-        SubmissionLat: reader.IsDBNull(reader.GetOrdinal("submission_lat")) ? null : reader.GetString(reader.GetOrdinal("submission_lat")),
-        SubmissionLong: reader.IsDBNull(reader.GetOrdinal("submission_long")) ? null : reader.GetString(reader.GetOrdinal("submission_long")),
-        LocationSource: reader.IsDBNull(reader.GetOrdinal("location_source")) ? null : reader.GetString(reader.GetOrdinal("location_source")),
-        ReasonCategory: reader.IsDBNull(reader.GetOrdinal("reason_category")) ? null : reader.GetString(reader.GetOrdinal("reason_category")),
-        BlockedReason: reader.IsDBNull(reader.GetOrdinal("blocked_reason")) ? null : reader.GetString(reader.GetOrdinal("blocked_reason")),
-        BlockedAt: reader.IsDBNull(reader.GetOrdinal("blocked_at")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("blocked_at")), null, System.Globalization.DateTimeStyles.RoundtripKind)
+    // O2: column ordinals are resolved once per reader, not once per field
+    // per row.
+    private readonly struct RecordOrdinals
+    {
+        public readonly int ConsumerNumber, CpfNo, VendorCode, ConsumerName, Latitude, Longitude,
+            InstallDate, ReasonToRevert, SurveyDurationMinutes, IsFirstTime, Status,
+            LastServerMessage, LastServerMessageAt, OriginalJson, SubmittedDataPath, PhotoPaths,
+            SignPaths, SeenCpfs, SubmissionLat, SubmissionLong, LocationSource, ReasonCategory,
+            BlockedReason, BlockedAt;
+
+        public RecordOrdinals(Microsoft.Data.Sqlite.SqliteDataReader reader)
+        {
+            ConsumerNumber = reader.GetOrdinal("consumer_number");
+            CpfNo = reader.GetOrdinal("cpf_no");
+            VendorCode = reader.GetOrdinal("vendor_code");
+            ConsumerName = reader.GetOrdinal("consumer_name");
+            Latitude = reader.GetOrdinal("latitude");
+            Longitude = reader.GetOrdinal("longitude");
+            InstallDate = reader.GetOrdinal("inst_date");
+            ReasonToRevert = reader.GetOrdinal("reason_to_revert");
+            SurveyDurationMinutes = reader.GetOrdinal("survey_duration_minutes");
+            IsFirstTime = reader.GetOrdinal("is_first_time");
+            Status = reader.GetOrdinal("status");
+            LastServerMessage = reader.GetOrdinal("last_server_message");
+            LastServerMessageAt = reader.GetOrdinal("last_server_message_at");
+            OriginalJson = reader.GetOrdinal("original_json");
+            SubmittedDataPath = reader.GetOrdinal("submitted_data_path");
+            PhotoPaths = reader.GetOrdinal("photo_paths");
+            SignPaths = reader.GetOrdinal("sign_paths");
+            SeenCpfs = reader.GetOrdinal("seen_cpfs");
+            SubmissionLat = reader.GetOrdinal("submission_lat");
+            SubmissionLong = reader.GetOrdinal("submission_long");
+            LocationSource = reader.GetOrdinal("location_source");
+            ReasonCategory = reader.GetOrdinal("reason_category");
+            BlockedReason = reader.GetOrdinal("blocked_reason");
+            BlockedAt = reader.GetOrdinal("blocked_at");
+        }
+    }
+
+    static StoredInspectionRecord ReadRecord(Microsoft.Data.Sqlite.SqliteDataReader reader) =>
+        ReadRecord(reader, new RecordOrdinals(reader));
+
+    static StoredInspectionRecord ReadRecord(Microsoft.Data.Sqlite.SqliteDataReader reader, RecordOrdinals o) => new(
+        ConsumerNumber: reader.GetString(o.ConsumerNumber),
+        CpfNo: reader.GetString(o.CpfNo),
+        VendorCode: reader.IsDBNull(o.VendorCode) ? null : reader.GetString(o.VendorCode),
+        ConsumerName: reader.IsDBNull(o.ConsumerName) ? null : reader.GetString(o.ConsumerName),
+        Latitude: reader.IsDBNull(o.Latitude) ? null : reader.GetString(o.Latitude),
+        Longitude: reader.IsDBNull(o.Longitude) ? null : reader.GetString(o.Longitude),
+        InstallDate: reader.IsDBNull(o.InstallDate) ? null : reader.GetString(o.InstallDate),
+        ReasonToRevert: reader.IsDBNull(o.ReasonToRevert) ? null : reader.GetString(o.ReasonToRevert),
+        SurveyDurationMinutes: reader.IsDBNull(o.SurveyDurationMinutes) ? null : reader.GetString(o.SurveyDurationMinutes),
+        IsFirstTime: reader.GetInt32(o.IsFirstTime) != 0,
+        Status: (RecordStatus)reader.GetInt32(o.Status),
+        LastServerMessage: reader.IsDBNull(o.LastServerMessage) ? null : reader.GetString(o.LastServerMessage),
+        LastServerMessageAt: reader.IsDBNull(o.LastServerMessageAt) ? null : DateTime.Parse(reader.GetString(o.LastServerMessageAt), null, System.Globalization.DateTimeStyles.RoundtripKind),
+        OriginalJson: reader.IsDBNull(o.OriginalJson) ? null : reader.GetString(o.OriginalJson),
+        SubmittedDataPath: reader.IsDBNull(o.SubmittedDataPath) ? null : reader.GetString(o.SubmittedDataPath),
+        PhotoPaths: reader.IsDBNull(o.PhotoPaths) ? null : reader.GetString(o.PhotoPaths),
+        SignPaths: reader.IsDBNull(o.SignPaths) ? null : reader.GetString(o.SignPaths),
+        SeenCpfs: reader.IsDBNull(o.SeenCpfs) ? null : reader.GetString(o.SeenCpfs),
+        SubmissionLat: reader.IsDBNull(o.SubmissionLat) ? null : reader.GetString(o.SubmissionLat),
+        SubmissionLong: reader.IsDBNull(o.SubmissionLong) ? null : reader.GetString(o.SubmissionLong),
+        LocationSource: reader.IsDBNull(o.LocationSource) ? null : reader.GetString(o.LocationSource),
+        ReasonCategory: reader.IsDBNull(o.ReasonCategory) ? null : reader.GetString(o.ReasonCategory),
+        BlockedReason: reader.IsDBNull(o.BlockedReason) ? null : reader.GetString(o.BlockedReason),
+        BlockedAt: reader.IsDBNull(o.BlockedAt) ? null : DateTime.Parse(reader.GetString(o.BlockedAt), null, System.Globalization.DateTimeStyles.RoundtripKind)
     );
 
     public StoredInspectionRecord? GetByConsumerNumber(string consumerNumber)
@@ -1232,63 +1324,7 @@ public sealed class InspectionStore : IDisposable
             cmd.CommandText = "DELETE FROM vendor_contacts WHERE vendor_code = @v AND TRIM(person_name) = TRIM(@p) COLLATE NOCASE;";
             cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             cmd.Parameters.AddWithValue("@p", personName.Trim());
-            var n = cmd.ExecuteNonQuery();
-            // commit immediately
-            using var commit = connection.CreateCommand();
-            commit.CommandText = "COMMIT;";
-            try { commit.ExecuteNonQuery(); } catch { }
-            var remaining = 0;
-            using (var c2 = connection.CreateCommand())
-            {
-                c2.CommandText = "SELECT COUNT(*) FROM vendor_contacts WHERE vendor_code = @v;";
-                c2.Parameters.AddWithValue("@v", vendorCode ?? "");
-                remaining = Convert.ToInt32(c2.ExecuteScalar());
-            }
-            System.Diagnostics.Debug.WriteLine($"vendor book {vendorCode}: removed {personName.Trim()}, {remaining} left");
-            return n;
-        }
-        finally { dbLock.Release(); }
-    }
-
-    /// <summary>P3: the most recently used pair for this vendor, or null.</summary>
-    public (string PersonName, string Mobile)? LastVendorContact(string vendorCode)
-    {
-        dbLock.Wait();
-        try
-        {
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
-                SELECT person_name, mobile FROM vendor_contacts
-                WHERE vendor_code = @v
-                ORDER BY last_used_at DESC
-                LIMIT 1;
-            ";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
-            using var reader = cmd.ExecuteReader();
-            if (reader.Read())
-                return (reader.GetString(0), reader.GetString(1));
-            return null;
-        }
-        finally { dbLock.Release(); }
-    }
-
-    /// <summary>V4: every contact for this vendor, ordered by person name, with rowid.</summary>
-    public IReadOnlyList<(long RowId, string PersonName, string Mobile)> VendorContactRows(string vendorCode)
-    {
-        var result = new List<(long, string, string)>();
-        dbLock.Wait();
-        try
-        {
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
-                SELECT rowid, person_name, mobile FROM vendor_contacts
-                WHERE vendor_code = @v
-                ORDER BY person_name;
-            ";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read()) result.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2)));
-            return result;
+            return cmd.ExecuteNonQuery();
         }
         finally { dbLock.Release(); }
     }
@@ -1322,9 +1358,6 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             cmd.Parameters.AddWithValue("@t", DateTimeOffset.Now.ToString("O"));
             cmd.ExecuteNonQuery();
-            using var commit = connection.CreateCommand();
-            commit.CommandText = "COMMIT;";
-            try { commit.ExecuteNonQuery(); } catch { }
         }
         finally { dbLock.Release(); }
     }
@@ -1339,9 +1372,6 @@ public sealed class InspectionStore : IDisposable
             cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             cmd.ExecuteNonQuery();
-            using var commit = connection.CreateCommand();
-            commit.CommandText = "COMMIT;";
-            try { commit.ExecuteNonQuery(); } catch { }
         }
         finally { dbLock.Release(); }
     }
@@ -1396,44 +1426,9 @@ public sealed class InspectionStore : IDisposable
             t.Parameters.AddWithValue("@p", name.Trim());
             t.Parameters.AddWithValue("@d", DateTimeOffset.Now.ToString("O"));
             t.ExecuteNonQuery();
-            using var commit = connection.CreateCommand();
-            commit.CommandText = "COMMIT;";
-            try { commit.ExecuteNonQuery(); } catch { }
             deletedName = name;
             deletedVendor = vendor;
-            System.Diagnostics.Debug.WriteLine($"tombstone add {vendor}/{name.Trim()}");
-            int tc = 0;
-            using (var tcCmd = connection.CreateCommand())
-            {
-                tcCmd.CommandText = "SELECT COUNT(*) FROM vendor_contact_deleted WHERE vendor_code=@v;";
-                tcCmd.Parameters.AddWithValue("@v", vendor);
-                tc = Convert.ToInt32(tcCmd.ExecuteScalar());
-            }
-            System.Diagnostics.Debug.WriteLine($"tombstone count for vendor={vendor}: {tc}");
             return n;
-        }
-        finally { dbLock.Release(); }
-    }
-
-    /// <summary>V4: every contact for this vendor, ordered by person name. No
-    /// DISTINCT, TOP or grouping - two different names are two rows; a repeated
-    /// name is one row, updated in place by UpsertVendorContact.</summary>
-    public IReadOnlyList<(string PersonName, string Mobile)> VendorContacts(string vendorCode)
-    {
-        var result = new List<(string, string)>();
-        dbLock.Wait();
-        try
-        {
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
-                SELECT person_name, mobile FROM vendor_contacts
-                WHERE vendor_code = @v
-                ORDER BY person_name;
-            ";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read()) result.Add((reader.GetString(0), reader.GetString(1)));
-            return result;
         }
         finally { dbLock.Release(); }
     }
