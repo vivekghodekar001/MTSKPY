@@ -258,7 +258,7 @@ internal static class Program
         var bodyScroll = Descendants(root).OfType<ScrollViewer>().FirstOrDefault(s => s.Content is Grid);
         Assert(bodyScroll != null, "the body ScrollViewer exists");
 
-        Assert(bodyScroll.ComputedVerticalScrollBarVisibility == Visibility.Collapsed,
+        Assert(bodyScroll!.ComputedVerticalScrollBarVisibility == Visibility.Collapsed,
             "no vertical scrollbar at 1024x768 with empty fields (got " + bodyScroll.ComputedVerticalScrollBarVisibility + " extent=" + bodyScroll.ExtentHeight + " viewport=" + bodyScroll.ViewportHeight + ")");
         Assert(nameField.ActualWidth >= 200, "name TextBox is at least 200 px wide (got " + nameField.ActualWidth + ")");
         Assert(contactField.ActualWidth >= 200, "mobile TextBox is at least 200 px wide (got " + contactField.ActualWidth + ")");
@@ -277,21 +277,8 @@ internal static class Program
         var sigCanvases = Descendants(root).OfType<InkCanvas>().ToArray();
         Assert(sigCanvases.All(c => Math.Abs(c.Height - 90) < 1), "both signature previews are 90 px high");
 
-        // V4: the picker's list is the store's rows merged with this vendor's
-        // book - two different names stay two rows, and a name in both keeps
-        // the store's (fresher) number.
-        var merged = InstallerPickerWindow.MergeContacts(
-            new (long RowId, string PersonName, string Mobile)[] { (1, "Sandip Kale", "9000000000") },
-            new (string Name, string Mobile)[] { ("Vivek Kumar", "9111111111"), ("Sandip Kale", "9999999999") });
-        Assert(merged.Count == 2, "the picker lists both installers (got " + merged.Count + ")");
-        Assert(merged.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
-            "the picker's rows carry two different names");
-        Assert(merged.Single(r => r.Name == "Sandip Kale").Mobile == "9000000000",
-            "a name in both sources keeps the contact book's number");
-        Assert(merged.All(r => r.Mobile.Length > 0), "every picker row carries a full mobile number");
-
-        // V4: the store path the Add new area uses - two names are two rows,
-        // the same name updates in place, and the list is sorted by name.
+        // M1: one store read for the vendor book. Two names are two rows, a
+        // repeated name updates in place, and the most-recently-used comes first.
         var testDbDir = Path.Combine(Path.GetTempPath(), "mskpy-contacts-" + Guid.NewGuid().ToString("N"));
         var testDb = Path.Combine(testDbDir, "inspection-store.db");
         try
@@ -301,55 +288,121 @@ internal static class Program
                 contacts.UpsertVendorContact("V-TEST", "Zed", "9000000001");
                 contacts.UpsertVendorContact("V-TEST", "Amit", "9000000002");
                 contacts.UpsertVendorContact("V-TEST", "Zed", "9000000003");
-                var storedRows = contacts.VendorContacts("V-TEST");
-                Assert(storedRows.Count == 2, "two different names are two stored contacts (got " + storedRows.Count + ")");
-                Assert(storedRows[0].PersonName == "Amit" && storedRows[1].PersonName == "Zed",
-                    "stored contacts come back sorted by person name");
-                Assert(storedRows[1].Mobile == "9000000003", "adding the same name again updates it in place");
+                var book = contacts.VendorBook("V-TEST");
+                Assert(book.Count == 2, "two different names are two stored contacts (got " + book.Count + ")");
+                Assert(book[0].PersonName == "Zed" && book[0].Mobile == "9000000003",
+                    "the book is newest-use first and a repeated add updates in place (got " + book[0].PersonName + "/" + book[0].Mobile + ")");
+                Assert(book.All(r => r.Mobile.Length == 10), "every book row carries a full mobile number");
             }
 
-            // V2/V4: the dialog itself, rendered offscreen (never shown). Two
-            // stored contacts, name + number on each row, OK gated on a pick,
-            // and live filtering by name and number.
+            // M6: the live inline picker. Clicking Choose... must open it, the
+            // rows must be the store's book, OK must be gated on a pick, search
+            // must filter by name or number, and Cancel must close it. A null
+            // Click handler fails these checks.
             using (var pickerStore = new Mskpy.Infrastructure.InspectionStore(testDb))
             {
-                pickerStore.UpsertVendorContact("V-PICK", "Zed", "9000000001");
-                pickerStore.UpsertVendorContact("V-PICK", "Amit", "9000000002");
-                var picker = new InstallerPickerWindow("V-PICK", pickerStore);
-                picker.OpenAsync().GetAwaiter().GetResult();
-                var pickerRoot = (FrameworkElement)picker.Content;
-                pickerRoot.Measure(new Size(380, 420));
-                pickerRoot.Arrange(new Rect(0, 0, 380, 420));
+                Console.WriteLine("M6.1 store");
+                // The picker keys the store book by the record's vendor_code.
+                pickerStore.UpsertVendorContact(record.VendorCode ?? record.ConsumerNumber, "Zed", "9000000001");
+                pickerStore.UpsertVendorContact(record.VendorCode ?? record.ConsumerNumber, "Amit", "9000000002");
+                Console.WriteLine("M6.2 seeded");
+                var pickerInspection = new InspectionWindow(
+                    record, record.ConsumerNumber, record.CpfNo, "synthetic-login", workflow, owner,
+                    store: pickerStore, installerBook: newBook);
+                Console.WriteLine("M6.3 window");
+                var pickerRoot = (FrameworkElement)pickerInspection.Content;
+                pickerRoot.Measure(new Size(1000, 820));
+                pickerRoot.Arrange(new Rect(0, 0, 1000, 820));
                 pickerRoot.UpdateLayout();
+                Console.WriteLine("M6.4 layout");
 
-                var pickerList = Descendants(pickerRoot).OfType<ListBox>()
-                    .First(l => System.Windows.Automation.AutomationProperties.GetName(l) == "Installer contacts");
-                Assert(pickerList.Items.Count == 2, "the picker's list shows both stored contacts");
+                const System.Reflection.BindingFlags Private =
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                object PickerField(string name) => typeof(InspectionWindow).GetField(name, Private)!.GetValue(pickerInspection)!;
+
+                var overlay = (Grid)PickerField("pickerOverlay");
+                var pickerList = (ListBox)PickerField("pickerListBox");
+                var pickerSearch = (TextBox)PickerField("pickerSearchBox");
+                var addForm = (StackPanel)PickerField("pickerAddForm");
+
+                var choose = Descendants(pickerRoot).OfType<Button>()
+                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
+                choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                pickerRoot.UpdateLayout();
+                Assert(overlay.Visibility == Visibility.Visible, "Choose... opens the picker (Click handler present)");
+                Assert(pickerList.Items.Count >= 2, "the picker lists the store's book rows (got " + pickerList.Items.Count + ")");
+
                 var rowText = pickerList.Items.OfType<ListBoxItem>()
-                    .Select(i => string.Join(" ", ((Grid)i.Content).Children.OfType<TextBlock>().Select(t => t.Text)))
+                    .Select(i => string.Join(" ", Descendants(i).OfType<TextBlock>().Select(t => t.Text)))
                     .ToList();
                 Assert(rowText.Any(t => t.Contains("Zed") && t.Contains("9000000001")),
-                    "a picker row shows the name and the full number");
-                Assert(rowText.Any(t => t.Contains("Amit") && t.Contains("9000000002")),
-                    "the second picker row shows its own number");
+                    "a picker row shows the name and the full number [" + string.Join(" | ", rowText) + "]");
+                Assert(rowText.Any(t => t.Contains("Amit") && t.Contains("9000000002")), "the second picker row shows its own number");
 
-                var pickerOk = Descendants(pickerRoot).OfType<Button>()
-                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "OK");
+                var pickerOk = (Button)PickerField("pickerOkButton");
                 Assert(!pickerOk.IsEnabled, "OK is disabled until a row is selected");
                 pickerList.SelectedIndex = 0;
                 Assert(pickerOk.IsEnabled, "OK enables once a row is selected");
 
-                var pickerSearch = Descendants(pickerRoot).OfType<TextBox>()
-                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Search installer");
                 pickerSearch.Text = "zed";
                 Assert(pickerList.Items.Count == 1, "search filters the list by name");
                 pickerSearch.Text = "9000000002";
                 Assert(pickerList.Items.Count == 1, "search filters the list by number");
                 pickerSearch.Text = "";
-                Assert(pickerList.Items.Count == 2, "clearing the search brings both contacts back");
-                pickerList.SelectedIndex = 0;
+                Assert(pickerList.Items.Count >= 2, "clearing the search brings both contacts back");
+
+                var addLink = Descendants(pickerRoot).OfType<Button>()
+                    .First(b => Descendants(b).OfType<TextBlock>().Any(t => t.Text == "Add new installer"));
+                addLink.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert(addForm.Visibility == Visibility.Visible, "Add new installer opens the form (Click handler present)");
+
+                var cancel = (Button)PickerField("pickerCancelButton");
+                cancel.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert(overlay.Visibility == Visibility.Collapsed, "Cancel closes the picker (Click handler present)");
+
+                choose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 pickerRoot.UpdateLayout();
-                SaveRender(pickerRoot, 380, 420, Path.Combine(outputDir, "2v-picker.png"));
+                SaveRender(pickerRoot, 1000, 820, Path.Combine(outputDir, "3m-picker.png"));
+
+                // A saved installer must still be listed the next time Choose
+                // opens, even when the server left the record's vendor_code empty.
+                var noVendorRecord = new Mskpy.Domain.InspectionRecord(
+                    ConsumerNumber: record.ConsumerNumber,
+                    CpfNo: record.CpfNo,
+                    VendorCode: "",
+                    ConsumerName: record.ConsumerName,
+                    Latitude: record.Latitude,
+                    Longitude: record.Longitude,
+                    InstallDate: record.InstallDate,
+                    SurveyStartTime: null,
+                    SurveyEndTime: null,
+                    SurveyDurationMinutes: null,
+                    Address: "Synthetic address",
+                    Raw: record.Raw);
+                var noVendorBook = new Mskpy.Infrastructure.VendorPeople(
+                    Path.Combine(Path.GetTempPath(), $"vendor-people-empty-{Guid.NewGuid():N}.json"));
+                var noVendorWindow = new InspectionWindow(
+                    noVendorRecord, noVendorRecord.ConsumerNumber, noVendorRecord.CpfNo, "synthetic-login", workflow, owner,
+                    store: pickerStore, installerBook: noVendorBook);
+                var noVendorRoot = (FrameworkElement)noVendorWindow.Content;
+                noVendorRoot.Measure(new Size(1000, 820));
+                noVendorRoot.Arrange(new Rect(0, 0, 1000, 820));
+                noVendorRoot.UpdateLayout();
+                noVendorWindow.VendorPersonName = "Saved Installer";
+                noVendorWindow.VendorPersonMobile = "9000000011";
+                typeof(InspectionWindow).GetMethod("PersistInstallerPair", Private)!.Invoke(noVendorWindow, null);
+                // Skip the officer's book import so this checks the store read only.
+                typeof(InspectionWindow).GetField("pickerImported", Private)!.SetValue(noVendorWindow, true);
+                var noVendorChoose = Descendants(noVendorRoot).OfType<Button>()
+                    .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
+                noVendorChoose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                noVendorRoot.UpdateLayout();
+                var noVendorList = (ListBox)typeof(InspectionWindow)
+                    .GetField("pickerListBox", Private)!.GetValue(noVendorWindow)!;
+                Assert(noVendorList.Items.OfType<ListBoxItem>().Any(i =>
+                        Descendants(i).OfType<TextBlock>().Any(t => t.Text == "Saved Installer")
+                        && Descendants(i).OfType<TextBlock>().Any(t => t.Text == "9000000011")),
+                    "a saved installer is listed when Choose opens again with an empty record vendor_code");
             }
         }
         finally

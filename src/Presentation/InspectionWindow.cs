@@ -46,6 +46,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly InspectionRecord record;
     string recordVendorCode;
     readonly string consumerNumber;
+    // One key for every book read and write; an empty record code uses the record number.
+    string BookVendorCode => string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode;
     readonly string cpfNo;
     readonly string loginId;
     // A1: there is no session vendor code. The vendor always comes from the
@@ -1675,7 +1677,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// available, otherwise the officer's book filtered to this vendor.</summary>
     List<VendorPeople.Person> VendorPersonsForRecord()
     {
-        var vendorCode = recordVendorCode ?? "";
+        var vendorCode = BookVendorCode;
         if (store != null)
         {
             var contacts = store.VendorContacts(vendorCode);
@@ -1789,7 +1791,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
     void LogPickerState()
     {
-        var key = recordVendorCode ?? "";
+        var key = BookVendorCode;
         var raw = pickerRows.Count;
         var filter = (pickerSearchBox?.Text ?? "").Trim();
         var shown = pickerListBox?.Items.OfType<ListBoxItem>().Count(i => i.Tag is PickerRow) ?? 0;
@@ -1841,7 +1843,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     {
         if (item.Tag is not PickerRow row) return;
         var wasSelected = ReferenceEquals(pickerListBox.SelectedItem, item);
-        var vendorCode = string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode!;
+        var vendorCode = BookVendorCode;
         if (pickerDeleteError != null)
         {
             pickerDeleteError.Text = "";
@@ -1854,7 +1856,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         try { removedByRowId = store?.DeleteVendorContactByRowId(row.RowId, out _, out _) ?? 0; } catch { }
         try
         {
-            var rows = store?.VendorContactRows(vendorCode) ?? Array.Empty<(long RowId, string PersonName, string Mobile)>();
+            var rows = store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>();
             remainingAfterRowId = rows.Count;
             stillByRowId = rows.Any(r => r.RowId == row.RowId);
         }
@@ -1875,7 +1877,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             try { store?.AddTombstone(vendorCode, row.Name); } catch { }
             try
             {
-                var rows = store?.VendorContactRows(vendorCode) ?? Array.Empty<(long RowId, string PersonName, string Mobile)>();
+                var rows = store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>();
                 remainingAfterKey = rows.Count;
                 stillByKey = rows.Any(r => string.Equals((r.PersonName ?? "").Trim(), row.Name.Trim(), StringComparison.OrdinalIgnoreCase));
             }
@@ -1911,7 +1913,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     void UndoPickerDelete()
     {
         if (lastDeletedRow is not PickerRow row) return;
-        var vendorCode = string.IsNullOrWhiteSpace(recordVendorCode) ? consumerNumber : recordVendorCode!;
+        var vendorCode = BookVendorCode;
         try
         {
             store?.UpsertVendorContact(vendorCode, row.Name, row.Mobile);
@@ -1921,9 +1923,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         long restoredRowId = 0;
         try
         {
-            var found = store?.VendorContactRows(vendorCode)
+            var found = store?.VendorBook(vendorCode)
                 .FirstOrDefault(r => string.Equals(r.PersonName, row.Name, StringComparison.OrdinalIgnoreCase));
-            if (found.HasValue) restoredRowId = found.Value.RowId;
+            if (found != null) restoredRowId = found.RowId;
         }
         catch { }
         var restored = new PickerRow(restoredRowId, row.Name, row.Mobile);
@@ -1958,29 +1960,34 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             ShowPickerAddError("Mobile No must be exactly 10 digits.");
             return;
         }
-        var vendorCode = recordVendorCode ?? "";
-        if (string.IsNullOrWhiteSpace(vendorCode))
-        {
-            Log("picker add: vendorCode EMPTY");
-            vendorCode = consumerNumber;
-            recordVendorCode = vendorCode;
-        }
+        // M4: a book lookup key is never a record write. An empty record vendor
+        // code falls back to the consumer number for the BOOK ONLY.
+        var vendorCode = BookVendorCode;
+
+        var before = store?.VendorBook(vendorCode).Count ?? 0;
         try { store?.UpsertVendorContact(vendorCode, name, mobile); }
         catch (Exception ex) { ShowPickerAddError("Could not save: " + ex.Message); return; }
+        var afterRows = store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>();
+        var after = afterRows.Count;
+        Log($"add roundtrip: key='{vendorCode}' before={before} after={after}");
 
-        long rowId = 0;
-        try
+        var saved = afterRows.FirstOrDefault(r => string.Equals(r.PersonName, name, StringComparison.OrdinalIgnoreCase));
+        if (after == before && saved == null)
         {
-            var found = store?.VendorContactRows(vendorCode)
-                .FirstOrDefault(r => string.Equals(r.PersonName, name, StringComparison.OrdinalIgnoreCase));
-            if (found.HasValue) rowId = found.Value.RowId;
+            ShowPickerAddError("Not saved — the book does not show " + name + " after the write.");
+            return;
         }
-        catch { }
+        if (after > before + 1)
+        {
+            ShowPickerAddError("Not saved — the book gained " + (after - before) + " rows for one add.");
+            return;
+        }
 
         var existing = pickerRows.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
         if (existing != null) pickerRows.Remove(existing);
-        var row = new PickerRow(rowId, name, mobile);
+        var row = new PickerRow(saved?.RowId ?? 0, name, mobile);
         pickerRows.Add(row);
+        pickerRows.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
 
         CollapseAddForm();
         ApplyPickerFilter();
@@ -1999,13 +2006,11 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
 
     void LoadPickerRows()
     {
-        var vendorCode = recordVendorCode ?? "";
-        if (string.IsNullOrWhiteSpace(vendorCode))
-        {
-            Log("picker open: vendorCode EMPTY — resolved to '" + consumerNumber + "'");
-            vendorCode = consumerNumber;
-            recordVendorCode = vendorCode;
-        }
+        // M4: the book key falls back to the consumer number in memory only.
+        // A book read must never write inspection_records.vendor_code.
+        var vendorCode = BookVendorCode;
+        if (string.IsNullOrWhiteSpace(recordVendorCode))
+            Log("picker open: record vendorCode EMPTY — book key resolves to '" + consumerNumber + "' (no record write)");
         // Import the officer's book once per window. Importing again after a pick
         // re-enters the store's non-reentrant lock and would hang the second open.
         if (!pickerImported)
@@ -2021,12 +2026,9 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             catch { }
         }
         pickerRows.Clear();
-        try
-        {
-            var stored = store != null ? store.VendorContactRows(vendorCode) : Array.Empty<(long, string, string)>();
-            foreach (var c in stored) pickerRows.Add(new PickerRow(c.RowId, c.PersonName, c.Mobile));
-        }
-        catch { }
+        foreach (var c in store?.VendorBook(vendorCode) ?? Array.Empty<InspectionStore.VendorBookRow>())
+            pickerRows.Add(new PickerRow(c.RowId, c.PersonName, c.Mobile));
+        pickerRows.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
         lastDeletedRow = null;
         lastDeletedIndex = -1;
         if (pickerUndoLink != null) pickerUndoLink.Visibility = Visibility.Collapsed;
@@ -2304,7 +2306,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 SubmittedDataPath: null,
                 PhotoPaths: photoPathsJson,
                 SignPaths: signPathsJson
-            ));
+            ), caller: "inspection-submit");
 
             var outcome = await workflow.SubmitAsync(
                 record,
@@ -2525,7 +2527,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var name = VendorPersonName.Trim();
         var mobile = VendorPersonMobile.Trim();
         if (name.Length == 0 || mobile.Length == 0) return;
-        var vendorCode = recordVendorCode ?? "";
+        var vendorCode = BookVendorCode;
         store?.UpsertVendorContact(vendorCode, name, mobile);
         vendorPeople.Add(name, mobile, vendorCode);
         try { vendorPeople.Save(); } catch { }
@@ -2537,20 +2539,26 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// <summary>P3: prefill the last-used pair for this vendor on open.</summary>
     void PrefillInstallerPair()
     {
-        if (!string.IsNullOrWhiteSpace(VendorPersonName) || !string.IsNullOrWhiteSpace(VendorPersonMobile)) return;
-        var vendorCode = recordVendorCode ?? "";
+        if (!string.IsNullOrWhiteSpace(VendorPersonName) || !string.IsNullOrWhiteSpace(VendorPersonMobile))
+        {
+            // M3: a reopen keeps the saved pair; log the control text so the
+            // check has a line on every open, not only on a fresh prefill.
+            LogInstaller("prefill applied (kept): nameBox='" + vendorPersonNameBox.Text + "' mobileBox='" + vendorPersonMobileBox.Text + "'");
+            return;
+        }
+        var vendorCode = BookVendorCode;
         (string Name, string Mobile)? pair = null;
         string branch = "";
         if (store != null)
         {
-            // (a) this beneficiary's previous inspection pair
-            // We don't have a per-beneficiary pair store beyond vendor_contacts;
-            // vendor_contacts is keyed by (vendor, person), so the "beneficiary's
-            // prior pair" is approximated by the most recently used pair for
-            // this vendor (same as (b)). Branch (a) is reported when a row
-            // exists for this consumer in the store.
-            var prior = store.LastVendorContact(vendorCode);
-            if (prior.HasValue) { pair = (prior.Value.PersonName, prior.Value.Mobile); branch = "beneficiary-prior/vendor-last"; }
+            // M1: the same VendorBook the picker lists, so prefill cannot find a
+            // person the list would not show.
+            var book = store.VendorBook(vendorCode);
+            if (book.Count > 0)
+            {
+                pair = (book[0].PersonName, book[0].Mobile);
+                branch = "vendor-book-last";
+            }
         }
         if (pair == null)
         {
@@ -2559,11 +2567,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 .OrderByDescending(p => p.LastUsedAt)
                 .FirstOrDefault();
             if (book != null) { pair = (book.Name, book.Mobile); branch = "book-last"; }
-        }
-        if (pair == null && store != null)
-        {
-            var contacts = store.VendorContacts(vendorCode);
-            if (contacts.Count == 1) { pair = (contacts[0].PersonName, contacts[0].Mobile); branch = "single-person"; }
         }
         if (pair == null)
         {
@@ -2578,6 +2581,8 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         vendorPersonMobileBox.Text = pair.Value.Mobile;
         // V4: prove the prefill actually populated the fields.
         LogInstaller("prefill: vendor=" + vendorCode + " branch=" + (string.IsNullOrEmpty(branch) ? "none" : branch) + " -> name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
+        // M3: the control text, not the model.
+        LogInstaller("prefill applied: nameBox='" + vendorPersonNameBox.Text + "' mobileBox='" + vendorPersonMobileBox.Text + "'");
         UpdatePlaceholders();
         UpdateRisk();
     }

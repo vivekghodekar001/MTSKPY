@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <UseWPF>true</UseWPF>
     <AssemblyName>MSKPY-Windows</AssemblyName>
-    <Version>0.9.30</Version>
+    <Version>0.9.32</Version>
     <ApplicationManifest>Mskpy.Presentation.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
@@ -13,6 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="UiRegression"/>
+    <InternalsVisibleTo Include="ViewModels"/>
   </ItemGroup>
   <ItemGroup>
     <PublishProfile Include="FolderProfile"/>

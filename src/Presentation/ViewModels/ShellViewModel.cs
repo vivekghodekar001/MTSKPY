@@ -57,7 +57,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     // body, so the two can never disagree.
     string vendorOverride = "";
     public string VendorOverride { get => vendorOverride; set => Set(ref vendorOverride, value?.Trim() ?? ""); }
-    IReadOnlyList<ApplicationDocument> loaded = [];
+    List<ApplicationDocument> loaded = [];
     int generation;
     string username = "", role = "Employee", search = "", status = "Sign in to test the existing account service.", error = "", page = "Home";
     bool busy;
@@ -259,7 +259,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         InspectionIndexImporter.CountFileName);
     public string PageTitle => page == "Applications" ? "Application List" : page == "Details" ? "Application Details" : page == "Returned" ? "Returned Inspections" : page == "NeedsRedo" ? "Needs Redo" : page == "Blocked" ? "Waiting on SDO" : page;
     public string ModuleDescription => currentModule?.Description ?? "";
-    public string RecordCount => $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
+    public string RecordCount => listScope == ListScopeAll
+        ? $"{Applications.Count} shown of {AllRecordCount} in the store."
+        : $"{Applications.Count} shown of {loaded.Count} loaded from the store.";
     // D1: the list scope. The officer's own queue is the default; the statewide
     // set is one click away.
     public const string ListScopeMyPending = "MyPending";
@@ -285,8 +287,13 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// (or the status bar) can wait for it.
     /// </summary>
     public Task? AllLoad { get; private set; }
-    List<ApplicationDocument>? allRows;
     bool allLoading;
+    // M5: the statewide list is paged. Only a page is held at a time; a scroll
+    // near the end asks for the next one.
+    public const int ListPageSize = 200;
+    int allLoadedCount;
+    bool allExhausted;
+    bool allPageLoading;
 
     /// <summary>D2: the list gets this long to itself before the walk starts.</summary>
     public const int HarvestStartDelayMs = 2500;
@@ -719,9 +726,8 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (store == null) { loaded = []; return; }
         if (listScope == ListScopeAll)
         {
-            // All is filled by BeginAllScopeLoad; until then the list is empty,
-            // not the statewide set loaded behind the officer's back.
-            loaded = allRows ?? [];
+            // All is filled by BeginAllScopeLoad page by page; a status change
+            // must not wipe the pages already on screen.
             return;
         }
         loaded = Materialise(store.GetSeenUnder(profile?.LoginId ?? "", RecordStatus.Accepted));
@@ -755,8 +761,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         if (store == null) return;
         if (allLoading) return;
-        if (allRows != null && !force) { loaded = allRows; ApplySearch(); return; }
+        if (allLoadedCount > 0 && !force) { ApplySearch(); return; }
         allLoading = true;
+        allLoadedCount = 0;
+        allExhausted = false;
         loaded = [];
         Applications.Clear();
         Changed(nameof(RecordCount));
@@ -768,8 +776,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var rows = await Task.Run(() => Materialise(store!.GetAll()));
-            allRows = rows;
+            var page = await Task.Run(() => store!.GetPage(0, ListPageSize));
+            var rows = Materialise(page);
+            allLoadedCount = page.Count;
+            allExhausted = page.Count < ListPageSize;
             if (listScope != ListScopeAll) return;
             loaded = rows;
             await FillListAsync(rows);
@@ -782,6 +792,37 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Applications.Clear();
         }
         finally { allLoading = false; }
+    }
+
+    /// <summary>
+    /// M5: the next 200 statewide rows. Called when the list nears its end, so
+    /// a 45k store never builds a 45k collection on the UI thread.
+    /// </summary>
+    public async Task LoadNextAllPageAsync()
+    {
+        if (store == null || listScope != ListScopeAll) return;
+        if (allLoading || allPageLoading || allExhausted) return;
+        allPageLoading = true;
+        try
+        {
+            var offset = allLoadedCount;
+            var page = await Task.Run(() => store.GetPage(offset, ListPageSize));
+            if (listScope != ListScopeAll) return;
+            allLoadedCount = offset + page.Count;
+            allExhausted = page.Count < ListPageSize;
+            var rows = Materialise(page);
+            loaded.AddRange(rows);
+            foreach (var row in rows.Where(Matches))
+                Applications.Add(row);
+            if (SelectedApplication != null && !Applications.Contains(SelectedApplication)) SelectedApplication = null;
+            Changed(nameof(RecordCount));
+            Status = $"All Maharashtra: {Applications.Count} shown of {AllRecordCount} in the store.";
+        }
+        catch (Exception ex)
+        {
+            Error = "The next page could not be loaded: " + ex.Message;
+        }
+        finally { allPageLoading = false; }
     }
 
     /// <summary>D2: add the visible rows in batches so the UI paints as it fills.</summary>
@@ -1118,9 +1159,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         };
         dailyRefreshTimer.Tick += (_, _) => TryDailyCustomerRefresh();
         dailyRefreshTimer.Start();
+        SignInLog.Write("refresh: timer started (30 min)");
     }
 
     bool _refreshRunning;
+    /// <summary>
+    /// M8: the refresh gate. A missing or unreadable stamp is due - the old
+    /// condition treated it as "just ran" and the refresh never fired once.
+    /// </summary>
+    internal static bool RefreshDue(string lastStamp, DateTime now) =>
+        !DateTime.TryParse(lastStamp, out var last) || (now - last).TotalMinutes >= 30;
     void TryDailyCustomerRefresh()
     {
         if (_refreshRunning) return; // single flight
@@ -1131,8 +1179,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "RenewableEnergyDesktop", "daily-refresh.txt");
             var last = File.Exists(stampPath) ? File.ReadAllText(stampPath).Trim() : "";
-            DateTime lastRun;
-            if (!DateTime.TryParse(last, out lastRun) || (now - lastRun).TotalMinutes < 30) return;
+            // M8: a missing or unreadable stamp means "never refreshed", not
+            // "refreshed just now" - the old condition returned on the first run
+            // and the refresh never happened at all.
+            if (!RefreshDue(last, now)) return;
             _refreshRunning = true;
             File.WriteAllText(stampPath, now.ToString("O"));
             Status = "Refreshing index…";
@@ -1548,7 +1598,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                     SignPaths: null,
                     SubmissionLat: submissionLat,
                     SubmissionLong: submissionLong,
-                    LocationSource: locationSource));
+                    LocationSource: locationSource), caller: "persist-status");
             }
             else
             {

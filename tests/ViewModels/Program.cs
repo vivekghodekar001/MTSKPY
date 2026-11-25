@@ -275,7 +275,14 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     Check(onDemand.Applications.Count == 0 && onDemand.AllChip.Contains("5000"),
         "D2: choosing All keeps the count on the chip while the rows load");
     await onDemand.AllLoad!;
-    Check(onDemand.Applications.Count == 5000, "D2: All Maharashtra fills on demand");
+    // M5: All is paged. The first page is 200 rows; scrolling asks for the rest.
+    Check(onDemand.Applications.Count == ShellViewModel.ListPageSize,
+        $"D2: All Maharashtra fills its first page on demand (got {onDemand.Applications.Count})");
+    for (var page = 0; page < 60 && onDemand.Applications.Count < 5000; page++)
+        await onDemand.LoadNextAllPageAsync();
+    Check(onDemand.Applications.Count == 5000, "D2: paging reaches every statewide row");
+    await onDemand.LoadNextAllPageAsync();
+    Check(onDemand.Applications.Count == 5000, "D2: a page past the end adds nothing");
     onDemand.ListScope = "MyPending";
     Check(onDemand.Applications.Count == 3, "D2: the officer's queue comes back without another statewide read");
 
@@ -305,6 +312,13 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     shell.ShowNeedsRedo.Execute(null);
     Check(shell.NeedsRedoRecords.Count == 0, "E5: a blocked row does not appear in Needs redo");
 }
+
+// M8: the refresh gate. A missing stamp is "never refreshed", not "just ran".
+var refreshNow = new DateTime(2026, 11, 24, 12, 0, 0);
+Check(ShellViewModel.RefreshDue("", refreshNow), "M8: a missing refresh stamp is due");
+Check(ShellViewModel.RefreshDue("not a date", refreshNow), "M8: an unreadable refresh stamp is due");
+Check(ShellViewModel.RefreshDue(refreshNow.AddMinutes(-31).ToString("O"), refreshNow), "M8: a 31-minute-old stamp is due");
+Check(!ShellViewModel.RefreshDue(refreshNow.AddMinutes(-5).ToString("O"), refreshNow), "M8: a 5-minute-old stamp is not due");
 Console.WriteLine($"{passes} view-model/application checks passed. No network requests.");
 
 sealed class FakeSecrets : ISecretInput { public int Reads; public string ReadAndClear() { Reads++; return "synthetic-password"; } }

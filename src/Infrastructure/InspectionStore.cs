@@ -125,6 +125,9 @@ public sealed class InspectionStore : IDisposable
             CREATE INDEX IF NOT EXISTS idx_records_vendor_code ON inspection_records(vendor_code);
             CREATE INDEX IF NOT EXISTS idx_records_consumer_number ON inspection_records(consumer_number);
             CREATE INDEX IF NOT EXISTS idx_records_first_time ON inspection_records(is_first_time);
+            -- M5: the list pages by updated_at DESC; without this index every
+            -- page sorts all 45k rows before it can return 200.
+            CREATE INDEX IF NOT EXISTS idx_records_updated ON inspection_records(updated_at DESC);
             CREATE TABLE IF NOT EXISTS photo_hashes (
                 sha256 TEXT NOT NULL,
                 consumer_number TEXT NOT NULL,
@@ -382,11 +385,30 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
-    public int Upsert(StoredInspectionRecord record, bool preserveStatus = false)
+    public int Upsert(StoredInspectionRecord record, bool preserveStatus = false, string caller = "unknown")
     {
         dbLock.Wait();
         try
         {
+            // M4: vendor_code is contract data. Every write that changes it is
+            // logged with the old value, the new value and the call site.
+            string? oldVendor = null;
+            var existed = false;
+            using (var q = connection.CreateCommand())
+            {
+                q.CommandText = "SELECT vendor_code FROM inspection_records WHERE consumer_number=@cn;";
+                q.Parameters.AddWithValue("@cn", record.ConsumerNumber);
+                using var r = q.ExecuteReader();
+                if (r.Read())
+                {
+                    existed = true;
+                    oldVendor = r.IsDBNull(0) ? null : r.GetString(0);
+                }
+            }
+            var newVendor = string.IsNullOrWhiteSpace(record.VendorCode) ? null : record.VendorCode;
+            if (existed && !string.Equals(oldVendor ?? "", newVendor ?? "", StringComparison.Ordinal))
+                LogLine($"vendor_code write: cn={record.ConsumerNumber} old='{oldVendor}' new='{newVendor}' caller={caller}");
+
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
                 INSERT INTO inspection_records
@@ -508,7 +530,7 @@ public sealed class InspectionStore : IDisposable
             // E1: the harvest must never touch a record's status. A record the
             // officer has already submitted stays Accepted and stays out of
             // "My pending" — it must not be rewritten to New on every re-walk.
-            Upsert(stored, preserveStatus: true);
+            Upsert(stored, preserveStatus: true, caller: "import");
             // F1: remember the cpf this row was fetched under, so it belongs to
             // that officer's queue even if another cpf's list also carries it.
             if (!string.IsNullOrWhiteSpace(fetchedUnderCpf))
@@ -786,7 +808,101 @@ public sealed class InspectionStore : IDisposable
         }
     }
 
-    /// <summary>The one row reader, so every query returns the same shape.</summary>
+    /// <summary>
+    /// M5: one page of list rows, newest first. Selects the columns the list
+    /// uses and leaves original_json on disk, so paging 200 rows does not drag
+    /// 200 payloads through the reader. Ordering is deterministic so a page
+    /// boundary cannot repeat or skip a row.
+    /// </summary>
+    public List<StoredInspectionRecord> GetPage(int offset, int limit, string? seenUnderCpf = null, RecordStatus? excludeStatus = null)
+    {
+        if (limit <= 0) return [];
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT r.consumer_number, r.cpf_no, r.vendor_code, r.consumer_name, r.latitude, r.longitude, " +
+                "r.inst_date, r.reason_to_revert, r.survey_duration_minutes, r.is_first_time, r.status, " +
+                "r.last_server_message, r.last_server_message_at, NULL AS original_json, r.submitted_data_path, " +
+                "r.photo_paths, r.sign_paths, r.seen_cpfs, r.submission_lat, r.submission_long, r.location_source, " +
+                "r.reason_category, r.blocked_reason, r.blocked_at FROM inspection_records r");
+            if (!string.IsNullOrWhiteSpace(seenUnderCpf))
+                sb.Append(" WHERE EXISTS (SELECT 1 FROM record_cpfs cc WHERE cc.consumer_number = r.consumer_number AND cc.cpf_no = @cpf)");
+            else
+                sb.Append(" WHERE 1=1");
+            if (excludeStatus.HasValue) sb.Append(" AND r.status<>@st");
+            sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC LIMIT @lim OFFSET @off;");
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            if (!string.IsNullOrWhiteSpace(seenUnderCpf)) cmd.Parameters.AddWithValue("@cpf", seenUnderCpf.Trim());
+            if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
+            cmd.Parameters.AddWithValue("@lim", limit);
+            cmd.Parameters.AddWithValue("@off", offset);
+            var results = new List<StoredInspectionRecord>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) results.Add(ReadRecord(reader));
+            return results;
+        }
+        finally
+        {
+            dbLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// M1: THE vendor book read. Prefill, the picker list, Add's re-read and
+    /// delete's verify all use this one method, so no two screens can disagree
+    /// about what the book holds. Newest use first, then name.
+    /// </summary>
+    public IReadOnlyList<VendorBookRow> VendorBook(string vendorCode)
+    {
+        var result = new List<VendorBookRow>();
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT rowid, person_name, mobile, last_used_at FROM vendor_contacts
+                WHERE vendor_code = @v
+                ORDER BY last_used_at DESC, person_name;
+            ";
+            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            LogSqlOnce("M1", cmd.CommandText);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                result.Add(new VendorBookRow(reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
+                    DateTimeOffset.TryParse(reader.GetString(3), out var at) ? at : DateTimeOffset.MinValue));
+        }
+        finally { dbLock.Release(); }
+        LogLine($"book {(string.IsNullOrWhiteSpace(vendorCode) ? "(empty)" : vendorCode)}: {result.Count} rows");
+        return result;
+    }
+
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> loggedSql = new();
+    internal static void LogSqlOnce(string tag, string sql)
+    {
+        if (!loggedSql.TryAdd(tag, true)) return;
+        System.Diagnostics.Debug.WriteLine($"[{tag}] sql: {sql}");
+        try { LogLine($"{tag} sql: {sql.Replace("\r", " ").Replace("\n", " ").Trim()}"); } catch { }
+    }
+
+    internal static void LogLine(string message)
+    {
+        System.Diagnostics.Debug.WriteLine(message);
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RenewableEnergyDesktop");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "inspection.log"),
+                string.Format("{0:O} {1}{2}", DateTime.Now, message, Environment.NewLine));
+        }
+        catch { }
+    }
+
+    public sealed record VendorBookRow(long RowId, string PersonName, string Mobile, DateTimeOffset LastUsedAt);
+
+
     static StoredInspectionRecord ReadRecord(Microsoft.Data.Sqlite.SqliteDataReader reader) => new(
         ConsumerNumber: reader.GetString(reader.GetOrdinal("consumer_number")),
         CpfNo: reader.GetString(reader.GetOrdinal("cpf_no")),
@@ -1181,15 +1297,18 @@ public sealed class InspectionStore : IDisposable
     public bool IsTombstoned(string vendorCode, string personName)
     {
         dbLock.Wait();
-        try
-        {
-            using var cmd = connection.CreateCommand();
-            cmd.CommandText = "SELECT 1 FROM vendor_contact_deleted WHERE vendor_code=@v AND person_name=@p;";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
-            cmd.Parameters.AddWithValue("@p", personName.Trim());
-            return cmd.ExecuteScalar() != null;
-        }
+        try { return IsTombstonedLocked(vendorCode, personName); }
         finally { dbLock.Release(); }
+    }
+
+    /// <summary>The tombstone check for callers that already hold dbLock.</summary>
+    bool IsTombstonedLocked(string vendorCode, string personName)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM vendor_contact_deleted WHERE vendor_code=@v AND person_name=@p;";
+        cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+        cmd.Parameters.AddWithValue("@p", personName.Trim());
+        return cmd.ExecuteScalar() != null;
     }
 
     public void AddTombstone(string vendorCode, string personName)
@@ -1236,7 +1355,7 @@ public sealed class InspectionStore : IDisposable
             foreach (var (name, mobile) in rows)
             {
                 if (string.IsNullOrWhiteSpace(name)) continue;
-                if (IsTombstoned(vendorCode, name)) continue;
+                if (IsTombstonedLocked(vendorCode ?? "", name)) continue;
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText = "INSERT OR IGNORE INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at) VALUES (@v, @p, @m, @t);";
                 cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
