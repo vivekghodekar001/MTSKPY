@@ -48,7 +48,7 @@
          <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding Refresh}" Margin="12,0,0,0" VerticalAlignment="Center" Padding="10,4"/>
          <RadioButton GroupName="listscope" Content="{Binding MyPendingChip}" IsChecked="{Binding ListScope, Converter={StaticResource EqualsValue}, ConverterParameter=MyPending}" FontSize="13" Margin="0,0,10,0" Padding="12,6" VerticalAlignment="Center" AutomationProperties.Name="Show my pending records"/>
          <RadioButton GroupName="listscope" Content="{Binding AllChip}" IsChecked="{Binding ListScope, Converter={StaticResource EqualsValue}, ConverterParameter=All}" FontSize="13" Margin="0,0,10,0" Padding="12,6" VerticalAlignment="Center" AutomationProperties.Name="Show all records"/>
-         <TextBox Text="{Binding Search,UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Search loaded applications" ToolTip="Search loaded applications" VerticalAlignment="Center" Margin="12,0,0,0"/>
+         <TextBox Text="{Binding Search,UpdateSourceTrigger=PropertyChanged}" Width="280" MinWidth="180" AutomationProperties.Name="Search loaded applications" ToolTip="Search loaded applications" VerticalAlignment="Center" Margin="12,0,0,0"/>
          <TextBlock Text="{Binding ReturnRateHeader}" Foreground="{StaticResource Muted}" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </DockPanel>
         <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,6,0,0" Visibility="{Binding IsIndexStale,Converter={StaticResource BoolVisibility}}">

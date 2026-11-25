@@ -110,6 +110,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Changed(nameof(HasArrivals));
     }
 
+    /// <summary>The arrivals are on screen now; the badge has done its job.</summary>
+    void ClearArrivals()
+    {
+        if (_newCount == 0) return;
+        _newCount = 0;
+        Changed(nameof(NewCountBadge));
+        Changed(nameof(HasArrivals));
+        Changed(nameof(ArrivalsCount));
+    }
+
     public ShellViewModel(
         ClientWorkflow workflow,
         ISecretInput secret,
@@ -527,7 +537,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
 
         var loaded = Credentials.LoadWithStep();
         SignInLog.Write("credential: " + Credentials.Describe(loaded));
-        if (!loaded.Found) return;
+        if (!loaded.Found)
+        {
+            Status = "No saved sign-in on this computer. Sign in with Stay signed in ticked.";
+            return;
+        }
         if (!loaded.Ok)
         {
             Credentials.Clear();
@@ -562,9 +576,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         {
         var stored = Sessions.Load();
         if (stored == null) return false;
+        Username = stored.LoginId;
         profile = new AccountProfile(stored.LoginId, stored.Role, stored.Scheme,
             stored.Fields.Select(f => new DisplayField(f.Item1, f.Item2)).ToList());
-        Username = stored.LoginId;
         // The restored session carries its own role and scheme; the sign-in
         // form's defaults must not overwrite them (verification used the
         // defaults and a good session was refused as a bad password).
@@ -665,7 +679,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // Only when the officer asked to stay signed in: an unticked box
             // must mean the next launch asks again.
             if (StaySignedIn) Sessions.Save(new SessionStore.StoredSession(
-                account.LoginId, account.Role, account.Scheme,
+                account.LoginId, SelectedRole, SelectedScheme.Value,
                 account.Fields.Select(f => (f.Label, f.Value)).ToList(),
                 DateTimeOffset.Now));
             else { Sessions.Clear(); Credentials.Clear(); }
@@ -674,6 +688,10 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             {
                 try { Credentials.Save(Username, password); }
                 catch { /* a sign-in that cannot be saved is not a failed sign-in */ }
+                // Both stores swallow their own failures; read them back so
+                // the log says whether the next launch can use them.
+                SignInLog.Write("saved sign-in readback: session=" + (Sessions.Load() != null)
+                    + " credentials=" + (Credentials.Load() != null));
             }
             // D1: the officer lands on their own pending queue, not the statewide dump.
             listScope = ListScopeMyPending;
@@ -732,7 +750,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     async Task LoadAsync(CancellationToken ct)
     {
         if (currentModule == null) return;
-        var version = ++generation; IsBusy = true; Error = ""; loaded = []; Applications.Clear(); SelectedApplication = null; Changed(nameof(RecordCount)); Status = "Loading account applications…";
+        var version = ++generation; IsBusy = true; Error = ""; loaded = []; Applications.Clear(); SelectedApplication = null; ClearArrivals(); Changed(nameof(RecordCount)); Status = "Loading account applications…";
         try
         {
             // A3: the list rows come from the STORE only — the live list is never
@@ -859,6 +877,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (allLoading) return;
         if (allLoadedCount > 0 && !force) { ApplySearch(); return; }
         allLoading = true;
+        ClearArrivals();
         allLoadedCount = 0;
         allExhausted = false;
         allCursorConsumer = null;
@@ -1356,6 +1375,19 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "RenewableEnergyDesktop", "daily-refresh.txt");
             var last = File.Exists(stampPath) ? File.ReadAllText(stampPath).Trim() : "";
+            RefreshIndexAge();
+            // A stale walk list rebuilds at once, stamp or no stamp: gating
+            // it behind the 30-minute refresh stamp left the warning up for
+            // days while every refresh decided it was not due yet.
+            if (IsIndexStale && IsSignedIn && harvester != null)
+            {
+                _refreshRunning = true;
+                File.WriteAllText(stampPath, now.ToString("O"));
+                RebuildIndex(resetCursor: false);
+                SignInLog.Write("refresh: stale index rebuilt at " + now.ToString("O"));
+                _refreshRunning = false;
+                return;
+            }
             // M8: a missing or unreadable stamp means "never refreshed", not
             // "refreshed just now" - the old condition returned on the first run
             // and the refresh never happened at all.
@@ -1368,11 +1400,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             _refreshRunning = true;
             File.WriteAllText(stampPath, now.ToString("O"));
             Status = "Refreshing index…";
-            // A stale walk list rebuilds itself from the store (union of the
-            // file's pairs and everything the harvest has imported), so the
-            // stale warning clears on its own instead of waiting for a click.
-            if (IsIndexStale) RebuildIndex(resetCursor: false);
-            else harvester?.Resume();
+            harvester?.Resume();
             SignInLog.Write("refresh: started at " + now.ToString("O"));
             _refreshRunning = false;
             Status = "";
@@ -1445,12 +1473,12 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                         RefreshIndexAge();
                         // The record pages are small; keep the visible one
                         // current as the harvester imports.
-                        if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);
+                        if (page is "Returned" or "NeedsRedo" or "Blocked") { ReloadRecordPage(page); ClearArrivals(); }
                         // D2: new statewide rows update the counts only.
                         // Reloading would throw away the pages the officer
                         // has scrolled to; the next scope entry reads fresh.
                         else if (listScope == ListScopeAll) { Changed(nameof(AllChip)); Changed(nameof(RecordCount)); }
-                        else { LoadFromStore(); ApplySearch(); }
+                        else { LoadFromStore(); ApplySearch(); ClearArrivals(); }
                     }
                     catch { /* a list refresh must never disturb the walk */ }
                 }
