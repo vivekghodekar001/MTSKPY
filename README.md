@@ -1,22 +1,26 @@
 # MSKPY Windows — .NET 10 architecture migration
 
-Status: incomplete preview 0.5. The main shell and source-derived JSR form use MVVM and four project layers. JSR includes the 19 original form fields, conditional questions, original dropdown choices, three JPEG photo roles, validation and local draft save/reopen. Full Android feature parity, the legacy inspection editor's MVVM conversion, and live inspection/JSR transport remain unfinished.
+Status: current source 0.9.49. The app is a WPF linestaff-inspection client with a local SQLite store, harvested application lists, inspection editing, and the production `upload-survey` submission flow. The wire protocol is frozen from the Android app; treat live submission as a production action and use dry runs unless a live submit is explicitly approved.
 
 Read `docs/ARCHITECTURE.md`, `docs/FEATURE-PARITY.md`, `docs/BACKEND-MAP.md`, and `docs/VALIDATION.md` before treating any feature as complete.
 
 ## Build
 
-Use .NET 10 SDK 10.0.403 or a compatible patch. On the development laptop it is installed locally at `work/tools/dotnet10/dotnet.exe` relative to the enclosing workspace.
+Use the .NET 10 SDK pinned by `global.json`. On the development laptop the permanent install is `C:\Users\vivek\dotnet10\dotnet.exe`; do not use the old Temp `opencode\dotnet10` install.
 
 From this solution directory:
 
 ```powershell
-& '..\tools\dotnet10\dotnet.exe' build Mskpy.sln -c Release
-& '..\tools\dotnet10\dotnet.exe' run --project tests/Compatibility -c Release
-& '..\tools\dotnet10\dotnet.exe' run --project tests/Transport -c Release
-& '..\tools\dotnet10\dotnet.exe' run --project tests/ViewModels -c Release
-& '..\tools\dotnet10\dotnet.exe' run --project tests/Jsr -c Release
-& '..\tools\dotnet10\dotnet.exe' run --project tests/UiRegression -c Release -- ..\qa-net10
+$dotnet = "C:\Users\vivek\dotnet10\dotnet.exe"
+& $dotnet build Mskpy.sln -c Release
+& $dotnet run --project tests\Compatibility -c Release
+& $dotnet run --project tests\Transport -c Release
+& $dotnet run --project tests\ViewModels -c Release
+& $dotnet run --project tests\Jsr -c Release
+& $dotnet run --project tests\Exif -c Release
+& $dotnet run --project tests\UiRegression -c Release -- ..\qa-net10
+& $dotnet publish src\Presentation -c Release -p:PublishProfile=FolderSelfContained
+robocopy artifacts\publish-portable C:\temp\mskpy-portable /MIR
 ```
 
-This project preserves the original backend and previously implemented request formats. It introduces no production submission flow and no SQLite dependency. The earlier .NET 9 preview remains available separately.
+This project preserves the original backend and previously implemented request formats. It includes the SQLite inspection store and the production submission flow; back up `%LOCALAPPDATA%\RenewableEnergyDesktop\inspection-store.db` before migrations or acceptance runs that write to the store.

@@ -151,7 +151,8 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     gateway.SignInFailure = new Mskpy.Infrastructure.SignInException("the reply",
         "The service declined the sign-in (step: the reply).", rejected: true);
     var loginCallsBefore = gateway.LoginCalls;
-    using var saved = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    using var saved = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials,
+        sessionStore: new Mskpy.Presentation.Services.SessionStore(Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json")));
     await saved.AutoSignInAsync();
     Check(!saved.IsSignedIn, "D1: a rejected saved sign-in does not sign in");
     Check(saved.Username == "sample", "D1: the username is still filled in for the officer");
@@ -170,7 +171,8 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     gateway.SignInFailure = new Mskpy.Infrastructure.SignInException("waiting for the reply",
         "The account service did not answer within 120 seconds (step: waiting for the reply). Please try again.");
     using var slow = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath,
-        inspectionHostOverride: "http://127.0.0.1:1", credentials: credentials);
+        inspectionHostOverride: "http://127.0.0.1:1", credentials: credentials,
+        sessionStore: new Mskpy.Presentation.Services.SessionStore(Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json")));
     await slow.AutoSignInAsync();
     Check(!slow.IsSignedIn && slow.Error.Contains("waiting for the reply"), "D1: a saved sign-in that timed out says which step stopped");
     Check(slow.Username == "sample", "D1: the username survives a timeout");
@@ -191,7 +193,8 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
     var loaded = credentials.LoadWithStep();
     Check(loaded.Found && !loaded.Ok && loaded.Step == "unprotect", "D1: an unreadable saved sign-in reports the unprotect step");
-    using var broken = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials);
+    using var broken = new ShellViewModel(workflow, secrets, desktop, storePath: storePath, credentials: credentials,
+        sessionStore: new Mskpy.Presentation.Services.SessionStore(Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json")));
     await broken.AutoSignInAsync();
     Check(!broken.IsSignedIn && broken.Error.Contains("unprotect"), "D1: the officer is told the file could not be decrypted, not that the password is wrong");
     Check(!File.Exists(credFile), "D1: an unreadable saved sign-in is forgotten");
@@ -206,7 +209,8 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     var before = gateway.LoginCalls;
     gateway.PendingLogin = new TaskCompletionSource<AccountProfile>(TaskCreationOptions.RunContinuationsAsynchronously);
     using var open = new ShellViewModel(workflow, secrets, desktop, indexTsvPath: uiIndexPath, storePath: storePath,
-        inspectionHostOverride: "http://127.0.0.1:1", credentials: credentials);
+        inspectionHostOverride: "http://127.0.0.1:1", credentials: credentials,
+        sessionStore: new Mskpy.Presentation.Services.SessionStore(Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json")));
     var automatic = open.AutoSignInAsync();
     Check(!open.IsBusy && open.Login.CanExecute(null), "D1: the form stays usable while the saved sign-in is waiting");
     open.Username = "sample";
@@ -320,6 +324,30 @@ Check(!jsr.Photos[0].HasPhoto && jsr.IsDirty, "JSR remove-photo command clears t
     await Task.Delay(200);
     Check(restored.IsSignedOut && sessions.Load() == null,
         "D9+: a verification finishing after sign-out does not resurrect the session");
+}
+
+// D9+: a definite refusal during background verification ends the restored
+// session and forgets the saved sign-in; only transient failures stay unverified.
+{
+    var credFile = Path.Combine(Path.GetTempPath(), $"vm-cred-{Guid.NewGuid():N}.bin");
+    var sessionFile = Path.Combine(Path.GetTempPath(), $"vm-session-{Guid.NewGuid():N}.json");
+    var credentials = new Mskpy.Presentation.Services.CredentialStore(credFile);
+    credentials.Save("sample", "a-wrong-password");
+    var sessions = new Mskpy.Presentation.Services.SessionStore(sessionFile);
+    sessions.Save(new Mskpy.Presentation.Services.SessionStore.StoredSession(
+        "sample", "Employee", "SCHEME_MTSKPY", [], DateTimeOffset.Now));
+    gateway.SignInFailure = new Mskpy.Infrastructure.SignInException("the reply",
+        "The service declined the sign-in (step: the reply).", rejected: true);
+    using var refused = new ShellViewModel(workflow, secrets, desktop, storePath: storePath,
+        credentials: credentials, sessionStore: sessions);
+    await refused.AutoSignInAsync();
+    await Task.Delay(300);
+    Check(refused.IsSignedOut, "D9+: a rejected session verification does not stay signed in");
+    Check(sessions.Load() == null && credentials.Load() == null,
+        "D9+: a rejected session verification forgets the saved sign-in");
+    Check(refused.Error.Contains("the reply") && refused.Error.Contains("declined"),
+        "D9+: a rejected session verification names the step");
+    gateway.SignInFailure = null;
 }
 
 // D9++: closing the app is not signing out. Dispose stops work but must

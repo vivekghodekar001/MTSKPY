@@ -647,9 +647,20 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             if (version != generation) return;
-            // A refused background verification must not destroy the saved
+            if ((ex as SignInException)?.Rejected == true)
+            {
+                // A definite refusal is about these credentials. The restored
+                // session must not stay signed in behind the unverified line.
+                var step = (ex as SignInException)?.Step ?? "the reply";
+                SignInLog.Write($"session verify rejected at {step} - {ex.GetType().Name}: {ex.Message}");
+                EndSession();
+                Error = "The saved sign-in did not complete (" + step + "). " + ex.Message;
+                Status = "Signed out.";
+                return;
+            }
+            // A transient background failure must not destroy the saved
             // sign-in: the same credentials sign in fine when typed, so the
-            // refusal is about this background attempt, not the officer.
+            // failure is about this background attempt, not the officer.
             // Keep the restored session and the files; mark it unverified.
             SignInLog.Write("session verify failed: " + ex.GetType().Name + ": " + ex.Message);
             sessionVerified = false;
@@ -740,7 +751,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // A refusal is about these credentials, so the saved copy is no
             // use and is forgotten. A timeout or an unreachable host is not:
             // keeping the file is what makes the next launch work.
-            if (automatic && (ex as SignInException)?.Rejected == true) Credentials.Clear();
+            if (automatic && (ex as SignInException)?.Rejected == true) { Credentials.Clear(); Sessions.Clear(); }
         }
         finally { if (!automatic && version == generation) IsBusy = false; }
     }
@@ -1908,6 +1919,11 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(record.OriginalJson))
             record = store.GetByConsumerNumber(record.ConsumerNumber) ?? record;
         if (string.IsNullOrWhiteSpace(record.SubmittedDataPath)) return;
+        if (record.Status == RecordStatus.Accepted)
+        {
+            Status = "already submitted — resubmitting may be refused";
+            return;
+        }
 
         Error = ""; IsBusy = true;
         // A4: the harvester pauses while a retry upload is in flight, and

@@ -60,7 +60,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     readonly Action<InspectionRecord, SubmitOutcome>? onSubmitComplete;
     readonly Action<InspectionRecord, VerifyOutcome>? onVerifyComplete;
     bool _pickerOpen;
-    bool pickerImported;
     Grid? pickerOverlay;
     Border? pickerCard;
     TextBox pickerSearchBox = null!;
@@ -1212,7 +1211,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             && !string.IsNullOrWhiteSpace(manualLong.Text)
             && double.TryParse(manualLat.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
             && double.TryParse(manualLong.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-        submitBtn.IsEnabled = (locationResolved || manualOk) && !isBlockedRecord;
+        submitBtn.IsEnabled = (locationResolved || manualOk) && !isBlockedRecord && !riskAccepted;
     }
 
     /// <summary>
@@ -2040,7 +2039,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         var vendorCode = BookVendorCode;
         if (importedBookVendors.Contains(vendorCode))
         {
-            pickerImported = true;
             Log($"book import: vendor={vendorCode} imported=0 (skipped=already)");
             return;
         }
@@ -2051,7 +2049,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 .Select(p => (p.Name, p.Mobile));
             var imported = s.ImportVendorContacts(vendorCode, bookRows);
             importedBookVendors.Add(vendorCode);
-            pickerImported = true;
             Log($"book import: vendor={vendorCode} imported={imported}");
         }
         catch (Exception ex) { LogInstaller("picker import failed: " + ex.Message); }
@@ -2149,6 +2146,12 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     async Task Submit()
     {
         if (submitBusy) return;
+        if (store?.GetByConsumerNumber(consumerNumber)?.Status == RecordStatus.Accepted)
+        {
+            bodyBox.Text = "already submitted — resubmitting may be refused";
+            SetStatus("already submitted — resubmitting may be refused");
+            return;
+        }
         // M5: immediately before sending, re-fetch the detail. If the record
         // changed on the server, do not send last week's version.
         try

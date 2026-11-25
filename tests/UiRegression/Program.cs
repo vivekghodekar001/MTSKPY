@@ -402,8 +402,6 @@ internal static class Program
                 noVendorWindow.VendorPersonName = "Saved Installer";
                 noVendorWindow.VendorPersonMobile = "9000000011";
                 typeof(InspectionWindow).GetMethod("PersistInstallerPair", Private)!.Invoke(noVendorWindow, null);
-                // Skip the officer's book import so this checks the store read only.
-                typeof(InspectionWindow).GetField("pickerImported", Private)!.SetValue(noVendorWindow, true);
                 var noVendorChoose = Descendants(noVendorRoot).OfType<Button>()
                     .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
                 noVendorChoose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

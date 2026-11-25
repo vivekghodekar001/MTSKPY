@@ -222,6 +222,23 @@ try
     Check(capture2.VendorHeader == "OVERRIDE-1" && capture2.BodyVendor == "OVERRIDE-1",
         "a vendor override replaces the header and the body together");
     Check(capture2.VendorHeader == capture2.BodyVendor, "header vendor equals body vendor with an override in force");
+
+    // A record with no CPF anywhere must stop locally, not reach the server
+    // as an empty cpf field.
+    var noCpfJson = JsonDocument.Parse("""
+    {"consumer_number":"MT4420200801627","vendor_code":"100038029","consumer_name":"No cpf","latitude":"19.525251","longitude":"74.119873","inst_date":"2026-08-01","pump_load":"5 HP"}
+    """);
+    var noCpfRecord = Mskpy.Domain.InspectionRecord.FromJson(noCpfJson.RootElement);
+    var capture3 = new CapturingHandler();
+    var transport3 = new Mskpy.Infrastructure.MskpyInspectionTransport("02284251", vendorDir, capture3, "https://vendor-check.invalid");
+    using var gateway3 = new Mskpy.Infrastructure.InspectionGateway(transport3, new Mskpy.Infrastructure.InspectionIndex());
+    var wf3 = new Mskpy.Infrastructure.InspectionWorkflow(gateway3, new Mskpy.Infrastructure.InspectionMultipartBuilder(), new Mskpy.Infrastructure.LocationProvider(), vendorDir);
+    var noCpfOutcome = await wf3.SubmitAsync(noCpfRecord, photos, signs, null, null, null, null, false, null,
+        CancellationToken.None, sessionLoginId: "02284251");
+    Check(noCpfOutcome.Error != null && noCpfOutcome.Error.Contains("Record CPF is missing"),
+        "a record with no CPF is stopped by the local gate");
+    Check(capture3.VendorHeader == null && capture3.BodyVendor == null,
+        "a record with no CPF never reaches the server");
 }
 finally { try { Directory.Delete(vendorDir, true); } catch { } }
 

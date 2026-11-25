@@ -286,6 +286,8 @@ public sealed class InspectionWorkflow
 
         // --- Gates (P7) ---
         var gateErrors = new List<string>();
+        if (string.IsNullOrWhiteSpace(record.CpfNo))
+            gateErrors.Add("Record CPF is missing; refresh the record before submitting.");
         foreach (var part in built.Manifest)
         {
             if (part.Size < 1)
