@@ -1714,6 +1714,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             Status = fromLocalStore
                 ? $"Opened {consumer} from the local store."
                 : $"Detail opened: {record.ConsumerNumber} (cpf={record.CpfNo}, vendor={record.VendorCode}).";
+            if (string.IsNullOrWhiteSpace(cpf)) cpf = record.CpfNo;
             var win = new InspectionWindow(record, consumer, cpf, profile.LoginId, wf,
                 (Window)System.Windows.Application.Current.MainWindow,
                 harvester: harvester,

@@ -1112,6 +1112,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     /// header card and the warnings in the fixed footer.
     /// </summary>
     string? riskCategory;
+    string? riskBlockedReason;
     int riskReturnedCount;
     bool riskBlocked;
     bool riskLoaded;
@@ -1126,6 +1127,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
             riskCategory = stored?.ReasonCategory ?? ReasonCategoriser.Categorise(stored?.ReasonToRevert);
             riskReturnedCount = stored?.Status == RecordStatus.Returned ? 1 : 0;
             riskBlocked = stored?.Status == RecordStatus.Blocked;
+            riskBlockedReason = stored?.BlockedReason;
             riskLoaded = true;
         }
         var category = riskCategory;
@@ -1165,7 +1167,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         {
             if (blocked)
             {
-                riskHeader.Text = "Risk: blocked — " + (stored?.BlockedReason ?? "waiting on SDO");
+                riskHeader.Text = "Risk: blocked — " + (riskBlockedReason ?? "waiting on SDO");
                 riskHeader.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xB4, 0xAB));
                 if (riskBand != null) riskBand.Background = new SolidColorBrush(Color.FromRgb(0x4A, 0x2A, 0x2E));
             }
