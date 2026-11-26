@@ -331,7 +331,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
     /// </summary>
     public int MyPendingCount =>
         store != null && profile != null
-            ? store.CountSeenUnder(profile.LoginId, RecordStatus.Accepted)
+            ? store.HasSessionList(profile.LoginId)
+                ? store.CountSessionList(profile.LoginId, RecordStatus.Accepted)
+                : store.CountSeenUnder(profile.LoginId, RecordStatus.Accepted)
             : loaded.Count(InScope);
     public string MyPendingChip => $"My pending ({MyPendingCount})";
     public string AllChip => $"All Maharashtra ({AllRecordCount})";
@@ -878,7 +880,9 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (store == null || string.IsNullOrWhiteSpace(login)) return [];
         // One narrow snapshot under the store lock: no original_json drag,
         // and no page-boundary drift while the harvester is appending.
-        return Materialise(store.GetSeenUnder(login, RecordStatus.Accepted));
+        return Materialise(store.HasSessionList(login)
+            ? store.GetSessionList(login, RecordStatus.Accepted)
+            : store.GetSeenUnder(login, RecordStatus.Accepted));
     }
 
     List<StoredInspectionRecord> LoadPagedRecords(RecordStatus? status = null, bool returnedOnly = false, string? seenUnderCpf = null)
@@ -1289,12 +1293,16 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
             // F1: these rows came from the session's own list, so the session's
             // cpf is one of the cpfs they have been seen under.
             var (added, duplicates) = store.UpsertRows(rows, loginId);
-            if (!quiet || added > 0)
+            var removed = store.ReplaceSessionList(loginId,
+                rows.Select(r => InspectionRecord.FromJson(r).ConsumerNumber));
+            if (!quiet || added > 0 || removed > 0)
                 Status = quiet
-                    ? $"{added} new customer{(added == 1 ? "" : "s")} added to your list."
-                    : $"Session list: {rows.Count} rows ({added} new, {duplicates} already held).";
+                    ? added > 0
+                        ? $"{added} new customer{(added == 1 ? "" : "s")} added to your list."
+                        : $"{removed} customer{(removed == 1 ? "" : "s")} removed from your list."
+                    : $"Session list: {rows.Count} rows ({added} new, {duplicates} already held, {removed} removed).";
             RefreshRecordCounts();
-            if (added > 0)
+            if (added > 0 || removed > 0)
             {
                 if (page == "Applications" && listScope != ListScopeAll) { LoadFromStore(); ApplySearch(); }
                 else if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);

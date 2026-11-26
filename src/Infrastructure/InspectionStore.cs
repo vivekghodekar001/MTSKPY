@@ -157,6 +157,19 @@ public sealed class InspectionStore : IDisposable
             );
             CREATE INDEX IF NOT EXISTS ix_record_cpfs_cpf ON record_cpfs(cpf_no);
             CREATE INDEX IF NOT EXISTS ix_record_cpfs_consumer ON record_cpfs(consumer_number);
+            -- Latest server session list per login. My pending follows this
+            -- snapshot, so two PCs with the same login converge on the same
+            -- queue instead of each keeping its own historical seen set.
+            CREATE TABLE IF NOT EXISTS session_list (
+                cpf_no TEXT NOT NULL,
+                consumer_number TEXT NOT NULL,
+                seen_at TEXT NOT NULL,
+                PRIMARY KEY (cpf_no, consumer_number)
+            );
+            CREATE TABLE IF NOT EXISTS session_list_meta (
+                cpf_no TEXT PRIMARY KEY,
+                fetched_at TEXT NOT NULL
+            );
              CREATE TABLE IF NOT EXISTS vendor_contacts (
                  vendor_code TEXT NOT NULL,
                  person_name TEXT NOT NULL,
@@ -1120,6 +1133,111 @@ public sealed class InspectionStore : IDisposable
         {
             dbLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Replace the login's server session-list snapshot. Returns how many
+    /// consumers left the snapshot, so the caller can refresh the queue.
+    /// </summary>
+    public int ReplaceSessionList(string cpf, IEnumerable<string> consumerNumbers)
+    {
+        if (string.IsNullOrWhiteSpace(cpf)) return 0;
+        var current = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var consumer in consumerNumbers)
+            if (!string.IsNullOrWhiteSpace(consumer)) current.Add(consumer.Trim());
+        dbLock.Wait();
+        try
+        {
+            var before = new HashSet<string>(StringComparer.Ordinal);
+            using (var q = connection.CreateCommand())
+            {
+                q.CommandText = "SELECT consumer_number FROM session_list WHERE cpf_no=@cpf;";
+                q.Parameters.AddWithValue("@cpf", cpf.Trim());
+                using var reader = q.ExecuteReader();
+                while (reader.Read()) before.Add(reader.GetString(0));
+            }
+            var removed = before.Count(c => !current.Contains(c));
+            using (var del = connection.CreateCommand())
+            {
+                del.CommandText = "DELETE FROM session_list WHERE cpf_no=@cpf;";
+                del.Parameters.AddWithValue("@cpf", cpf.Trim());
+                del.ExecuteNonQuery();
+            }
+            var now = DateTime.UtcNow.ToString("o");
+            foreach (var consumer in current)
+            {
+                using var ins = connection.CreateCommand();
+                ins.CommandText = "INSERT OR IGNORE INTO session_list (cpf_no, consumer_number, seen_at) VALUES (@cpf,@cn,@ts);";
+                ins.Parameters.AddWithValue("@cpf", cpf.Trim());
+                ins.Parameters.AddWithValue("@cn", consumer);
+                ins.Parameters.AddWithValue("@ts", now);
+                ins.ExecuteNonQuery();
+            }
+            using (var meta = connection.CreateCommand())
+            {
+                meta.CommandText = "INSERT OR REPLACE INTO session_list_meta (cpf_no, fetched_at) VALUES (@cpf,@ts);";
+                meta.Parameters.AddWithValue("@cpf", cpf.Trim());
+                meta.Parameters.AddWithValue("@ts", now);
+                meta.ExecuteNonQuery();
+            }
+            return removed;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    public bool HasSessionList(string cpf)
+    {
+        if (string.IsNullOrWhiteSpace(cpf)) return false;
+        dbLock.Wait();
+        try
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM session_list_meta WHERE cpf_no=@cpf;";
+            cmd.Parameters.AddWithValue("@cpf", cpf.Trim());
+            return cmd.ExecuteScalar() != null;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    public List<StoredInspectionRecord> GetSessionList(string cpf, RecordStatus? excludeStatus = null)
+    {
+        if (string.IsNullOrWhiteSpace(cpf)) return [];
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT " + ListColumns + " FROM inspection_records r JOIN session_list s ON s.consumer_number = r.consumer_number AND s.cpf_no = @cpf");
+            if (excludeStatus.HasValue) sb.Append(" WHERE r.status<>@st");
+            sb.Append(" ORDER BY r.updated_at DESC, r.consumer_number ASC");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            cmd.Parameters.AddWithValue("@cpf", cpf.Trim());
+            if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
+            var results = new List<StoredInspectionRecord>();
+            using var reader = cmd.ExecuteReader();
+            var ordinals = new RecordOrdinals(reader);
+            while (reader.Read()) results.Add(ReadRecord(reader, ordinals));
+            return results;
+        }
+        finally { dbLock.Release(); }
+    }
+
+    public int CountSessionList(string cpf, RecordStatus? excludeStatus = null)
+    {
+        if (string.IsNullOrWhiteSpace(cpf)) return 0;
+        dbLock.Wait();
+        try
+        {
+            var sb = new System.Text.StringBuilder(
+                "SELECT COUNT(*) FROM inspection_records r JOIN session_list s ON s.consumer_number = r.consumer_number AND s.cpf_no = @cpf");
+            if (excludeStatus.HasValue) sb.Append(" WHERE r.status<>@st");
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = sb.ToString();
+            cmd.Parameters.AddWithValue("@cpf", cpf.Trim());
+            if (excludeStatus.HasValue) cmd.Parameters.AddWithValue("@st", (int)excludeStatus.Value);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+        finally { dbLock.Release(); }
     }
 
     /// <summary>

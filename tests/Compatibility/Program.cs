@@ -348,6 +348,18 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
             "an accepted row leaves the chip count");
         Check(store.CountSeenUnder("02781310", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
             "an accepted row leaves the other officer's chip count too");
+
+        // The session snapshot is the server's current list: a historical
+        // seen row absent from it leaves My pending on every PC.
+        store.SetStatus("MT4420200801626", Mskpy.Infrastructure.RecordStatus.New);
+        Check(store.ReplaceSessionList("02284251", new[] { "MT4420200801626" }) == 0,
+            "the first session snapshot removes nothing");
+        Check(store.CountSessionList("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 1,
+            "the session snapshot counts the listed consumer");
+        Check(store.ReplaceSessionList("02284251", Array.Empty<string>()) == 1,
+            "a consumer absent from the fresh session list is removed from the snapshot");
+        Check(store.HasSessionList("02284251") && store.CountSessionList("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
+            "an empty session snapshot still counts as fetched, so historical rows stay out");
     }
     finally { try { Directory.Delete(j3Dir, true); } catch { } }
 }
