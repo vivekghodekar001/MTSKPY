@@ -171,6 +171,17 @@ try
     Check(afterFailedAttempt.OriginalJson != null && afterFailedAttempt.OriginalJson.Contains("\"cpf\":\"02284251\"") && afterFailedAttempt.OriginalJson.Contains("\"pump_load\":\"3\""),
         "a failed attempt keeps a parseable payload with cpf and pump_load");
     Check(afterFailedAttempt.SubmittedDataPath == "C:\\attempt\\data.json", "a failed attempt keeps its submitted_data_path");
+    store.UpdateInstallerPair("MT4420200801626", "Saved Installer", "9000000011");
+    var installerPair = store.GetInstallerPair("MT4420200801626");
+    Check(installerPair is { Name: "Saved Installer", Mobile: "9000000011" },
+        "the installer pair is saved on the consumer record");
+    var withInstaller = store.GetByConsumerNumber("MT4420200801626")!;
+    Check(withInstaller.OriginalJson != null && withInstaller.OriginalJson.Contains("\"cpf\":\"02284251\"")
+            && withInstaller.OriginalJson.Contains("\"vendor_person_name\":\"Saved Installer\""),
+        "saving the installer pair preserves the record payload");
+    store.UpdateInstallerPair("MT4420200801626", "", "");
+    Check(store.GetInstallerPair("MT4420200801626") == null,
+        "clearing the installer pair removes it from the consumer record");
 }
 finally { try { File.Delete(storePath); } catch { } }
 

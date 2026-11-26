@@ -401,7 +401,28 @@ internal static class Program
                 noVendorRoot.UpdateLayout();
                 noVendorWindow.VendorPersonName = "Saved Installer";
                 noVendorWindow.VendorPersonMobile = "9000000011";
+                using (var rowDoc = JsonDocument.Parse(
+                    "{\"consumer_number\":\"" + record.ConsumerNumber + "\",\"cpf_no\":\"" + record.CpfNo + "\",\"vendor_code\":\"\"}"))
+                    pickerStore.UpsertRows(new[] { rowDoc.RootElement }, record.CpfNo);
                 typeof(InspectionWindow).GetMethod("PersistInstallerPair", Private)!.Invoke(noVendorWindow, null);
+                var reopenRecord = new Mskpy.Domain.InspectionRecord(
+                    ConsumerNumber: record.ConsumerNumber,
+                    CpfNo: record.CpfNo,
+                    VendorCode: "V-OTHER",
+                    ConsumerName: record.ConsumerName,
+                    Latitude: record.Latitude,
+                    Longitude: record.Longitude,
+                    InstallDate: record.InstallDate,
+                    SurveyStartTime: null,
+                    SurveyEndTime: null,
+                    SurveyDurationMinutes: null,
+                    Address: "Synthetic address",
+                    Raw: record.Raw);
+                var reopenWindow = new InspectionWindow(
+                    reopenRecord, reopenRecord.ConsumerNumber, reopenRecord.CpfNo, "synthetic-login", workflow, owner,
+                    store: pickerStore, installerBook: noVendorBook);
+                Assert(reopenWindow.VendorPersonName == "Saved Installer" && reopenWindow.VendorPersonMobile == "9000000011",
+                    "a saved installer is prefilled on revisit even when the vendor key changes");
                 var noVendorChoose = Descendants(noVendorRoot).OfType<Button>()
                     .First(b => System.Windows.Automation.AutomationProperties.GetName(b) == "Choose...");
                 noVendorChoose.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Mskpy.Domain;
 
 namespace Mskpy.Infrastructure;
@@ -1326,6 +1327,87 @@ public sealed class InspectionStore : IDisposable
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"swallowed vendor-contacts-migration-log: {ex.GetType().Name} {ex.Message}"); }
     }
+
+    /// <summary>
+    /// The installer pair saved on this consumer's own record. The vendor
+    /// book is keyed by vendor_code, which can be empty or change between
+    /// opens; the record pair is what makes a revisit show the same pair.
+    /// </summary>
+    public (string Name, string Mobile)? GetInstallerPair(string consumerNumber)
+    {
+        var stored = GetByConsumerNumber(consumerNumber);
+        var originalJson = stored?.OriginalJson;
+        if (string.IsNullOrWhiteSpace(originalJson)) return null;
+        try
+        {
+            if (JsonNode.Parse(originalJson) is not JsonObject obj) return null;
+            var name = NodeString(obj, "vendor_person_name") ?? NodeString(obj, "vendorPersonName");
+            var mobile = NodeString(obj, "vendor_person_mobile") ?? NodeString(obj, "vendorPersonMobile");
+            return !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(mobile)
+                ? (name.Trim(), mobile.Trim())
+                : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// Save (or clear, when either value is blank) the installer pair on the
+    /// consumer's stored payload, preserving every other server field.
+    /// </summary>
+    public void UpdateInstallerPair(string consumerNumber, string? personName, string? mobile)
+    {
+        if (string.IsNullOrWhiteSpace(consumerNumber)) return;
+        dbLock.Wait();
+        try
+        {
+            string? originalJson;
+            using (var q = connection.CreateCommand())
+            {
+                q.CommandText = "SELECT original_json FROM inspection_records WHERE consumer_number=@cn;";
+                q.Parameters.AddWithValue("@cn", consumerNumber);
+                originalJson = q.ExecuteScalar() as string;
+            }
+            if (string.IsNullOrWhiteSpace(originalJson)) return;
+            JsonObject obj;
+            try
+            {
+                if (JsonNode.Parse(originalJson) is not JsonObject parsed) return;
+                obj = parsed;
+            }
+            catch (JsonException) { return; }
+
+            var name = (personName ?? "").Trim();
+            var phone = (mobile ?? "").Trim();
+            if (name.Length == 0 || phone.Length == 0)
+            {
+                obj.Remove("vendor_person_name");
+                obj.Remove("vendor_person_mobile");
+                obj.Remove("vendorPersonName");
+                obj.Remove("vendorPersonMobile");
+            }
+            else
+            {
+                obj["vendor_person_name"] = name;
+                obj["vendor_person_mobile"] = phone;
+            }
+
+            using var cmd = connection.CreateCommand();
+            cmd.CommandText = @"
+                UPDATE inspection_records
+                SET original_json=@j, updated_at=@ua
+                WHERE consumer_number=@cn;";
+            cmd.Parameters.AddWithValue("@cn", consumerNumber);
+            cmd.Parameters.AddWithValue("@j", obj.ToJsonString());
+            cmd.Parameters.AddWithValue("@ua", DateTime.UtcNow.ToString("o"));
+            cmd.ExecuteNonQuery();
+        }
+        finally { dbLock.Release(); }
+    }
+
+    static string? NodeString(JsonObject obj, string key) =>
+        obj.TryGetPropertyValue(key, out var node) && node is JsonValue value && value.TryGetValue<string>(out var text)
+            ? text
+            : null;
 
     /// <summary>P3: upsert a vendor contact pair and mark it last-used now.</summary>
     public void UpsertVendorContact(string vendorCode, string personName, string mobile, DateTimeOffset? lastUsedAt = null)

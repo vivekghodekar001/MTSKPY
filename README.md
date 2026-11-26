@@ -1,6 +1,6 @@
 # MSKPY Windows — .NET 10 architecture migration
 
-Status: current source 0.9.49. The app is a WPF linestaff-inspection client with a local SQLite store, harvested application lists, inspection editing, and the production `upload-survey` submission flow. The wire protocol is frozen from the Android app; treat live submission as a production action and use dry runs unless a live submit is explicitly approved.
+Status: current source 0.9.50. The app is a WPF linestaff-inspection client with a local SQLite store, harvested application lists, inspection editing, and the production `upload-survey` submission flow. The wire protocol is frozen from the Android app; treat live submission as a production action and use dry runs unless a live submit is explicitly approved.
 
 Read `docs/ARCHITECTURE.md`, `docs/FEATURE-PARITY.md`, `docs/BACKEND-MAP.md`, and `docs/VALIDATION.md` before treating any feature as complete.
 

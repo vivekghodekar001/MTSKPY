@@ -243,6 +243,15 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         // B1/V1: two-way bind the read-only fields to the plain string properties.
         vendorPersonNameBox.SetBinding(TextBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonName)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
         vendorPersonMobileBox.SetBinding(TextBox.TextProperty, new System.Windows.Data.Binding(nameof(VendorPersonMobile)) { Source = this, Mode = System.Windows.Data.BindingMode.TwoWay, UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged });
+        // A typed pair is saved when the field loses focus and again on close,
+        // so reopening the consumer does not depend on a submit having run.
+        vendorPersonNameBox.LostFocus += (_, _) => PersistInstallerPair();
+        vendorPersonMobileBox.LostFocus += (_, _) => PersistInstallerPair();
+        Closing += (_, _) =>
+        {
+            try { PersistInstallerPair(); }
+            catch (Exception ex) { LogInstaller("installer persist on close failed: " + ex.Message); }
+        };
 
         this.harvester = harvester;
         this.store = store; // W1
@@ -2081,6 +2090,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     {
         VendorPersonName = "";
         VendorPersonMobile = "";
+        store?.UpdateInstallerPair(consumerNumber, "", "");
         vendorPersonNameBox.Text = "";
         vendorPersonMobileBox.Text = "";
         if (vendorWarning != null) vendorWarning.Visibility = Visibility.Collapsed;
@@ -2625,9 +2635,10 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
     {
         var name = VendorPersonName.Trim();
         var mobile = VendorPersonMobile.Trim();
-        if (name.Length == 0 || mobile.Length == 0) { UpdateRisk(); return; }
+        if (name.Length == 0 || !System.Text.RegularExpressions.Regex.IsMatch(mobile, @"^[1-9]\d{9,}$")) { UpdateRisk(); return; }
         var vendorCode = BookVendorCode;
         store?.UpsertVendorContact(vendorCode, name, mobile);
+        store?.UpdateInstallerPair(consumerNumber, name, mobile);
         vendorPeople.Add(name, mobile, vendorCode);
         try { vendorPeople.Save(); }
         catch (Exception ex) { LogInstaller("installer book save failed: " + ex.Message); }
@@ -2654,6 +2665,21 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         string branch = "";
         if (store != null)
         {
+            pair = store.GetInstallerPair(consumerNumber);
+            if (pair != null) branch = "record";
+        }
+        if (pair == null)
+        {
+            var rawName = FieldValue("vendor_person_name");
+            var rawMobile = FieldValue("vendor_person_mobile");
+            if (!string.IsNullOrWhiteSpace(rawName) && !string.IsNullOrWhiteSpace(rawMobile))
+            {
+                pair = (rawName.Trim(), rawMobile.Trim());
+                branch = "record-raw";
+            }
+        }
+        if (pair == null && store != null)
+        {
             // M1: import once, then read the same VendorBook the picker lists,
             // so prefill cannot find a person the list would not show.
             ImportBookOnce();
@@ -2664,7 +2690,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
                 branch = "vendor-book-last";
             }
         }
-        else
+        else if (pair == null)
         {
             var book = vendorPeople.People
                 .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
