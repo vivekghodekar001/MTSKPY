@@ -360,6 +360,15 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
             "a consumer absent from the fresh session list is removed from the snapshot");
         Check(store.HasSessionList("02284251") && store.CountSessionList("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
             "an empty session snapshot still counts as fetched, so historical rows stay out");
+        using var completedRow = JsonDocument.Parse("""
+        {"consumer_number":"MT4420200801626","cpf_no":"02781310","consumer_name":"Both queues","vendor_code":"100038029","latitude":"19.5","longitude":"74.1","inst_date":"2026-08-01","beneficiary_sign_file_name":"sign.png"}
+        """);
+        store.UpsertRows(new[] { completedRow.RootElement }, "02284251");
+        store.ReplaceSessionList("02284251", new[] { "MT4420200801626" });
+        Check(store.GetByConsumerNumber("MT4420200801626")!.Status == Mskpy.Infrastructure.RecordStatus.Accepted,
+            "a server row with a beneficiary signature syncs Accepted across PCs");
+        Check(store.CountSessionList("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
+            "a server-completed row leaves My pending on every PC");
     }
     finally { try { Directory.Delete(j3Dir, true); } catch { } }
 }

@@ -567,6 +567,14 @@ public sealed class InspectionStore : IDisposable
             // officer has already submitted stays Accepted and stays out of
             // "My pending" — it must not be rewritten to New on every re-walk.
             Upsert(stored, preserveStatus: true, caller: "import");
+            // Server state wins across PCs: a row carrying a beneficiary
+            // signature has already been inspected, and a reason_to_revert
+            // row has been returned. Without this, one PC's Accepted status
+            // never reaches another PC and pending counts diverge.
+            if (!string.IsNullOrWhiteSpace(stored.ReasonToRevert))
+                SetStatus(record.ConsumerNumber, RecordStatus.Returned);
+            else if (!stored.IsFirstTime)
+                SetStatus(record.ConsumerNumber, RecordStatus.Accepted);
             // F1: remember the cpf this row was fetched under, so it belongs to
             // that officer's queue even if another cpf's list also carries it.
             if (!string.IsNullOrWhiteSpace(fetchedUnderCpf))

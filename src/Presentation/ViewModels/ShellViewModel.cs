@@ -601,6 +601,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         SetPage("Applications");
         ScheduleHarvestStart();
         StartDailyRefreshTimer();
+        _ = SeedSessionListAsync(stored.LoginId, quiet: true);
             TryDailyCustomerRefresh();
         Status = "Restored session.";
         return true;
