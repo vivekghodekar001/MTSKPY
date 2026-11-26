@@ -293,6 +293,14 @@ internal static class Program
                 Assert(book[0].PersonName == "Zed" && book[0].Mobile == "9000000003",
                     "the book is newest-use first and a repeated add updates in place (got " + book[0].PersonName + "/" + book[0].Mobile + ")");
                 Assert(book.All(r => r.Mobile.Length == 10), "every book row carries a full mobile number");
+                contacts.UpsertVendorContact("V-OTHER", "Universal Installer", "9000000009");
+                Assert(contacts.VendorBook("V-TEST").Any(r => r.PersonName == "Universal Installer"),
+                    "an installer added under another vendor appears in the universal list");
+                Assert(contacts.VendorBook("").Any(r => r.PersonName == "Universal Installer"),
+                    "the universal list is the same for an empty vendor key");
+                contacts.DeleteVendorContact("V-TEST", "Universal Installer");
+                Assert(!contacts.VendorBook("V-OTHER").Any(r => r.PersonName == "Universal Installer"),
+                    "deleting an installer removes it from the universal list");
             }
 
             // M6: the live inline picker. Clicking Choose... must open it, the

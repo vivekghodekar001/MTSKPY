@@ -2039,26 +2039,23 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         Log($"picker add: {name}/{mobile} total={pickerRows.Count}");
     }
 
-    static readonly HashSet<string> importedBookVendors = new(StringComparer.OrdinalIgnoreCase);
+    static bool importedUniversalBook;
 
     void ImportBookOnce()
     {
         var s = store;
         if (s == null) return;
-        var vendorCode = BookVendorCode;
-        if (importedBookVendors.Contains(vendorCode))
+        if (importedUniversalBook)
         {
-            Log($"book import: vendor={vendorCode} imported=0 (skipped=already)");
+            Log("book import: universal imported=0 (skipped=already)");
             return;
         }
         try
         {
-            var bookRows = vendorPeople.People
-                .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
-                .Select(p => (p.Name, p.Mobile));
-            var imported = s.ImportVendorContacts(vendorCode, bookRows);
-            importedBookVendors.Add(vendorCode);
-            Log($"book import: vendor={vendorCode} imported={imported}");
+            var bookRows = vendorPeople.People.Select(p => (p.Name, p.Mobile));
+            var imported = s.ImportVendorContacts("", bookRows);
+            importedUniversalBook = true;
+            Log($"book import: universal imported={imported}");
         }
         catch (Exception ex) { LogInstaller("picker import failed: " + ex.Message); }
     }
@@ -2614,17 +2611,7 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         UpdateRisk();
         UpdatePlaceholders();
         PersistInstallerPair();
-        var recordVendor = recordVendorCode ?? "";
-        var warning = vendorWarning;
-        if (warning == null) return;
-        if (!string.IsNullOrWhiteSpace(person.Vendor) && !string.IsNullOrWhiteSpace(recordVendor)
-            && !string.Equals(person.Vendor, recordVendor, StringComparison.OrdinalIgnoreCase))
-        {
-            warning.Text = person.Name + " was last used with vendor " + person.Vendor
-                + "; this record's vendor is " + recordVendor + ". The submitted vendor is the record's.";
-            warning.Visibility = Visibility.Visible;
-        }
-        else { warning.Visibility = Visibility.Collapsed; }
+        if (vendorWarning != null) vendorWarning.Visibility = Visibility.Collapsed;
         LogInstaller("pick: name='" + vendorPersonNameBox.Text + "' mobile='" + vendorPersonMobileBox.Text + "'");
     }
 
@@ -2693,7 +2680,6 @@ public sealed class InspectionWindow : Window, System.ComponentModel.INotifyProp
         else if (pair == null)
         {
             var book = vendorPeople.People
-                .Where(p => string.IsNullOrWhiteSpace(p.Vendor) || string.Equals(p.Vendor, vendorCode, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(p => p.LastUsedAt)
                 .FirstOrDefault();
             if (book != null) { pair = (book.Name, book.Mobile); branch = "book-last"; }

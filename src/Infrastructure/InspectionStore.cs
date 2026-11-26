@@ -917,31 +917,35 @@ public sealed class InspectionStore : IDisposable
     }
 
     /// <summary>
-    /// M1: THE vendor book read. Prefill, the picker list, Add's re-read and
-    /// delete's verify all use this one method, so no two screens can disagree
-    /// about what the book holds. Newest use first, then name.
+    /// M1: THE installer book read. The list is universal: every installer
+    /// added in any inspection is shown for every customer, so the vendor
+    /// argument is kept only for call-site compatibility and ignored.
+    /// Newest use first, then name; duplicate names collapse to the latest.
     /// </summary>
     public IReadOnlyList<VendorBookRow> VendorBook(string vendorCode)
     {
         var result = new List<VendorBookRow>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         dbLock.Wait();
         try
         {
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
                 SELECT rowid, person_name, mobile, last_used_at FROM vendor_contacts
-                WHERE vendor_code = @v
                 ORDER BY last_used_at DESC, person_name;
             ";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             LogSqlOnce("M1", cmd.CommandText);
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
-                result.Add(new VendorBookRow(reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
+            {
+                var name = reader.GetString(1).Trim();
+                if (!seen.Add(name)) continue;
+                result.Add(new VendorBookRow(reader.GetInt64(0), name, reader.GetString(2),
                     DateTimeOffset.TryParse(reader.GetString(3), out var at) ? at : DateTimeOffset.MinValue));
+            }
         }
         finally { dbLock.Release(); }
-        LogLine($"book {(string.IsNullOrWhiteSpace(vendorCode) ? "(empty)" : vendorCode)}: {result.Count} rows");
+        LogLine($"book universal: {result.Count} rows");
         return result;
     }
 
@@ -1409,7 +1413,7 @@ public sealed class InspectionStore : IDisposable
             ? text
             : null;
 
-    /// <summary>P3: upsert a vendor contact pair and mark it last-used now.</summary>
+    /// <summary>P3: upsert one universal installer pair and mark it last-used now.</summary>
     public void UpsertVendorContact(string vendorCode, string personName, string mobile, DateTimeOffset? lastUsedAt = null)
     {
         if (string.IsNullOrWhiteSpace(personName)) return;
@@ -1417,14 +1421,17 @@ public sealed class InspectionStore : IDisposable
         dbLock.Wait();
         try
         {
+            using (var del = connection.CreateCommand())
+            {
+                del.CommandText = "DELETE FROM vendor_contacts WHERE TRIM(person_name) = TRIM(@p) COLLATE NOCASE;";
+                del.Parameters.AddWithValue("@p", personName.Trim());
+                del.ExecuteNonQuery();
+            }
             using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
                 INSERT INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at)
-                VALUES (@v, @p, @m, @t)
-                ON CONFLICT(vendor_code, person_name)
-                DO UPDATE SET mobile = excluded.mobile, last_used_at = excluded.last_used_at;
+                VALUES ('', @p, @m, @t);
             ";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             cmd.Parameters.AddWithValue("@m", (mobile ?? "").Trim());
             cmd.Parameters.AddWithValue("@t", when);
@@ -1433,7 +1440,7 @@ public sealed class InspectionStore : IDisposable
         finally { dbLock.Release(); }
     }
 
-    /// <summary>Delete one contact for this vendor. Returns rows affected.</summary>
+    /// <summary>Delete one universal contact. Returns rows affected.</summary>
     public int DeleteVendorContact(string vendorCode, string personName)
     {
         if (string.IsNullOrWhiteSpace(personName)) return 0;
@@ -1441,8 +1448,7 @@ public sealed class InspectionStore : IDisposable
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM vendor_contacts WHERE vendor_code = @v AND TRIM(person_name) = TRIM(@p) COLLATE NOCASE;";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.CommandText = "DELETE FROM vendor_contacts WHERE TRIM(person_name) = TRIM(@p) COLLATE NOCASE;";
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             return cmd.ExecuteNonQuery();
         }
@@ -1461,8 +1467,7 @@ public sealed class InspectionStore : IDisposable
     bool IsTombstonedLocked(string vendorCode, string personName)
     {
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM vendor_contact_deleted WHERE vendor_code=@v AND person_name=@p;";
-        cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+        cmd.CommandText = "SELECT 1 FROM vendor_contact_deleted WHERE TRIM(person_name)=TRIM(@p) COLLATE NOCASE;";
         cmd.Parameters.AddWithValue("@p", personName.Trim());
         return cmd.ExecuteScalar() != null;
     }
@@ -1473,8 +1478,7 @@ public sealed class InspectionStore : IDisposable
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "INSERT OR REPLACE INTO vendor_contact_deleted (vendor_code, person_name, deleted_at) VALUES (@v, @p, @t);";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.CommandText = "INSERT OR REPLACE INTO vendor_contact_deleted (vendor_code, person_name, deleted_at) VALUES ('', @p, @t);";
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             cmd.Parameters.AddWithValue("@t", DateTimeOffset.Now.ToString("O"));
             cmd.ExecuteNonQuery();
@@ -1488,8 +1492,7 @@ public sealed class InspectionStore : IDisposable
         try
         {
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM vendor_contact_deleted WHERE vendor_code=@v AND person_name=@p;";
-            cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+            cmd.CommandText = "DELETE FROM vendor_contact_deleted WHERE TRIM(person_name)=TRIM(@p) COLLATE NOCASE;";
             cmd.Parameters.AddWithValue("@p", personName.Trim());
             cmd.ExecuteNonQuery();
         }
@@ -1506,9 +1509,14 @@ public sealed class InspectionStore : IDisposable
             {
                 if (string.IsNullOrWhiteSpace(name)) continue;
                 if (IsTombstonedLocked(vendorCode ?? "", name)) continue;
+                using (var exists = connection.CreateCommand())
+                {
+                    exists.CommandText = "SELECT 1 FROM vendor_contacts WHERE TRIM(person_name)=TRIM(@p) COLLATE NOCASE;";
+                    exists.Parameters.AddWithValue("@p", name.Trim());
+                    if (exists.ExecuteScalar() != null) continue;
+                }
                 using var cmd = connection.CreateCommand();
-                cmd.CommandText = "INSERT OR IGNORE INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at) VALUES (@v, @p, @m, @t);";
-                cmd.Parameters.AddWithValue("@v", vendorCode ?? "");
+                cmd.CommandText = "INSERT OR IGNORE INTO vendor_contacts (vendor_code, person_name, mobile, last_used_at) VALUES ('', @p, @m, @t);";
                 cmd.Parameters.AddWithValue("@p", name.Trim());
                 cmd.Parameters.AddWithValue("@m", (mobile ?? "").Trim());
                 cmd.Parameters.AddWithValue("@t", DateTimeOffset.Now.ToString("O"));
@@ -1536,13 +1544,12 @@ public sealed class InspectionStore : IDisposable
             }
             if (string.IsNullOrWhiteSpace(name)) return 0;
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM vendor_contacts WHERE rowid = @r;";
-            cmd.Parameters.AddWithValue("@r", rowid);
+            cmd.CommandText = "DELETE FROM vendor_contacts WHERE TRIM(person_name) = TRIM(@p) COLLATE NOCASE;";
+            cmd.Parameters.AddWithValue("@p", name.Trim());
             var n = cmd.ExecuteNonQuery();
             // tombstone
             using var t = connection.CreateCommand();
-            t.CommandText = "INSERT OR REPLACE INTO vendor_contact_deleted (vendor_code, person_name, deleted_at) VALUES (@v, @p, @d);";
-            t.Parameters.AddWithValue("@v", vendor);
+            t.CommandText = "INSERT OR REPLACE INTO vendor_contact_deleted (vendor_code, person_name, deleted_at) VALUES ('', @p, @d);";
             t.Parameters.AddWithValue("@p", name.Trim());
             t.Parameters.AddWithValue("@d", DateTimeOffset.Now.ToString("O"));
             t.ExecuteNonQuery();
