@@ -1346,6 +1346,7 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         Changed(nameof(IndexLastWrite));
         Changed(nameof(IndexAge));
         Changed(nameof(IsIndexStale));
+        Changed(nameof(StaleIndexWarning));
     }
 
     /// <summary>
@@ -1546,6 +1547,15 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
         if (path.Length == 0) { Error = "Enter the path to index.tsv."; return; }
         if (!File.Exists(path)) { Error = $"Index file not found: {path}"; return; }
         IndexPath = path;
+        RefreshIndexAge();
+        // Reloading only re-reads the file, so a stale file stays stale and
+        // the warning survives the button meant to clear it. Rebuild writes
+        // the index fresh (keeping the walk cursor) and clears the warning.
+        if (IsIndexStale && store != null)
+        {
+            RebuildIndex(resetCursor: false);
+            return;
+        }
         index?.Reload(path);
         Changed(nameof(IndexLoaded));
         Changed(nameof(IndexConsumers)); Changed(nameof(IndexPairs)); Changed(nameof(IndexCpfs));
