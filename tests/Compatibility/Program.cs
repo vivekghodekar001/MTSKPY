@@ -365,10 +365,14 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
         """);
         store.UpsertRows(new[] { completedRow.RootElement }, "02284251");
         store.ReplaceSessionList("02284251", new[] { "MT4420200801626" });
-        Check(store.GetByConsumerNumber("MT4420200801626")!.Status == Mskpy.Infrastructure.RecordStatus.Accepted,
-            "a server row with a beneficiary signature syncs Accepted across PCs");
-        Check(store.CountSessionList("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 0,
-            "a server-completed row leaves My pending on every PC");
+        Check(store.GetByConsumerNumber("MT4420200801626")!.Status == Mskpy.Infrastructure.RecordStatus.New,
+            "a server-listed row with a beneficiary signature stays pending");
+        Check(store.CountSessionList("02284251", Mskpy.Infrastructure.RecordStatus.Accepted) == 1,
+            "a server-listed row stays in My pending like the mobile app");
+        store.SetStatus("MT4420200801626", Mskpy.Infrastructure.RecordStatus.Accepted);
+        store.UpsertRows(new[] { completedRow.RootElement }, "02284251");
+        Check(store.GetByConsumerNumber("MT4420200801626")!.Status == Mskpy.Infrastructure.RecordStatus.New,
+            "re-importing a server-listed row repairs a wrong Accepted mark");
     }
     finally { try { Directory.Delete(j3Dir, true); } catch { } }
 }

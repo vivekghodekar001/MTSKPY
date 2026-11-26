@@ -562,19 +562,22 @@ public sealed class InspectionStore : IDisposable
                 PhotoPaths: null,
                 SignPaths: null
             );
-            var isNew = GetByConsumerNumber(record.ConsumerNumber) == null;
-            // E1: the harvest must never touch a record's status. A record the
-            // officer has already submitted stays Accepted and stays out of
-            // "My pending" — it must not be rewritten to New on every re-walk.
+            var existingBefore = GetByConsumerNumber(record.ConsumerNumber);
+            var isNew = existingBefore == null;
+            // Import preserves local workflow status, with the two server
+            // corrections below: returned rows and server-listed rows that
+            // were wrongly marked Accepted.
             Upsert(stored, preserveStatus: true, caller: "import");
-            // Server state wins across PCs: a row carrying a beneficiary
-            // signature has already been inspected, and a reason_to_revert
-            // row has been returned. Without this, one PC's Accepted status
-            // never reaches another PC and pending counts diverge.
+            // The applications list is the server's pending list: a row the
+            // server still lists is pending, even when it carries a
+            // beneficiary signature file. FP4J wrongly treated that file as
+            // proof of a completed inspection and hid most of the queue.
+            // A reason_to_revert row is returned; an Accepted row the server
+            // lists again is pending again (this also repairs FP4J's marks).
             if (!string.IsNullOrWhiteSpace(stored.ReasonToRevert))
                 SetStatus(record.ConsumerNumber, RecordStatus.Returned);
-            else if (!stored.IsFirstTime)
-                SetStatus(record.ConsumerNumber, RecordStatus.Accepted);
+            else if (existingBefore?.Status == RecordStatus.Accepted)
+                SetStatus(record.ConsumerNumber, RecordStatus.New);
             // F1: remember the cpf this row was fetched under, so it belongs to
             // that officer's queue even if another cpf's list also carries it.
             if (!string.IsNullOrWhiteSpace(fetchedUnderCpf))
