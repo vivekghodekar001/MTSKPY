@@ -316,7 +316,8 @@ public sealed class InspectionHarvester : IDisposable
         }
         requestsSinceProbe++;
 
-        var cpf = cpfIds[currentCpfIndex];
+        var cpfIndex = currentCpfIndex;
+        var cpf = cpfIds[cpfIndex];
         currentCpfIndex++;
         SaveCursor();
 
@@ -325,7 +326,16 @@ public sealed class InspectionHarvester : IDisposable
             OnStatusChanged?.Invoke($"Harvesting cpf {cpf} ({currentCpfIndex}/{cpfIds.Count})…");
 
             var fetch = await FetchListAsync(cpf, "cpf");
-            if (fetch?.Rows == null) return;   // the failure is already counted
+            if (fetch?.Rows == null)
+            {
+                // A timed-out or rate-limited CPF was not harvested. Rewind
+                // so the next tick retries this same CPF (the failure
+                // backoff/give-up still applies) instead of silently
+                // skipping it until the next cycle.
+                currentCpfIndex = cpfIndex;
+                SaveCursor();
+                return;
+            }
 
             var rows = fetch.Rows;
             // F1: the rows are recorded under the cpf they were FETCHED with, not
@@ -346,6 +356,10 @@ public sealed class InspectionHarvester : IDisposable
             LastError = ex.Message;
             LogEvent($"ERROR at cpf {cpf}: {ex.Message}");
             NoteFailure(cpf, ex.Message);
+            // The rows were fetched but not stored; retry this CPF rather
+            // than skipping it for the rest of the cycle.
+            currentCpfIndex = cpfIndex;
+            SaveCursor();
             OnStatusChanged?.Invoke($"Harvester error on cpf {cpf}: {ex.Message}");
         }
     }
@@ -371,7 +385,7 @@ public sealed class InspectionHarvester : IDisposable
     {
         try
         {
-            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             http.DefaultRequestHeaders.TryAddWithoutValidation("client-loginid", cpf);
             http.DefaultRequestHeaders.TryAddWithoutValidation("client-app-name", "RE");
             http.DefaultRequestHeaders.TryAddWithoutValidation("client-os", "ANDROID");

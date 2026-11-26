@@ -603,6 +603,68 @@ finally { try { Directory.Delete(vendorDir, true); } catch { } }
     }
 }
 
+// FP4M: a failed CPF fetch must be retried, not skipped for the cycle.
+// The first response fails; the walk must ask for the same CPF again and
+// import its rows when the host answers.
+{
+    var walkDir = Path.Combine(Path.GetTempPath(), $"mskpy-retry-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(walkDir);
+    var indexFile = Path.Combine(walkDir, "index.tsv");
+    var cursorFile = Path.Combine(walkDir, "harvester-cursor.txt");
+    File.WriteAllLines(indexFile, new[] { "MTRETRY000000001\t02781310" });
+    var dbFile = Path.Combine(walkDir, "retry.db");
+
+    int port = 15761;
+    int requests = 0;
+    var listener = new HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+    var serving = Task.Run(() =>
+    {
+        while (listener.IsListening)
+        {
+            try
+            {
+                var ctx = listener.GetContext();
+                if (Interlocked.Increment(ref requests) == 1)
+                {
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.Close();
+                    continue;
+                }
+                var body = "[{\"consumer_number\":\"MTRETRY000000001\",\"cpf_no\":\"02781310\",\"consumer_name\":\"Retry test\",\"vendor_code\":\"100038029\",\"latitude\":\"19.5\",\"longitude\":\"74.1\",\"inst_date\":\"2026-08-01\"}]";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+
+    try
+    {
+        using var store = new Mskpy.Infrastructure.InspectionStore(dbFile);
+        using var harvester = new Mskpy.Infrastructure.InspectionHarvester(
+            store, indexFile, $"http://127.0.0.1:{port}", cursorFile,
+            reWalkIdle: TimeSpan.FromSeconds(2), vacuumOnCycleComplete: false);
+        harvester.Start();
+        var deadline = DateTime.UtcNow.AddSeconds(25);
+        while (DateTime.UtcNow < deadline && store.GetByConsumerNumber("MTRETRY000000001") == null)
+            Thread.Sleep(250);
+        Check(store.GetByConsumerNumber("MTRETRY000000001") != null,
+            "a CPF whose first fetch failed is retried and imported");
+        Check(Volatile.Read(ref requests) >= 2, "the failed CPF was asked for again");
+    }
+    finally
+    {
+        listener.Stop();
+        listener.Close();
+        try { Directory.Delete(walkDir, true); } catch { }
+    }
+}
+
 // J7: the give-up policy. A walk that cannot get an answer must stop asking:
 // after the give-up window without a single success the pass is abandoned, the
 // walk stops, and the officer resumes it.

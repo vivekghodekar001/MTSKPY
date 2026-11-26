@@ -1303,12 +1303,14 @@ public sealed class ShellViewModel : ObservableObject, IDisposable
                         : $"{removed} customer{(removed == 1 ? "" : "s")} removed from your list."
                     : $"Session list: {rows.Count} rows ({added} new, {duplicates} already held, {removed} removed).";
             RefreshRecordCounts();
-            if (added > 0 || removed > 0)
-            {
-                if (page == "Applications" && listScope != ListScopeAll) { LoadFromStore(); ApplySearch(); }
-                else if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);
-                Changed(nameof(AllChip)); Changed(nameof(RecordCount));
-            }
+            // A successful fetch can also repair statuses (FP4K) without
+            // adding or removing snapshot rows, so the pending list and chip
+            // refresh on every successful seed, not only on add/remove.
+            Changed(nameof(MyPendingChip));
+            Changed(nameof(RecordCount));
+            if (page == "Applications" && listScope != ListScopeAll) { LoadFromStore(); ApplySearch(); }
+            else if (page is "Returned" or "NeedsRedo" or "Blocked") ReloadRecordPage(page);
+            Changed(nameof(AllChip));
         }
         catch (SessionExpiredException)
         {
